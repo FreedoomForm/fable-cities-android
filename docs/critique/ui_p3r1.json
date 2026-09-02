@@ -1,0 +1,76 @@
+{
+  "module": "ui",
+  "round": "p3r1",
+  "score": 8.3,
+  "pass": false,
+  "summary": "Feature-complete, coherent and error-free: top bar, dock with illustrated trays, RCI in true CS2 zone colours, cost tooltips, notification centre (MAX_VISIBLE=3 + in-game stamps), info-view legend that actually drives the world overlay, full settings drawer. All three builder-claimed fixes verify in source (viewThumb imported in infoview.js:4/130; names.js:32 pick() guarded with Math.abs(Math.trunc); no duplicate THUMBS keys). Contract complete: emits tool:select + infoview:changed, listens sim:tick / economy:changed / time:tick / time:set / time:speed / tool:changed / entity:selected / notification / engine:resize. Pointer pass-through verified (5 of 6 probe points return CANVAS; the 6th is the All-shortcuts button). Layout holds at 1280x720, 1366x768 and 1920x1080; the shortcut-hint row expands and toasts reflow when the settings drawer opens. Zero ui-origin console errors. Against reference/cs2_03.jpg it still falls short: the panels carry roughly half CS2's data and no chart of any kind, and two icon-contrast defects are visible in every single frame.",
+  "issues": [
+    {
+      "severity": "major",
+      "description": "The notification badge obliterates the bell glyph. shots/critic/ui/p3r1_ui_hero_13.png, top bar x1160-1190 y20-45 (same at x1790-1815 in p3r1_zoning1920.png). The yellow '2' disc is ~18px over a ~20px bell and sits on its centre, so only the clapper survives; a heavy black ring makes it heavier still. CS2 uses a small pip clear of the glyph.",
+      "evidence": "shots/critic/ui/p3r1_ui_hero_13.png top-right cluster; 6x zoom shows ~70% of the bell covered.",
+      "suggestion": "Shrink the badge to 13-14px, translate(45%,-45%) off the icon box so it clears the glyph, and swap the black ring for a 1.5px ring in the panel colour."
+    },
+    {
+      "severity": "major",
+      "description": "Active dock tile loses icon and badge contrast. p3r1_zoning1920.png dock x828-925 y998-1070: on the green Zoning plate the icon's own green square disappears (four squares read as three) and the '2' shortcut badge is dark-grey on green. p3r1_ui_hero_13.png x466-536 y648-706: the blue-grey crossroads glyph is washed out on the pale-blue Roads plate. Inactive tiles are light-on-dark, so the active state is the only illegible one.",
+      "evidence": "p3r1_zoning1920.png active Zoning tile; p3r1_ui_hero_13.png active Roads tile.",
+      "suggestion": "On .is-active force the icon to a near-white monochrome silhouette (or raise the inner plate to >=40% luminance contrast), and invert the shortcut badge to dark ink on a solid 70%-white chip."
+    },
+    {
+      "severity": "major",
+      "description": "Panels carry about half CS2's data and no chart. The Land Value legend (p3r1_1366_info.png x8-292 y70-340) is one ramp + 4 rows + 2 checkboxes; CS2's equivalent (reference/cs2_03.jpg x120-380) shows 8 stat rows, an age-distribution donut with a 4-item legend, and TWO ramps each with its own colour checkbox. The selection panel (p3r1_ui_hero_13.png x8-290 y70-372) shows only residents / floors / height / footprint, with no upkeep, consumption, happiness or land value, and no level-progress bar.",
+      "evidence": "reference/cs2_03.jpg vs shots/critic/ui/p3r1_1366_info.png left column.",
+      "suggestion": "Give each info view its own stat rows (average, min/max, week-over-week trend arrow) plus one inline SVG chart - a 7-point sparkline or donut; split the building-colour and terrain-colour ramps like CS2; add upkeep / power / water / happiness rows and a level-progress bar to the selection panel."
+    },
+    {
+      "severity": "minor",
+      "description": "Tile thumbnails are compositionally identical and the zone colour chip is nearly invisible. All six zoning tiles (p3r1_zoning1920.png x648-1285 y885-950) use the same blue sky + one cloud + green ground, so the strip reads as a repeating pattern and the label does all the work. The zone colour is a 3px bar on the tile's bottom edge, half-swallowed by the corner radius and by the active outline on Low Residential. In CS2 the zone colour is the tile's dominant identity.",
+      "evidence": "shots/critic/ui/p3r1_zoning1920.png zoning tray; road tray in p3r1_ui_hero_13.png x455-840 y545-600 has the same issue.",
+      "suggestion": "Tint the tile frame/background with the zone colour (or put a 10px colour swatch beside the label) and vary the thumbnail ground/camera per item so the six silhouettes differ at a glance."
+    },
+    {
+      "severity": "minor",
+      "description": "The shortcuts button in the top bar reads as a blank white plate at 1x. p3r1_ui_hero_13.png x1238-1256 y24-40: a solid-white filled keyboard whose key marks fall under 1px, and the only solid-white fill in a bar of gold and outline glyphs.",
+      "evidence": "shots/critic/ui/p3r1_ui_hero_13.png far-right top bar, 4x zoom.",
+      "suggestion": "Redraw as a stroked outline glyph at the gear's weight, or use a '?' in a circle to match the bottom-right 'All shortcuts' affordance."
+    },
+    {
+      "severity": "minor",
+      "description": "Copy nits. Tooltip 'Upkeep -C4/m . week' (p3r1_ui_hero_13.png y465) mixes a per-metre and a per-week unit in one token. The active-tool chip reads 'Zoning Free' (p3r1_zoning1920.png x1240-1310 y1050) although CS2 charges per zoned cell. 'LEVEL 2 (stars) of 5' orphans 'of 5' at the far right of the row instead of showing progress to the next level.",
+      "evidence": "shots/critic/ui/p3r1_ui_hero_13.png tooltip Upkeep row; p3r1_zoning1920.png active-tool chip.",
+      "suggestion": "Use 'C4 / m per week' (or C4/m . wk); drop 'Free' or show the real per-cell price; replace 'of 5' with a thin XP bar under the stars as CS2 does."
+    },
+    {
+      "severity": "minor",
+      "description": "Left column eats 64% of frame height at 1366x768. With the legend and the selection panel both open the stack runs y70-560, and with the tray open the HUD owns most of the left third (p3r1_1366_info.png). CS2 fits the same content in roughly 40%.",
+      "evidence": "shots/critic/ui/p3r1_1366_info.png left column.",
+      "suggestion": "Below 800px viewport height, collapse the legend to ramp + average when a selection panel is also open, or merge the two into one tabbed card."
+    }
+  ],
+  "strengths": [
+    "Illustrated per-item thumbnails across roads, zoning, services and info views - the round-1 'flat monochrome glyph tiles' complaint is genuinely resolved.",
+    "Info-view legend is wired to the world: land value tints buildings and terrain, with working Colour buildings / Colour terrain checkboxes and Tab/Esc hints.",
+    "Notification stack capped at 3 with a working notification centre (in-game '1 May . 12:00' stamps, Clear all, read state clears the badge) - round-1 four-toast wall is fixed.",
+    "RCI demand bars use correct CS2 zone hues (green/blue/orange/purple); dock icons are filled two-tone with a CS2-style active plate and tray caret.",
+    "Responsive verified at three sizes; shortcut hint row expands at 1920 and toasts reflow left when the settings drawer opens.",
+    "Never blocks the canvas: elementFromPoint returns CANVAS at 5 of 6 sampled points, the 6th being a real button.",
+    "Contract complete and zero ui-origin console errors across 7 runs."
+  ],
+  "screenshots": [
+    "shots/critic/ui/p3r1_ui_hero_13.png",
+    "shots/critic/ui/p3r1_ui_hero_21.png",
+    "shots/critic/ui/p3r1b.png",
+    "shots/critic/ui/p3r1c.png",
+    "shots/critic/ui/p3r1_zoning1920.png",
+    "shots/critic/ui/p3r1_1366_info.png",
+    "shots/critic/ui/p3r1_probe.png"
+  ],
+  "perf": { "drawCalls": 1990, "triangles": 8641367, "consoleErrors": 0 },
+  "notes": [
+    "Not ui: two shader errors 'ERROR: 0:1619: patch : Illegal use of reserved word' from a lawn MeshStandardMaterial onBeforeCompile (float patch = sin(vLawnW.x...)). GLSL ES reserves 'patch'. Whichever module owns the lawn/grass material must rename that local.",
+    "Not ui: triangles peaked at 8.64M on the ui_detail 110m preset, 8% over the 8M budget. That is world geometry (buildings/props/traffic); the HUD is DOM and adds no draw calls. Draw calls 1283-1990, well inside 3000.",
+    "Three shot runs died with 'Execution context was destroyed (navigation)' - Vite HMR from parallel builders, not a ui fault; retries succeeded.",
+    "Previous rounds' open items: FIXED - illustrative tray thumbnails, toast wall capped + notification centre, player-facing names ('Lakeview Court', 'Westmarch') with no raw ids, tooltip pinned on the ACTIVE tile, filled two-tone icons with a CS2-style active plate, info-view legend panel now exists. NOT FIXED - HUD still heavier than CS2 at 720/768p (r1 minor #4), and panel data density remains well below CS2 (r2's main complaint)."
+  ]
+}

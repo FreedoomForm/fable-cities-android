@@ -1,0 +1,12 @@
+{
+  "id": "concrete_road_barrier",
+  "name": "Concrete Road Barrier",
+  "type": "models",
+  "authors": {
+    "Amal Kumar": "All"
+  },
+  "license": "CC0",
+  "source": "https://polyhaven.com/a/concrete_road_barrier",
+  "res": "1k",
+  "fmt": "gltf"
+}

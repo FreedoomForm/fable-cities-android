@@ -1,0 +1,20 @@
+{
+  "id": "MetalPlates006",
+  "res": "1K",
+  "fmt": "JPG",
+  "license": "CC0",
+  "source": "https://ambientcg.com/view?id=MetalPlates006",
+  "files": [
+    "MetalPlates006.png",
+    "MetalPlates006_1K-JPG.blend",
+    "MetalPlates006_1K-JPG.mtlx",
+    "MetalPlates006_1K-JPG.tres",
+    "MetalPlates006_1K-JPG.usdc",
+    "MetalPlates006_1K-JPG_Color.jpg",
+    "MetalPlates006_1K-JPG_Displacement.jpg",
+    "MetalPlates006_1K-JPG_Metalness.jpg",
+    "MetalPlates006_1K-JPG_NormalDX.jpg",
+    "MetalPlates006_1K-JPG_NormalGL.jpg",
+    "MetalPlates006_1K-JPG_Roughness.jpg"
+  ]
+}

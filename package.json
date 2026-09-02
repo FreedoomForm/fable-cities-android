@@ -1,0 +1,27 @@
+{
+  "name": "fable-cities",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "A browser-based city builder in Three.js, written by AI agents",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1 --port 5180",
+    "build": "vite build",
+    "preview": "vite preview --port 5174",
+    "shot": "node tools/shot.mjs",
+    "check": "node tools/check.mjs"
+  },
+  "dependencies": {
+    "puppeteer-core": "^25.9.0",
+    "three": "^0.185.1",
+    "vite": "^8.2.2"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/rawprogress/fable-cities.git"
+  },
+  "homepage": "https://fablecities.rawscollections.com",
+  "engines": {
+    "node": ">=20.19"
+  }
+}

@@ -1,0 +1,59 @@
+{
+  "module": "audio",
+  "round": 1,
+  "score": 7.5,
+  "pass": false,
+  "summary": "Technically the most robust module I have reviewed: 0 console errors/warnings across 4 shots and a live abuse pass (NaN/Infinity/strings on audio:volume, audio:mute, audio:play, audio:sfx), autoplay probe + gesture unlock working headless at 48 kHz, offline render verified (RMS -23.1 dB, peak -7.5 dB), correct day/night gating (birds activity 0 at 22 h, crickets on). But the §5 contract is incomplete (api.toggle missing, audio:play('notify') silently ignored) which is a blocker by rule, the public audio:sfx path accepts NaN positions and spawns a siren that produces ~130 guarded NaN writes per second for its whole lifetime (builder's '0 skipped' claim only holds with clean input), and the showcase is a labelled stand-in city (0 buildings, 0 vehicles, 0 lots) rendered as roads on grass with half-screen additive discs, so the positional traffic/zone voices cannot be checked against anything visible. Fix the alias, sanitise the entry point, make the showcase honest-but-visible, and this is an 8.5.",
+  "perf": { "fps": 76, "drawCalls": 893, "triangles": 4081543, "consoleErrors": 0 },
+  "screenshots": [
+    "shots/critic/audio/r1_audio_hero_13.png",
+    "shots/critic/audio/r1_audio_detail_13.png",
+    "shots/critic/audio/r1_audio_hero_21.png",
+    "shots/critic/audio/r1_audio_detail_21.png"
+  ],
+  "issues": [
+    {
+      "severity": "blocker",
+      "description": "§5 contract incomplete: api exposes toggleMute but not toggle (ARCHITECTURE §5: api { unlock, setVolume, setMuted, toggle }); audio:play('notify') (a §5 name) is silently dropped because UI_SOUND_NAMES only has 'notification'.",
+      "evidence": "Live probe: typeof world.audio.api.toggle === 'undefined', apiKeys=[unlock,state,running,context,setVolume,setMuted,toggleMute,...]; src/modules/audio/UISounds.js:11 UI_SOUND_NAMES; index.js:378 toggleMute.",
+      "suggestion": "Add `toggle: () => S.core.setMuted(undefined)` alongside toggleMute, and an alias map in playUI ({notify:'notification', warn:'warning', info:'notification'}); log unknown names once at debug level."
+    },
+    {
+      "severity": "major",
+      "description": "playWorld / audio:sfx accepts non-finite positions. index.js:358 only checks `p.x != null`; terrain.getHeight(NaN,NaN) yields NaN y, OneShots.siren(pos) spawns anyway and the moving siren writes NaN to panner/gain params every frame for its entire lifetime.",
+      "evidence": "Live: guard.skipped idle 0/s; playWorld('horn',{x:1e9,z:-1e9}) 0/s; playWorld('siren',{x:NaN,z:NaN}) 131/s, still 130/s three seconds later; guard.last='setT(NaN)'. No console error (guard holds) but the builder's '0 skipped' claim is input-dependent.",
+      "suggestion": "In playWorld: if (!Number.isFinite(p.x)||!Number.isFinite(p.z)) pos=null (fall back to random road pos) and clamp |x|,|z| ≤ world.half; in OneShots.siren/horn reject non-finite pos and retire any event whose position/level becomes non-finite. Add this NaN case to the offline/self-test."
+    },
+    {
+      "severity": "major",
+      "description": "Showcase is a labelled stand-in: world has 0 buildings, 0 vehicles, 0 lots (population 16.5k / 180 vehicles are simulated), so the scene is bare roads on grass with huge flat additive discs (depthTest:false MeshBasicMaterial) and nothing that the 6 traffic voices / 8 zone voices can be visually matched to. Reads as programmer art next to cs2_04.jpg.",
+      "evidence": "r1_audio_hero_13.png centre/right (blue, orange, green ellipses, red/blue rings over empty grass); r1_audio_detail_21.png (magenta and orange discs filling the lower half); getState worldCounts {buildings:0, vehicles:0, lots:0}; EmitterMarkers.js:46,71,87.",
+      "suggestion": "When zoning/buildings/traffic are placeholders, spawn proxy geometry from the audio showcase itself: instanced grey blocks on the simulated lots and 4.5 m box vehicles riding the VehicleSim lane positions so voices are visibly attached. Shrink markers to ground-projected rings ≤ 12 m with depthTest on, opacity ≤ 0.35, and honour ?audiodebug=0 to hide them."
+    },
+    {
+      "severity": "minor",
+      "description": "Time jumps leave in-flight bird calls ringing: at 21:03 with night 100 % the HUD shows Birds −34 dB, louder than Crickets −39 dB. Gating itself is correct (live probe at 22.2 h: birds activity 0).",
+      "evidence": "r1_audio_detail_21.png HUD Layers panel (Birds −34 dB, Crickets −39 dB, night 100 %).",
+      "suggestion": "On time:set with |Δhour| > 0.5 cancel scheduled bird voices (stop sources, cancelAt on their gains) and fade the birds group over ~200 ms; same for crickets when jumping to day."
+    },
+    {
+      "severity": "minor",
+      "description": "Mix balance at altitude: at 168 m over an 84 %-urban listener at noon, Birds −14 dB is the loudest layer, 10 dB above City hum (−24 dB) and 15 dB above Traffic (−29 dB). CS2 at that height is wind + distant hum with birds well underneath.",
+      "evidence": "r1_audio_hero_13.png HUD Layers panel; BirdLayer.update layers.js:290 uses (1−altN)^1.7 and (1−0.5·urban) only.",
+      "suggestion": "Use (1−altN)^2.5 and (1−0.7·urban) for bird gain, and above ~120 m cap the birds group at city+3 dB so the layer sits under the hum."
+    },
+    {
+      "severity": "minor",
+      "description": "Rain gating ignores the spec's `world.env.rain > 0` trigger when `env.precipitation` is undefined and the weather name is not rain/storm: rain stays at 0 while wetness feeds only runoff.",
+      "evidence": "Mixer.js:188-194 (hasPrecip fallback uses weather name only; env.rain folded into `wet`).",
+      "suggestion": "When precipitation is undefined, precip = max(rainy||snowy ? 1 : 0, clamp01(env.rain)) so a producer that only writes env.rain still gets rain audio."
+    }
+  ],
+  "strengths": [
+    "Zero console errors and warnings in 4 shots and under live abuse (NaN/Infinity/string payloads on every public event and api call); all AudioParam writes go through params.js guards (only 2 non-AudioParam `.value =` remain).",
+    "Autoplay handled properly: silent probe + pointerdown/keydown/touchend/mousedown unlock, explicit idle/waiting/running/suspended/blocked state machine, running headless at 48 kHz.",
+    "Excellent instrumentation: spectrum + waterfall HUD, per-group target vs measured dB, listener/emitter/event panels, and an offline render API (0.6 s) returning RMS/peak/band/isolation stats — the module is verifiable without speakers.",
+    "Mix model is rich and physically motivated: altitude, urban, forest, water, temperature, wind gusts, fog, rain/snowfall/snow-cover muffle, dawn/dusk bird curves; positional sirens/horns/car passes with distance readouts.",
+    "Perf well inside budget: 764–893 draw calls, 3.1–4.1 M triangles, 76–304 fps; audio init 21 ms."
+  ]
+}

@@ -1,0 +1,20 @@
+{
+  "id": "Facade006",
+  "res": "1K",
+  "fmt": "JPG",
+  "license": "CC0",
+  "source": "https://ambientcg.com/view?id=Facade006",
+  "files": [
+    "Facade006.png",
+    "Facade006_1K-JPG.blend",
+    "Facade006_1K-JPG.mtlx",
+    "Facade006_1K-JPG.tres",
+    "Facade006_1K-JPG.usdc",
+    "Facade006_1K-JPG_Color.jpg",
+    "Facade006_1K-JPG_Displacement.jpg",
+    "Facade006_1K-JPG_Metalness.jpg",
+    "Facade006_1K-JPG_NormalDX.jpg",
+    "Facade006_1K-JPG_NormalGL.jpg",
+    "Facade006_1K-JPG_Roughness.jpg"
+  ]
+}

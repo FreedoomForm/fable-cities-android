@@ -1,0 +1,20 @@
+{
+  "id": "Ground033",
+  "res": "1K",
+  "fmt": "JPG",
+  "license": "CC0",
+  "source": "https://ambientcg.com/view?id=Ground033",
+  "files": [
+    "Ground033.png",
+    "Ground033_1K-JPG.blend",
+    "Ground033_1K-JPG.mtlx",
+    "Ground033_1K-JPG.tres",
+    "Ground033_1K-JPG.usdc",
+    "Ground033_1K-JPG_AmbientOcclusion.jpg",
+    "Ground033_1K-JPG_Color.jpg",
+    "Ground033_1K-JPG_Displacement.jpg",
+    "Ground033_1K-JPG_NormalDX.jpg",
+    "Ground033_1K-JPG_NormalGL.jpg",
+    "Ground033_1K-JPG_Roughness.jpg"
+  ]
+}

@@ -1,0 +1,99 @@
+{
+  "score": 6.5,
+  "pass": false,
+  "summary": "Real progress: skyline, waterfront and night_downtown are genuine coastal-city hero shots with mountains, haze, beach and depth — well past programmer art. But three measurable spec requirements are missed and the builder's report overstates all three. Population is 7,967-24,124 across seeds (3 of 6 sampled below the 15k floor), load is 10.0-12.2s at quality=high (never under 8s), triangles are 10.0-13.5M against an 8M budget. The demo-owned `street` preset points the camera inside a tree canopy. Top-down shows the city fabric is isolated buildings floating in grass, not the 0.70 coverage claimed. Zero console errors, contract clean, determinism confirmed.",
+  "issues": [
+    {
+      "severity": "blocker",
+      "description": "Population out of spec on half the seeds sampled. Spec is 15-30k; builder reported '15,990-18,084 by seed'. Measured: seed 1 = 7,967, seed 42 = 8,687, seed 12 = 13,537 — all below the floor, two of them by ~half. Seeds 7/3/101 pass (16,188 / 18,084 / 24,124). The generator is not seed-robust; the reported range was sampled only from seeds that worked.",
+      "evidence": "6 cold loads at quality=high via puppeteer, __game.stats(): {seed:1,pop:7967,b:332}, {seed:42,pop:8687,b:351}, {seed:12,pop:13537,b:554}, {seed:7,pop:16188,b:483}, {seed:3,pop:18084,b:483}, {seed:101,pop:24124,b:609}",
+      "suggestion": "The site picker evidently finds smaller/more broken-up coastlines on some seeds, so fewer grid rows survive. Clamp to the target instead of hoping: after the fastForward passes, read simulation.api.stats().population and, while below ~16k, run another fastForward pass and/or paint an extra res-high row; cap at 30k. Validate over at least seeds 1,3,7,12,42,101 before reporting a range."
+    },
+    {
+      "severity": "blocker",
+      "description": "Load time 10.0-12.2s at quality=high on every one of 7 timed runs (warm cache included). Spec is under 8s; builder reported 6.4s. Fastest run is still 25% over, slowest 53% over.",
+      "evidence": "navigate -> window.__game.ready, quality=high: 12248, 10699, 11038, 10253, 10434, 10044, 10923 ms. Module init totals ~4.5s (terrain 2.4-2.6s), so ~6s is demo build + fastForward.",
+      "suggestion": "Four economy fast-forward passes plus 350 road segments dominate. Profile the passes and collapse to one longer fastForward, batch zones.api.paint calls per district instead of per cell, and defer traffic.api.spawnBurst(300) until after ready. Re-time on an idle machine and report the median of 3, not a best case."
+    },
+    {
+      "severity": "blocker",
+      "description": "Triangle budget blown by 25-68%. ARCHITECTURE §3 caps the demo city at 8M triangles; measured 10.0-13.5M across all nine views. Draw calls 2,283-2,753 also break the §3 ceiling of 2,500 on suburb (2,638) and night_downtown (2,753).",
+      "evidence": "shots/critic/demo/p3r1.log.json — downtown 13,186,447 tris / 2,470 calls; night_downtown 13,455,226 / 2,753; suburb 13,170,272 / 2,638; street 13,326,617 / 2,450; top 10,012,422 / 2,342.",
+      "suggestion": "The demo sizes the city, so it owns the budget. Measure tris with demo=0 to separate terrain/vegetation baseline from city cost, then trim whichever side dominates — likely reduce the 12x7 grid to ~10x6, or cut the number of full-height towers. If vegetation is the bulk, lower the scatter density the demo triggers rather than shipping 13M."
+    },
+    {
+      "severity": "blocker",
+      "description": "The `street` preset — which the demo re-points per ARCHITECTURE §7 — places the eye inside a street tree. Roughly 60% of the frame is a flat, unlit green canopy blob; the actual street is a sliver at bottom-left. Any critic or player hitting the street camera sees a broken shot.",
+      "evidence": "shots/critic/demo/p3r1b_street.png — entire upper and centre of frame. Preset at src/demo/DemoCity.js:507 `street: { target: T(0, CORE_V + 40), distance: 82, yaw: INLAND, pitch: 7*DEG2RAD }`.",
+      "suggestion": "You already snap suburb via roads.api.nearest — do the same here, and additionally raycast from the camera eye to the target and reject any preset whose first 15m hits a prop/tree. Simplest fix: raise pitch to ~14 deg and push distance to ~110m so the eye clears the canopy, then re-shoot to confirm."
+    },
+    {
+      "severity": "major",
+      "description": "Block coverage is far below the claimed 0.70. From directly overhead every downtown and mid-rise block is a handful of separate buildings sitting as islands in continuous grass — no rear parcels, no courtyards, no parking, no paved lot area. The 'blocks were half lawn' fix listed as done is not visible in the render.",
+      "evidence": "shots/critic/demo/p3r1b_top.png — the entire central grid; compare block interiors against reference/cs2_02.jpg and the background of reference/cs2_04.jpg where blocks are near-solid built fabric.",
+      "suggestion": "Coverage measured as painted-cells/total-cells is not what the eye reads — buildings occupy only part of each lot. Either paint both sides of every internal street (so blocks build back-to-back) or shrink DT from 88 to ~64 so lot depth matches building depth. Verify by eye on the top preset, not by the coverage number."
+    },
+    {
+      "severity": "major",
+      "description": "Downtown ground plane between towers is lawn. A CBD with 20-storey towers has plazas, parking, service yards and paved courtyards; here mown grass runs to the tower footings on almost every block.",
+      "evidence": "shots/critic/demo/p3r1_downtown.png — mid-frame between the tower cluster, and again bottom-centre; shots/critic/demo/p3r1_night_downtown.png centre block.",
+      "suggestion": "Zone the com-high/office core to full block depth so buildings meet at the block core, and reserve only 1-2 deliberate plaza blocks. Where lawn must remain, place service lots via services.api so at least the surface reads as paved civic ground."
+    },
+    {
+      "severity": "major",
+      "description": "Industrial district reads as scattered monopoly pieces on rolling meadow — no estate character. Each shed sits alone on grass with no yard, fence, hardstanding, truck parking, container storage or rail spur, and the ground under it is undulating hillside rather than a graded pad.",
+      "evidence": "shots/critic/demo/p3r1_industrial.png — whole frame, worst in the left and lower-right thirds; shots/critic/demo/p3r1c.png right half.",
+      "suggestion": "Pack the ind zoning tighter (contiguous cells rather than one lot per frontage), call terrain.api.flattenRect over the whole estate so it sits on a graded pad, and add loop service roads between rows so the gaps read as yards rather than fields."
+    },
+    {
+      "severity": "major",
+      "description": "Night city is not alive. At 21:27 in a 16k-population downtown the avenue carries one or two cars total, and there are no lit storefronts, neon, or illuminated building crowns. Traffic density 1.35 is not reaching the frame.",
+      "evidence": "shots/critic/demo/p3r1_night_downtown.png — the avenue running up the centre of frame from bottom to the tower cluster. Compare reference/cs2_08.jpg (night street with continuous traffic, neon, lit shopfronts).",
+      "suggestion": "Raise traffic.api.setDensity toward 1.8-2.0 for the demo and re-issue spawnBurst after the fastForward passes so vehicles exist on the roads the presets actually frame; confirm vehicle count near the downtown target rather than the global 620."
+    },
+    {
+      "severity": "major",
+      "description": "Motorway interchange is flat and at-grade. Ramps and mainline are grey ribbons painted on the same ground plane with no bridge deck, no grade separation, no gore markings or barriers, so the 'trumpet' reads as a tangle of surface roads.",
+      "evidence": "shots/critic/demo/p3r1c.png — upper third, centre-right, where the motorway meets the loop ramp. Compare reference/cs2_01.jpg.",
+      "suggestion": "If roads.api can carry an elevation offset on build points, lift the mainline ~8m over the ramp loop and let terrain.api.conformPath handle the approach embankments. If it cannot, say so explicitly in your report and file it against roads rather than describing it as a completed trumpet interchange."
+    },
+    {
+      "severity": "minor",
+      "description": "Tower silhouettes are near-identical — the same pale grey-white extruded box with a flat roof and a thin antenna, repeated 40+ times, varying only in height. No setbacks, crowns, mechanical penthouses, or curtain-wall/masonry material split.",
+      "evidence": "shots/critic/demo/p3r1_downtown.png — the entire tower cluster across the upper two thirds. Compare reference/cs2_02.jpg downtown.",
+      "suggestion": "Largely a buildings-module limit, but the demo can help: vary the `level` and `seed` passed to the growth so the mix spans more archetypes, and avoid one uniform com-high blanket over the whole core — interleave office and com-high so two different families alternate."
+    },
+    {
+      "severity": "minor",
+      "description": "Waterfront has no maritime life. Spec asked for a waterfront path and it exists, but the bay is empty: no boats, jetties, marina, piers, groynes or harbour furniture, and the beach edge is a perfectly smooth uniform sand band.",
+      "evidence": "shots/critic/demo/p3r1_waterfront.png — right half of frame; shots/critic/demo/p3r1_skyline.png foreground water. Compare reference/cs2_09.jpg and cs2_11.jpg.",
+      "suggestion": "Place a couple of service/park entries along the esplanade and break the shoreline with a short pier segment built as a 'path' road out over the water, so the promenade has a destination and the water edge has silhouette."
+    }
+  ],
+  "strengths": [
+    "skyline preset is a genuine hero shot — coastal metropolis, snow-capped mountains, aerial haze, beach foreground, real depth; comparable in composition to reference/cs2_02.jpg",
+    "waterfront preset composes well: rooftop foreground, promenade and beach leading the eye, tower cluster left, mountains closing the frame",
+    "night_downtown canyon composition is strong — two towers framing an avenue that recedes to the bay, working street lights, traffic signals and crosswalks",
+    "Site picker genuinely works: the city is terrain-aware, sits on a real coastline, and the density gradient tower-core -> mid-rise -> detached -> farmland is legible from the air",
+    "Zero console errors and zero warnings; all 13 modules report ok",
+    "Determinism confirmed: two cold loads of seed 7 produced identical pop 16,188 / 483 buildings / 350 segments / money 2,650,602",
+    "Public-API discipline is clean — only world.roads.api, zones.api, buildings.api, services.api, props.api, traffic.api and simulation.api; no reaching into module internals",
+    "All six required presets registered plus 13 generic ones; night_downtown carries its own hour and an explicit ?time= correctly wins"
+  ],
+  "perf": {
+    "drawCalls": 2753,
+    "triangles": 13455226,
+    "consoleErrors": 0
+  },
+  "screenshots": [
+    "shots/critic/demo/p3r1_downtown.png",
+    "shots/critic/demo/p3r1_skyline.png",
+    "shots/critic/demo/p3r1_suburb.png",
+    "shots/critic/demo/p3r1_waterfront.png",
+    "shots/critic/demo/p3r1_industrial.png",
+    "shots/critic/demo/p3r1_night_downtown.png",
+    "shots/critic/demo/p3r1b_top.png",
+    "shots/critic/demo/p3r1b_street.png",
+    "shots/critic/demo/p3r1c.png"
+  ]
+}

@@ -1,0 +1,88 @@
+{
+  "score": 6.5,
+  "pass": false,
+  "summary": "Clean run: zero console errors, all modules ok, contract complete (spawn/remove/fastForward/setLots/autoZone/stats, world.buildings.list, building:added/removed/levelup/completed, LAYER_REFLECTED enabled on every pool), 1459-1573 draw calls and 6.2-6.9M tris in budget. The builder's fixes are real: the shader redefinition is gone, night reads well (warm, floor-coherent, no bloom blowout), construction scaffolding is convincing. But the module is still good indie, not AAA. Facades have zero relief - every window is a painted rectangle flush with the wall, no reveal, sill, frame or cast shadow, at any distance. res-low is a prism plus a hip pyramid: no front door, no porch, no garage, no driveway visible even at 48 m, garish orange plank fences floating over sloped terrain, untextured flat-colour roofs with no gutter, ridge or eave overhang. Next to reference/cs2_04.jpg (gables, dormers, porch columns, fascia shadow, solar, hedges, parked cars in driveways) the suburb reads as blocks on green pads. Not shippable at 8.5.",
+  "strengths": [
+    "Zero console errors, all modules ok, contract complete, LAYER_REFLECTED on all pools",
+    "Perf comfortably in budget: 1459-1573 draw calls, 6.2-6.9M tris (limits 2500 / 8M)",
+    "Night pass is the strongest work: warm per-window emissive, floor-coherent office lighting, no bloom blowout, believable lit fraction (w2_buildings_hero_21.png)",
+    "Construction state reads properly - scaffold cage, green safety mesh, site fence, partial frame (w2_buildings_detail_13.png, centre)",
+    "City-scale silhouette gradient from towers to mid-rise to suburbs is plausible; footprints fit lots and align to frontage"
+  ],
+  "issues": [
+    {
+      "severity": "blocker",
+      "description": "Facades have no relief. Window openings are flat rectangles printed on the wall plane - no reveal depth, no sill, no frame extrusion, no self-shadow. At 48 m the stone house front-right in w2_close.png shows white-outlined black rectangles sitting flush on the masonry; the white house at left is a shed with three grey slabs. This is the single biggest tell against CS2 at every zoom level.",
+      "evidence": "shots/critic/buildings/w2_close.png (front-right stone house; left white house), shots/critic/buildings/w2_buildings_detail_13.png (foreground commercial block)",
+      "suggestion": "Give every window an actual opening: inset the glass quad 0.12-0.18 m behind the wall plane with a 4-sided reveal, plus an extruded sill and a 0.06 m frame. Cheapest correct route is a per-pool instanced 'window box' part for the near LOD tier and a parallax/POM offset plus a darkened reveal band baked into the facade shader for the mid tier, so the recess shadow survives past the detail radius."
+    },
+    {
+      "severity": "blocker",
+      "description": "res-low is missing the detail the spec required. generators.js:182-197 generates garage, driveway, porch and door, but none of them appear on any visible house at 48 m or 140 m - houses have no entrance at all, and no lot has a driveway or parked car. A house with no door does not read as a house.",
+      "evidence": "shots/critic/buildings/w2_close.png (all four foreground houses), shots/critic/buildings/w2_buildings_suburb_13.png (entire block)",
+      "suggestion": "Move door, porch and garage out of the dynamic detail tier into the static per-building geometry so they are always present, and keep only planting/bins/cars in the streamed tier. Then verify the detail radius actually covers a 48 m camera - the code exists but is not reaching the near tier, so this is a wiring bug, not a missing feature."
+    },
+    {
+      "severity": "blocker",
+      "description": "The residential lot fence is a solid saturated orange plank wall on every lot, repeated hundreds of times, and it floats and clips through sloped terrain instead of stepping with it. It is the most visually repetitive object in the frame and its hue is unlike any real fence material.",
+      "evidence": "shots/critic/buildings/w2_close.png (right third, fence panels hovering over the grass slope), shots/critic/buildings/w2_buildings_suburb_13.png (orange ribbon around every lot), shots/critic/buildings/w2_buildings_hero_13.png (visible as orange lot outlines across the whole suburb)",
+      "suggestion": "Desaturate to weathered cedar/grey-brown with per-lot hue jitter, add picket gaps or a real board texture with alpha, and vary the type per lot (picket / hedge / low wall / none - CS2 leaves many front yards open). Sample terrain height per fence post and step each run so it never floats; drop the fence entirely on the street-facing edge."
+    },
+    {
+      "severity": "major",
+      "description": "Roofs are flat untextured colour fields. No shingle or standing-seam albedo/normal, no ridge cap, no gutter or downpipe, and effectively zero eave overhang, so the roof plane meets the wall in a hard geometric seam. Reference cs2_04.jpg shows visible shingle grain, fascia shadow under a 0.4 m overhang, and gutters on every house.",
+      "evidence": "shots/critic/buildings/w2_close.png (red hip roof front-right, navy roof left), reference/cs2_04.jpg",
+      "suggestion": "Map a tiling shingle/tile PBR set from public/assets/shared onto roof planes with per-building tint jitter, extend the eave 0.35-0.5 m past the wall with a fascia board so it casts a shadow line, and add an instanced gutter run plus one downpipe per house."
+    },
+    {
+      "severity": "major",
+      "description": "Daytime window glass is a near-black smear. The blinds/interior term dominates so glazing reads as a dark hole with no sky reflection and no fresnel rim, the opposite failure to the black-mirror bug the builder fixed. At close range the interior gradient looks like a compression artifact rather than a room.",
+      "evidence": "shots/critic/buildings/w2_close.png (stone house, both front windows), shots/critic/buildings/w2_buildings_detail_13.png (foreground shopfront glass reads matte grey)",
+      "suggestion": "Raise the daytime specular contribution: sample the environment for a sky-tinted reflection weighted by a fresnel term against the facade normal, keep the interior tint under ~0.25 luminance beneath it, and reduce blind coverage to roughly 25% of windows. Shopfront glass needs a distinctly lower roughness than upper-floor residential glazing."
+    },
+    {
+      "severity": "major",
+      "description": "Lot ground pads are hard-edged rectangles that step off the terrain, leaving a visible lip and a two-tone lawn (bright outer terrain grass vs darker inner pad) on every residential lot.",
+      "evidence": "shots/critic/buildings/w2_close.png (right side, green pad edge over the slope), shots/critic/buildings/w2_buildings_suburb_13.png (every lot shows the inner/outer green split)",
+      "suggestion": "Either drop the pad and rely on terrain.api.flattenRect with a falloff so the lawn is the terrain, or feather the pad with a 1-1.5 m alpha border and match its albedo to the terrain grass splat so the seam disappears."
+    },
+    {
+      "severity": "major",
+      "description": "Flat roofs on mid-rise and office are mostly bare dark planes. Spec asked for AC units, tanks, antennas, parapets and solar; at hero altitude the vast majority of roofs carry nothing, which flattens the whole downtown read from above - the angle players spend most of their time at.",
+      "evidence": "shots/critic/buildings/w2_buildings_hero_13.png (mid-rise cluster centre-right and the white slab blocks right of centre), shots/critic/buildings/w2_buildings_detail_13.png (foreground white block: one AC unit, two antennas on a large roof)",
+      "suggestion": "Guarantee a minimum roof-clutter budget scaled to roof area (roughly one item per 60-80 m2): parapet on every flat roof, plus stair/lift overrun bulkhead, ducting runs, water tank, dish and solar arrays. Keep them in a coarse instanced tier so they survive to hero distance rather than being culled with the detail streamer."
+    },
+    {
+      "severity": "major",
+      "description": "Frame time is CPU-bound at 24-26 ms (38-41 fps) at only 1280x720 in the hero and close views, while the light suburb view runs 248 fps. The spike tracks the detail-tier rebuild, so at 1080p with the full demo city this will sit under the >=50 fps architecture budget.",
+      "evidence": "shots/critic/buildings/w2.log.json (buildings_hero_13: fps 41.4, cpu 24.13ms) and w2_close.log.json (fps 38.6, cpu 25.87ms) vs buildings_suburb_13 fps 248.2, cpu 4.03ms",
+      "suggestion": "Amortise the detail rebuild across frames (rebuild a bounded slice per frame, or only on camera-cell change rather than continuous movement), and cache per-building detail part lists so a re-entry into the radius is a matrix upload rather than a regeneration."
+    },
+    {
+      "severity": "minor",
+      "description": "Shop signage and awnings do not survive close inspection: signs are muddy coloured bars with lettering that is illegible at 48-96 m, and awnings are zero-thickness quads with no visible valance, frame or underside shadow.",
+      "evidence": "shots/critic/buildings/w2_buildings_detail_13.png (foreground shopfront: GYM, HOTEL signs and the purple awning row at left)",
+      "suggestion": "Raise the sign atlas cell resolution and letter contrast so words read at 60 m, and give awnings 0.06 m thickness with a front valance strip plus two support arms so they cast a real shadow onto the glass."
+    },
+    {
+      "severity": "minor",
+      "description": "Overall building palette is monotone - a mass of near-white and pale-grey boxes with only roof colour varying. CS2 suburbs carry siding, board-and-batten, stucco, brick and stained timber at clearly different values.",
+      "evidence": "shots/critic/buildings/w2_buildings_hero_13.png (whole frame), reference/cs2_04.jpg",
+      "suggestion": "Widen the per-building albedo distribution (push maybe 30% of residential to mid-value saturated tones), and vary the wall material family per building rather than only its tint, so neighbouring houses differ in texture grain as well as hue."
+    },
+    {
+      "severity": "minor",
+      "description": "res-high balcony grids alias into flat black speckle at hero distance - the balcony railings collapse to noise rather than blending to an average like the window LOD does.",
+      "evidence": "shots/critic/buildings/w2_buildings_hero_13.png (apartment blocks centre-right and the six-storey cluster below centre)",
+      "suggestion": "Apply the same fwidth-based dissolve used for the window grid to balcony rail instances, or swap the railing to a solid parapet part beyond a distance threshold."
+    }
+  ],
+  "screenshots": [
+    "shots/critic/buildings/w2_buildings_hero_13.png",
+    "shots/critic/buildings/w2_buildings_detail_13.png",
+    "shots/critic/buildings/w2_buildings_hero_21.png",
+    "shots/critic/buildings/w2_buildings_suburb_13.png",
+    "shots/critic/buildings/w2_close.png"
+  ],
+  "perf": { "fps": 38.6, "drawCalls": 1573, "triangles": 6852641, "consoleErrors": 0 }
+}

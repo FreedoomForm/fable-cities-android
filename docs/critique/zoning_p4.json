@@ -1,0 +1,69 @@
+{
+  "module": "zoning",
+  "pass_id": "p4",
+  "score": 6.0,
+  "pass": false,
+  "summary": "Real progress: the densest three or four downtown blocks now stand on hard standing, the 2.3 m kerb halo is gone and the overlay no longer reads as a cloud shadow in daylight. But the module's own showcase disproves three of its headline claims. The night preset — the one shipped to prove night readability — has an invisible overlay, because dst = dst*(1+src) cannot lift black. Com-low and mid-block parcels are still lawn with a 2 m apron round the building. And the paved surfaces crush to literal black (ground Y12 = 0.000), so every painted bay, saw-cut joint and oil stain the builder wrote is unlit and unseen. Contract intact, zero console errors, 1531-2021 draw calls.",
+  "perf": { "drawCalls_max": 2021, "triangles_max": 8845610, "console_errors": 0, "note": "draw calls well inside budget; the 8.8 M triangle peak is scene-wide (buildings/props/terrain) — zoning contributes 4-6 merged meshes" },
+  "contract": { "paint": true, "paintRect": true, "lotsFor": true, "setOverlayVisible": true, "verdict": "complete" },
+  "systemicProgress": {
+    "materials": "PARTIAL. Paving carries a paver grid and macro tone break-up at 40 m (p4_comhigh.png 380-580,340-450 and p4_office_top.png 900-1100,300-420) — better than a flat field. But the claimed wear set (painted bays, saw-cut joints, oil stains, drain lids, tyre-polished aisles) is not visible in ANY of ten frames across three presets and four hand-aimed views; the surfaces they live on sit at Y 0.002 in shade. The close-range 'aggregate speckle' resolves as 1 px salt-and-pepper dither, not stone (p4_bays.png 700-830,100-620). Lawn is still one flat field: HSV S = 1.00, B channel 0.000, OKLab C 0.074 at hue 109 deg vs LOOK_TARGET 0.053 at 74 deg.",
+    "lighting": "PARTIAL/FAIL. Sun is low (16.3/17.5) and building shadows are long, and there is a firm contact shadow at building bases. But zoning ground has no sky fill: hero downtown shadow (B-R)/Y = +0.17 vs lit +0.20, a delta of +0.03 against LOOK_TARGET row 13's +0.45..+2.0; the detail lawn in shadow is rgb (0.20, 0.19, 0.008) — WARMER than lit, the wrong sign. The baked AO multiplies the indirect term to zero: detail-frame ground Y12 = 0.000, shadow rgb (0.007, 0.004, 0.007), where CS2 cs2_11's ground floor is (0.078, 0.104, 0.089).",
+    "density": "PARTIAL. Ground furniture on the treated parcels (bollards, bins, cabinets, kerb-side clutter) is present in the detail frame, but ground cover on the lawn parcels is bare — no tufts, no shrubs, no undergrowth meshes, only a two-octave blotch that reads as painted mowing patches.",
+    "variety": "OK for this module. Six distinct kinds are visibly differentiated (footway, paver plaza, dark yard, gravel, drive, lawn) and rect layouts differ lot to lot; per-parcel albedo jitter reads at the hero distance.",
+    "colour": "FAIL. Lawn hue 109 deg is 35 deg too green and C 0.074 is +40% over the 0.053 target, with the blue channel clipped to zero. Paved yard Y 0.002 against LOOK_TARGET's asphalt target 0.058 is 25x under. CS2 cs2_11 grass is rgb (0.259, 0.294, 0.118) S 0.60; ours is (0.094, 0.102, 0.000) S 1.00."
+  },
+  "issues": [
+    {
+      "severity": "blocker",
+      "description": "The zone overlay is invisible at night. blendSrc = DstColorFactor / blendDst = OneFactor gives dst = dst*(1+src); on near-black ground dst is ~0 so the tint contributes nothing. In shots/critic/zoning/p4_zoning_night_21.png the whole unlit block core between x 380-730, y 470-650 shows only the thin white cell grid with zero zone colour, while the streetlight-lit parcels at 60-420, 500-700 do tint. This breaks the module's own zoning_night preset, whose stated purpose is night readability.",
+      "evidence": "src/modules/zoning/ZoneOverlay.js:353-359; shots/critic/zoning/p4_zoning_night_21.png region (380,470)-(730,650)",
+      "suggestion": "Keep the lift but add an additive floor so a tinted tile can never fall below a visible minimum: render dst = dst*(1+src) + src*uFloor with uFloor ~0.06-0.10 (blendSrc ONE is not enough on its own — use two-pass or premultiply src by (uFloor + dstLuma) in the shader). Verify at 21:00 that a com-high tile over unlit ground reads at least okL 0.25 above the ground it covers."
+    },
+    {
+      "severity": "blocker",
+      "description": "'Buildings on a golf course' is only fixed for the densest three or four blocks. The com-low retail unit in the detail frame sits on a ~2 m apron and the remaining ~80% of its parcel is bright lawn; green wedges also survive inside com-high/office block cores. The claim that a 27 m claim raster backfills mid-block interiors does not hold for com-low, for shallow lots, or for parcels whose frontage is a single road.",
+      "evidence": "shots/critic/zoning/p4_zoning_detail_17h5.png region (760,240)-(1000,420) — building on plinth, rest of parcel grass; shots/critic/zoning/p4_office_top.png (0,400)-(120,560) and (280,350)-(380,450); shots/critic/zoning/p4_bays.png (860,430)-(960,520) — lawn wedge between two towers",
+      "suggestion": "For com-low/com-high/office/res-high/ind, make hard standing the DEFAULT fill of the whole parcel and cut lawn back to explicit planting rects, rather than laying rects on a grass default. Then extend the claim raster to fill any residual polygon of a zoned block that lies more than one cell inside the frontage, regardless of how many frontages the lot has."
+    },
+    {
+      "severity": "blocker",
+      "description": "The ground treatment crushes to pure black in shadow, so none of the material work is legible. Measured over the zoning_detail ground band (180,220)-(1180,620): Y at the 12th percentile is 0.000 and the bottom-quartile mean is rgb (0.007, 0.004, 0.007). The com-low service yard at (830,300)-(900,360) measures Y 0.002 against LOOK_TARGET row 10's asphalt target of 0.058 — 25x under. CS2 cs2_11's darkest ground quartile is rgb (0.078, 0.104, 0.089) and still shows paving joints. Every painted bay, saw-cut joint, oil stain and drain lid in GroundMaterials.js is therefore invisible.",
+      "evidence": "shots/critic/zoning/p4_zoning_detail_17h5.png; src/modules/zoning/GroundMaterials.js:83 uAOAmb / uAOAlb; compare reference/cs2_11.jpg (0,700)-(1900,1070)",
+      "suggestion": "Clamp the baked occlusion so it never zeroes the indirect term: floor the AO multiplier applied to the ambient/IBL contribution at ~0.55-0.65 and leave the albedo darkening at most 0.75. Add a per-material minimum: no zoned ground pixel below linear Y 0.02. Re-shoot zoning_detail and confirm the joint and bay decals are readable in the building's shadow."
+    },
+    {
+      "severity": "major",
+      "description": "No cool sky-fill bounce in the shadows on zoned ground — LOOK_TARGET defect #2 and row 13. Hero downtown shadows measure (B-R)/Y = +0.17 against lit +0.20, a delta of +0.03 where the target is +0.45 to +2.0. The detail lawn is worse: shadowed lawn rgb (0.20, 0.192, 0.008) has its blue channel at 0.008, so shadows read WARMER than the sun-lit surface. Surfaces therefore stay flat rather than reading three-dimensional.",
+      "evidence": "shots/critic/zoning/p4_zoning_hero_17h5.png (700,380)-(1280,660); shots/critic/zoning/p4_zoning_detail_17h5.png (250,470)-(420,560); docs/LOOK_TARGET.md row 13",
+      "suggestion": "Do not tint the indirect term with the albedo. Sample the scene hemisphere/IBL colour for the ambient contribution and let the AO scale only its magnitude, so shadowed ground picks up the ~214 deg sky hue. Target shadow (B-R)/Y at least +0.5 above the lit value on lawn and paving."
+    },
+    {
+      "severity": "major",
+      "description": "The res-low lawn is a single hyper-saturated colour field with no undergrowth. Measured HSV S = 1.00 with the blue channel clipped to 0.000; OKLab C 0.074 at hue 109 deg versus LOOK_TARGET row 5's C 0.053 at hue 74 deg — 40% over chroma and 35 deg too green. CS2's lot grass in cs2_11 is rgb (0.259, 0.294, 0.118), S 0.60, with visible mown/worn banding, a gravel fringe and shrub beds. Ours has only a soft two-octave blotch that reads as ink stains at 40 m.",
+      "evidence": "shots/critic/zoning/p4_zoning_detail_17h5.png (600,470)-(760,560) and (250,470)-(420,560); reference/cs2_11.jpg (200,900)-(600,1030)",
+      "suggestion": "Pull lawn base albedo toward rgb (0.26, 0.29, 0.12): raise the blue channel off zero, drop OKLab chroma to ~0.053 and rotate hue to ~74 deg. Replace the blotch noise with a real detail-normal-driven blade break-up plus a scatter of tuft/shrub cards and a worn-dirt fringe along the footway and driveway edges."
+    },
+    {
+      "severity": "minor",
+      "description": "The close-range 'aggregate speckle' resolves as 1-pixel salt-and-pepper dither rather than stone grain — a dense field of near-black dots on mid grey that reads as compression noise or a broken dither pattern, not asphalt aggregate.",
+      "evidence": "shots/critic/zoning/p4_bays.png region (700,100)-(830,620)",
+      "suggestion": "Halve the speckle amplitude, drive it through the detail normal (a bumped highlight/shadow pair) instead of a raw albedo subtract, and fade it out above ~25 m rather than 70 m so it never aliases at aerial distances."
+    },
+    {
+      "severity": "minor",
+      "description": "Paving meets lawn at a perfectly straight, uniformly bright grey lip that reads as a ~0.3 m raised retaining wall stamped on the grass, with no dirt fringe, no encroaching vegetation and no material transition. CS2's equivalent edge (cs2_11) uses a paver band into a gravel/dirt fringe into grass.",
+      "evidence": "shots/critic/zoning/p4_zoning_detail_17h5.png region (760,240)-(1000,420), the slab boundary around the com-low unit; reference/cs2_11.jpg (760,880)-(1320,1000)",
+      "suggestion": "Break the boundary with a 0.4-0.8 m noise-jittered dirt/gravel transition band whose albedo lerps paving to soil, cut the kerb lip height further where the surface abuts lawn rather than road, and add an AO gradient on the grass side only."
+    }
+  ],
+  "screenshots": [
+    "shots/critic/zoning/p4_zoning_hero_17h5.png",
+    "shots/critic/zoning/p4_zoning_detail_17h5.png",
+    "shots/critic/zoning/p4_zoning_night_21.png",
+    "shots/critic/zoning/p4_office_top.png",
+    "shots/critic/zoning/p4_bays.png",
+    "shots/critic/zoning/p4_comhigh.png",
+    "reference/cs2_11.jpg"
+  ]
+}

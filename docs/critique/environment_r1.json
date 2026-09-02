@@ -1,0 +1,76 @@
+{
+  "score": 7.0,
+  "pass": false,
+  "summary": "Round 1 is a genuine step up from r0 (6.5): the civil-twilight luminance dip is gone (sweep verified: 18h 77.6 -> ~52 flat through the night, never below midnight), night is a deep blue-violet with stars and a moon disc, rain reads convincingly (overcast sky, tower reflections on the wet plaza, grey haze), window tenants vary warm/cool, contract and hooks are complete, zero console errors, perf well in budget. What keeps it at 'good indie' rather than CS2: the clouds are still the weakest element in every frame - hard-edged stamped blobs whose sunlit faces at noon are darker than the open sky, uniform lavender pills at 18:30 and 22:00, and opaque near-black inkblots at civil twilight (19:27) when real clouds still glow pink; golden hour has a magenta/lilac cast rather than gold and the sun-side ground blows out; night fog is neutral grey instead of sky-tinted so distant hills float brighter than the horizon sky. Fix the cloud shading/silhouette and the dusk grading and this is an 8+.",
+  "perf": { "fps": 99.9, "drawCalls": 1637, "triangles": 4787433, "consoleErrors": 0 },
+  "screenshots": [
+    "shots/critic/environment/r1_environment_hero_13.png",
+    "shots/critic/environment/r1_environment_detail_13.png",
+    "shots/critic/environment/r1_environment_hero_21.png",
+    "shots/critic/environment/r1_environment_detail_21.png",
+    "shots/critic/environment/r1g_environment_hero_18h5.png",
+    "shots/critic/environment/r1g_environment_sky_18h5.png",
+    "shots/critic/environment/r1rain.png",
+    "shots/critic/environment/r1d_environment_hero_18h8.png",
+    "shots/critic/environment/r1d_environment_hero_19h4.png",
+    "shots/critic/environment/r1n.png"
+  ],
+  "strengths": [
+    "Civil-twilight dip fixed and verified with the sweep test (ground band monotonic 18h->0h and 0h->7h, never below moonlit midnight).",
+    "Night sky is dark blue-violet, not black: stars, moon disc, moon glitter on the sea, cool moonlight; towers show varied warm/cool tenants with a believable lit fraction.",
+    "Rain weather is convincing: overcast sky, uWetness reflections of towers on the plaza, grey distance haze, desaturated grade.",
+    "Contract complete: setSun/setHemisphere/setFog/setFogHeight/setEnvironment/setExposure, addMaterialHook, setSunModulation, globalUniforms.uWetness; world.env.sunDirection/sunColor/skyColor/horizonColor/fogDensity/nightFactor/rain/wetness/snow/weather/wind/moon*; time:set and weather:set wired, time jumps instant.",
+    "Zero console errors/warnings, env init 0.5 s, 1.2-1.6k draw calls, 2.8-4.8M tris, 99-320 fps - inside budget.",
+    "Soft clean shadows, PBR shader balls respond correctly (chrome reflects sky+clouds, dielectrics pick up sky tint), no acne or peter-panning."
+  ],
+  "issues": [
+    {
+      "severity": "major",
+      "description": "Clouds are still not volumetric-looking. Stripes are gone, but they read as hard-edged stamped blobs: at noon the sunlit cloud faces measure (112,141,167) - darker than the open sky (116,154,181) - so there are no white lit tops at all; at 18:33 and 22:03 they are uniform pale-lavender pills; at civil twilight (19:27, sun -2 deg) they turn into opaque near-black inkblots against a pink sky, whereas real cumulus at that hour are still sunlit orange/pink from below.",
+      "evidence": "r1_environment_hero_13.png sky band y 20-130; r1g_environment_hero_18h5.png x30-120 y100-160 (pill shapes); r1d_environment_hero_19h4.png y60-200 (black blots); r1n.png x250-1000 y170-230; compare reference/cs2_09.jpg soft feathery edges, near-white lit sides, translucent thin rims.",
+      "suggestion": "Add a multiple-scattering approximation (Wrenninge 3-octave: sum a^i * exp(-b^i * sigma * d), a~0.5, b~0.5) so dense sun-facing regions light to near-white and exceed sky luminance in daylight; widen the coverage remap (smoothstep width >= 0.15 of density) and erode low-density edges so silhouettes feather instead of thresholding; light the layer with the sun at cloud altitude (horizon dip ~1.5-2 deg at 2 km, so clouds stay lit until sun ~ -2.5 deg) using the atmosphere's transmittance at cloud height (orange/red, never black) plus sky radiance as ambient (sample the analytic sky, not a constant); at night use moon + sky ambient so they sit slightly darker than the sky, not brighter pills."
+    },
+    {
+      "severity": "major",
+      "description": "Golden hour is warm and luminous now but the cast is magenta/lilac, not gold: plaza (101,91,101), upper sky (124,121,140) at 18:33. Sun-side of the frame blows out over grass and concrete, not just water - a broad (226,193,162)+bloom patch with lens ghosts washes out the towers.",
+      "evidence": "r1g_environment_hero_18h5.png (plaza x300-700 y400-470; sky x200-700 y40-120); r1g_environment_sky_18h5.png x300-550 y280-460 blow-out. Reference cs2_09.jpg: tan/gold ground, gold-lit cloud faces, warm grey-blue sky.",
+      "suggestion": "Reduce the ozone multiplier (1.5 -> ~1.1; it purples the whole dome, not just the zenith) and stop the hemisphere sky colour from inheriting that violet; make the hemisphere ground/bounce colour warm (2800-3500K) at low sun; clamp the sun irradiance x exposure product so a 0.5-albedo diffuse surface lands <= 0.85 display before bloom; verify the post grade is not lifting magenta at dusk. Target R>G>B on lit ground (e.g. 170,150,110)."
+    },
+    {
+      "severity": "major",
+      "description": "Night fog/haze is neutral grey and not tinted from the sky: at 21:03 the far hills (36,40,39) are brighter than the horizon sky above them (25,30,38); behind the plaza the ground dissolves into a flat (52,52,52) grey wash while the sky is blue-violet. Distant terrain floats lighter than the sky it should fade into.",
+      "evidence": "r1_environment_hero_21.png x660-850 y235-275 vs sky x120-300 y255-295; r1_environment_detail_21.png x600-900 y60-130.",
+      "suggestion": "Derive the fog / height-fog colour from the actual sky radiance at ~2 deg elevation (sample the analytic sky or the PMREM) times the current exposure, for night as well as day; never let the fog floor exceed horizon-sky luminance; apply the same tint to the uniform-haze floor in MaterialHook."
+    },
+    {
+      "severity": "minor",
+      "description": "Stars are visible while the sun is still above the horizon (+4 to +6 deg) - small orange specks in the upper-left sky at 18:33 and 18:51.",
+      "evidence": "r1g_environment_hero_18h5.png ~(140,90); r1d_environment_hero_18h8.png ~(150,97) and (180,105).",
+      "suggestion": "Fade stars in only below sun -4 deg (nautical twilight), scaled by night exposure; also mask by cloud transmittance."
+    },
+    {
+      "severity": "minor",
+      "description": "Sky artifact at 22:03: a straight diagonal dotted streak from ~(160,40) to (280,260) - reads as a stitched line/UV seam, not a Milky Way band or a meteor. No soft Milky Way band with dust lanes is visible anywhere in the night dome.",
+      "evidence": "r1n.png (environment_night preset, time 22).",
+      "suggestion": "Find the source (star-texture wrap seam, meteor trail, or Milky Way strip UV) and remove; render the Milky Way as a wide soft band (galactic-plane texture or two-octave noise along a great circle) with dust lanes, brightness keyed to nightFactor and exposure."
+    },
+    {
+      "severity": "minor",
+      "description": "Moonlight reads too strong on the ground: a broad white specular sheen on grass in the foreground, comparable in brightness to the street-lamp pools; moon irradiance after adaptation should barely register as a sheen.",
+      "evidence": "r1n.png x0-450 y480-650.",
+      "suggestion": "Lower the moon setSun intensity or its specular share (moon ~1/400k of sun; even with night adaptation the grass sheen should be < lamp pools); flag terrain roughness (grass should be ~0.9+) to the terrain owner."
+    },
+    {
+      "severity": "minor",
+      "description": "Drifting cloud shadows are still not observable in any clear-weather frame (13:00, 18:33); the builder's 47 % measurement was taken under 'cloudy'. Clear weather with visible cumulus (hero_13 has plenty) should cast at least a few soft moving shadows on the ground, as CS2 does.",
+      "evidence": "r1_environment_hero_13.png plaza and grass show no cloud shadow while the sky holds a dozen cumulus.",
+      "suggestion": "Bake the shadow map from the same coverage field the visible clouds threshold (so every visible cloud casts), with a soft 0.6-0.7 floor in clear weather; verify by rendering the shadow map as an overlay in the showcase."
+    },
+    {
+      "severity": "minor",
+      "description": "Dusk ground luminance snaps: 77.6 at 18:00 (sun 10.9 deg) -> 47.7 at 18:42 (sun 4.0 deg), then sits flat at ~52 through the whole night, so the ground at sun +4 deg is darker than at 22:00 (54.6). Partly towers/terrain occluding the sun and lamps switching on, but the roll-off is too steep.",
+      "evidence": "luminanceSweep.mjs output this session; r1d_environment_hero_18h8.png shows a dim grey plaza with the sun still up.",
+      "suggestion": "Ease the exposure/sun-intensity curve between +8 and 0 deg (spread the -1 EV over 8 deg instead of ~4), and let the hemisphere sky term stay stronger while the sun is still above the horizon."
+    }
+  ]
+}

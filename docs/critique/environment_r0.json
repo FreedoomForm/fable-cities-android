@@ -1,0 +1,65 @@
+{
+  "score": 6.5,
+  "pass": false,
+  "summary": "Contract complete, zero console errors, perf in budget (1218-1637 calls, 2.8-4.8M tris). Day, rain (wet puddles), fog and PMREM reflections are credible indie work. Fails the CS2 bar on three counts: clouds are flat, blocky, mottled sheets with no volumetric lighting; golden hour is dim, grey-skied and muddy rather than gorgeous; and there is a physically wrong luminance dip at civil twilight - 19:19 renders near-black (meanL 25) while midnight is 2.5x brighter (meanL 63). Night is dark slate rather than deep blue but is not black.",
+  "perf": { "fps": 115, "drawCalls": 1637, "triangles": 4787433, "consoleErrors": 0 },
+  "screenshots": [
+    "shots/critic/environment/r0_environment_hero_13.png",
+    "shots/critic/environment/r0gh_environment_hero_18h5.png",
+    "shots/critic/environment/r0_environment_hero_21.png",
+    "shots/critic/environment/r0_sheet.png",
+    "shots/critic/environment/r0_crop_clouds13.png",
+    "shots/critic/environment/sweep_environment_hero_19h3.png"
+  ],
+  "strengths": [
+    "Contract complete: setSun/setHemisphere/setFog/setFogHeight/setEnvironment/setExposure/setSunModulation/addMaterialHook all driven; world.env.rain, nightFactor, sunDirection, weather written; env.api exposes setWeather/getWeather/setWind/sunDirection/moonDirection/refresh.",
+    "Instant reaction to time jumps confirmed by a 15-frame time sweep (every frame consistent with its hour, no mid-transition frames).",
+    "PMREM from live sky works - chrome shader balls reflect sky and cloud layer (r0_sheet detail 13h).",
+    "Rain: puddle mask, wet darkening and rain streaks convincing (r0_sheet rain tile). Fog: towers fade plausibly.",
+    "Night is not black: lamp pools, visible stars, dim slate-blue ground (hero_21)."
+  ],
+  "issues": [
+    {
+      "severity": "major",
+      "description": "Civil-twilight brightness dip: scene luminance is non-monotonic after sunset. Sweep meanL: 18h 67 -> 19h 36 -> 19.3h 25 -> 20h 44 -> 21h 51 -> 0h 63; dawn mirrors it (4h 57 -> 5h 29 -> 5.5h 56). At 19:19 the ground is near-black (RGB ~16,15,15) while midnight is 2.5x brighter - physically backwards, and this is exactly when players watch the sunset.",
+      "evidence": "shots/critic/environment/sweep_environment_hero_19h3.png (whole frame); atmosphere.js exposureForSun keys [0,1.05],[-3,1.65],[-7,2.5] rise far slower than sky radiance falls.",
+      "suggestion": "Make ground luminance monotonic from sunset to astronomical night: add exposure keys around -1..-6 deg (e.g. [-1,1.4],[-3,2.1],[-5,2.7]) and/or a sky-tinted hemisphere/ambient floor during civil twilight; add a luminance sweep test asserting meanL never falls below the moonlit-midnight level before sun < -12 deg."
+    },
+    {
+      "severity": "major",
+      "description": "Clouds are not volumetric-looking: flat, horizontally smeared noise sheets with hard blocky edges, uniform grey mottling, no lit tops / shadowed undersides, no silver lining toward the sun. Reads as a stretched noise texture at 0.45 res with no edge-aware upsample.",
+      "evidence": "shots/critic/environment/r0_crop_clouds13.png (entire top half); r0_environment_hero_13.png y 60-200; r0gh_environment_hero_18h5.png top third. Clouds.js: resolutionScale 0.45, 26 steps, history 0.93.",
+      "suggestion": "Cumulus shaping (coverage x height-gradient x Worley erosion, sharper base / soft top), Beer-Lambert + powder + HG forward scatter toward the sun, ambient top/bottom gradient, 1-2 octaves of edge erosion for wispy silhouettes, depth/edge-aware bilateral upsample of the quarter-res buffer; target the lit cumulus in reference/cs2_09.jpg."
+    },
+    {
+      "severity": "major",
+      "description": "Golden hour is not gorgeous: upper sky is near-neutral grey (RGB 74,72,75), ground muddy brown (52,43,35), whole frame dim (meanL 59) with only a thin orange horizon band; shader balls and towers barely pick up warm key light. CS2 reference is warm, luminous, clouds glowing gold against a still-blue zenith.",
+      "evidence": "shots/critic/environment/r0gh_environment_hero_18h5.png vs reference/cs2_09.jpg.",
+      "suggestion": "+0.5 EV exposure for sun 0-6 deg, sun colour toward 2500-3000K near the horizon with higher intensity, stronger Mie forward glow, keep zenith blue in the hemisphere so warm/cool contrast reads, let cloud undersides catch the orange light."
+    },
+    {
+      "severity": "minor",
+      "description": "Showcase tower windows at night: every window lit with the same garish beige, a uniform tiled grid on all towers - looks like a repeating texture, not a city.",
+      "evidence": "shots/critic/environment/r0_environment_hero_21.png, towers centre-left and right.",
+      "suggestion": "Per-window random lit mask (~60-70%), warm/cool temperature variation, lower emissive, per-tower phase so grids do not align."
+    },
+    {
+      "severity": "minor",
+      "description": "Night sky 20h-4h is low-chroma slate (RGB ~45,50,61) rather than deep blue; clouds at night render as flat dark-grey smudges.",
+      "evidence": "shots/critic/environment/r0_environment_hero_21.png top third; sweep stats 21h-0h.",
+      "suggestion": "Push night sky toward deeper saturated blue (moon-lit Rayleigh tint), keep ground visible via moon light and exposure; tint night clouds by moon/sky rather than flat grey."
+    },
+    {
+      "severity": "minor",
+      "description": "Sparkle speckles on the reflecting pool at low sun.",
+      "evidence": "shots/critic/environment/r0gh_environment_hero_18h5.png, pool centre (approx x 560-680, y 350-400).",
+      "suggestion": "Clamp normal perturbation / add specular anti-aliasing (roughness widening) for grazing sun on the water surface."
+    },
+    {
+      "severity": "minor",
+      "description": "Drifting cloud shadows not observable on the ground in any clear-weather frame; cannot confirm setSunModulation produces a visible effect.",
+      "evidence": "shots/critic/environment/r0_environment_hero_13.png plaza and grass show no soft moving shade.",
+      "suggestion": "Verify cloudShadowFraction > 0.15 under 'cloudy' and that the modulation contrast is visible (>= 30% darkening) in a screenshot; expose a debug toggle."
+    }
+  ]
+}

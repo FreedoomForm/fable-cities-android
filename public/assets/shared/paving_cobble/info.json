@@ -1,0 +1,20 @@
+{
+  "id": "PavingStones128",
+  "res": "1K",
+  "fmt": "JPG",
+  "license": "CC0",
+  "source": "https://ambientcg.com/view?id=PavingStones128",
+  "files": [
+    "PavingStones128.png",
+    "PavingStones128_1K-JPG.blend",
+    "PavingStones128_1K-JPG.mtlx",
+    "PavingStones128_1K-JPG.tres",
+    "PavingStones128_1K-JPG.usdc",
+    "PavingStones128_1K-JPG_AmbientOcclusion.jpg",
+    "PavingStones128_1K-JPG_Color.jpg",
+    "PavingStones128_1K-JPG_Displacement.jpg",
+    "PavingStones128_1K-JPG_NormalDX.jpg",
+    "PavingStones128_1K-JPG_NormalGL.jpg",
+    "PavingStones128_1K-JPG_Roughness.jpg"
+  ]
+}

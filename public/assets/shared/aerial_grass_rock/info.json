@@ -1,0 +1,12 @@
+{
+  "id": "aerial_grass_rock",
+  "name": "Aerial Grass Rock",
+  "type": "textures",
+  "authors": {
+    "Rob Tuytel": "All"
+  },
+  "license": "CC0",
+  "source": "https://polyhaven.com/a/aerial_grass_rock",
+  "res": "1k",
+  "fmt": "jpg"
+}

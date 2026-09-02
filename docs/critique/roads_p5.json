@@ -1,0 +1,59 @@
+{
+  "module": "roads",
+  "pass_id": "p5",
+  "date": "2026-09-02",
+  "score": 7.5,
+  "pass": false,
+  "matstats": {
+    "roads": {
+      "materials": 21,
+      "roughness_p10": 0.38, "roughness_median": 0.70, "roughness_p90": 0.85,
+      "buckets": { "lt0.2": 2, "0.2-0.4": 1, "0.4-0.7": 5, "gte0.7": 13 },
+      "clearcoat_gt0": 12, "metalness_gt0.5": 3,
+      "verdict": "builder's AFTER numbers reproduce exactly"
+    },
+    "scene": {
+      "materials": 237,
+      "roughness_p10": 0.30, "roughness_median": 0.72, "roughness_p90": 1.00,
+      "buckets": { "lt0.2": 18, "0.2-0.4": 20, "0.4-0.7": 55, "gte0.7": 144 },
+      "clearcoat_gt0": 40,
+      "environmentIntensity": 0.5187, "exposure": 1.604,
+      "target_distribution": { "lt0.2": "35-60 MISS", "0.2-0.4": "40-70 MISS", "0.4-0.7": "60-90 MISS", "gte0.7": "60-100 MISS(144)", "clearcoat": ">=15 HIT(40)" }
+    }
+  },
+  "targets_met": {
+    "dry_asphalt_0.65": "HIT (local 0.65, avenue 0.65, highway 0.66)",
+    "markings_0.55": "HIT (RoadMaterials.js:639 mix to 0.55 on roadPaint)",
+    "kerb_sidewalk_0.80": "HIT (curb/sidewalk/apron/verge 0.80)",
+    "cobble_setts_0.70": "HIT (path 0.70, granite 0.70)",
+    "grass_0.85_soil_0.95_leaves_0.70": "HIT",
+    "poles_0.40_metal_0.85": "HIT",
+    "lamp_lens_0.10_clearcoat": "HIT (0.10 + clearcoat 1.0)",
+    "wet_asphalt_0.20": "HIT in shader (uWetTune.y, RoadMaterials.js:105) and measurable on screen",
+    "puddle_0.06": "NOT IMPLEMENTED - no puddle mask anywhere in src/modules/roads/"
+  },
+  "measured_specular": {
+    "night_road_base_dry_to_rain": { "mean": "0.0894 -> 0.0328", "max": "0.4203 -> 0.7632", "peak_over_mean": "4.70 -> 23.28" },
+    "night_lamp_pool_dry_to_rain": { "p99": "0.2820 -> 0.6445", "peak_over_mean": "9.55 -> 13.27" },
+    "wet_road_vs_cs2_08": { "ours_mean": 0.0525, "ours_p99": 0.3158, "cs2_mean": 0.1038, "cs2_p99": 0.5526 },
+    "junction_fan_clean_frame": { "core_std": 0.0161, "NE_arm_std": 0.0407, "W_arm_std": 0.0230 }
+  },
+  "perf": { "drawCalls": "885-973", "triangles": "4.03M-5.45M", "budget": "<=2500 calls, <=8M tris", "in_budget": true, "console_errors": 0 },
+  "specularVerdict": "Split. In RAIN, yes - visibly and measurably: the night road base darkens 0.0894 -> 0.0328 while its max rises 0.4203 -> 0.7632, peak/mean 4.70 -> 23.28, and the lower-left lamp throws a real elongated specular smear with aggregate glitter. The judge's named defect ('raining hard and the asphalt is matte with zero specular reflection') is genuinely fixed. In DRY, no. At 17:30 with a low sun, roughness 0.65 asphalt shows no highlight anywhere in the hero or detail frame - road p99 sits at 0.08-0.17 and every bright pixel is a painted marking. The numbers hit the target and the surface still reads matte, because scene.environmentIntensity is still 0.5187: a 0.65-rough surface is environment-dominated and there is only half a sky to reflect. MATERIAL_TARGET's one scene-level instruction did not move.",
+  "issues": [
+    { "severity": "blocker", "what": "zoning-overlay-lines (renderOrder 41) draws bright white dashed and solid lines across the junction, kerb and grass in every roads frame including night", "fix": "gate zoning-overlay-fill/lines visible=false when showcase=roads" },
+    { "severity": "blocker", "what": "no visible specular on dry asphalt; scene.environmentIntensity still 0.5187", "fix": "raise environmentIntensity toward 1.0 and rebalance exposure/hemisphere, holding lum_p10 ~= 0.010" },
+    { "severity": "major", "what": "puddle target 0.06 not implemented; wet asphalt goes uniformly to 0.16 so rain gives isolated sparkle, not CS2's long mirror smears", "fix": "add a low-frequency puddle mask in RoadMaterials.js driving roughness to 0.06 and flattening the normal in camber lows and wheel-path hollows" },
+    { "severity": "major", "what": "wet road is half CS2's brightness (mean 0.0525 vs 0.1038, p99 0.3158 vs 0.5526) - dark and glittery instead of wet and luminous", "fix": "keep the albedo drop but let the broad env sheen lift the surface; depends on the environmentIntensity fix" },
+    { "severity": "minor", "what": "junction fan still flatter than the arms it joins: clean-frame luminance std 0.0161 core vs 0.0407 NE arm / 0.0230 W arm, with a visible cooler tonal step at the boundary", "fix": "carry the arms' aggregate octave into junction space at full amplitude and match hue, not just mean" },
+    { "severity": "minor", "what": "clearcoat 0.06-0.07 on curb/apron/verge/sidewalk - concrete has no clearcoat lobe; roads supplies 12 of the scene's 40 clearcoat materials with no visible effect", "fix": "drop the dry clearcoat base on concrete surfaces to 0 and let uWetness raise it only in rain" },
+    { "severity": "minor", "what": "the transition-pad embankment walls and guardrail terminals flagged by the previous critic are not framed by any of roads_hero/roads_detail/roads_night, so the fix is unverifiable", "fix": "add a roads_pad preset that centres the transition pad" }
+  ],
+  "screenshots": [
+    "shots/critic/roads/p5_roads_hero_17h5.png",
+    "shots/critic/roads/p5_roads_detail_17h5.png",
+    "shots/critic/roads/p5_roads_night_21.png",
+    "shots/critic/roads/p5rain_roads_night_21.png",
+    "shots/critic/roads/p5_clean.png"
+  ]
+}

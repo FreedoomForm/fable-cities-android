@@ -1,0 +1,115 @@
+{
+  "module": "whole_game",
+  "round": "p5",
+  "role": "lead art director — press kit + final verdict vs Cities: Skylines II",
+  "score": 6.5,
+  "pass": false,
+  "calibration_note": "p3 self-scored 7.4 and lost 0/4 blind at 3.6-5.5 vs 8.0-8.5. p4 self-scored 5.5 and again lost 0/4 at ~4.8 vs 8.0. p5 is the first pass where the measured cause moved: the specular gap named in MATERIAL_TARGET.md is now largely closed on every material the pass actually reached. 6.5 is anchored to the blind scale, not to our own progress — the wet-night frames are genuinely competitive (I would expect 7-7.5 blind); the daytime frames are not (5.5-6), because the second systemic defect the judges named, flat lighting with no long cast shadows, is still unfixed.",
+  "summary": "The specular pass landed. scene.environmentIntensity is 1.0 (was 0.52), roughness p10 is 0.15 (was 0.38), median 0.72 (was 0.90), and 41 materials now carry a clearcoat lobe (was 1, target >=15). Vehicle paint is 0.30/clearcoat 1.0, vehicle glass 0.06, curtain wall 0.05, chrome 0.15/metal 1.0, water 0.04 — every named row in MATERIAL_TARGET.md is on value. It shows: in shots/press/p5/wet2_lowC_20.png the wet carriageway mirrors the pharmacy storefront and lays headlight beams down the lane as real specular streaks, taillight red smears into the wet surface, and the crosswalk paint reads glossier than the asphalt around it. In gold_lowA_17h5.png the foreground cars carry a visible clearcoat highlight across roof and hood and the curtain wall on the left reflects the sky with a top-to-bottom gradient and mullion depth. Composition was already winning; specular now does real work in three of four press frames. What did not land is the distribution: 142 materials are still >=0.7 (target 60-100), and 86 of those 142 are imported GLB materials the pass never registered — 34 with no roughness map at all and 11 sitting at roughness 1.00 AND metalness 1.00, which is a physically black surface with neither diffuse nor usable specular. That is exactly why every traffic-signal head and street-lamp housing in the night frames is an unlit black box. The named procedural families (roads/, buildings/, props/, traffic/) are correct and should not be touched: roads/curb 0.80, buildings/brick 0.88, buildings/tiles 0.78, foliage 0.70 are all on target and legitimately matte.",
+  "matstats": {
+    "command": "node tools/matstats.mjs --url \"http://127.0.0.1:5180/?seed=7&time=17.5&headless=1\"",
+    "materials": 237,
+    "roughness_p10": 0.15,
+    "roughness_median": 0.72,
+    "roughness_p90": 1.0,
+    "buckets": { "lt_0.2_mirror_glass": 24, "0.2_0.4_paint_wet": 20, "0.4_0.7_semigloss": 51, "gte_0.7_matte": 142 },
+    "targets": { "lt_0.2": "35-60", "0.2_0.4": "40-70", "0.4_0.7": "60-90", "gte_0.7": "60-100", "clearcoat": ">=15" },
+    "clearcoat_gt_0": 41,
+    "metalness_gt_0.5": 32,
+    "with_roughnessMap": 94,
+    "with_normalMap": 115,
+    "scene": { "environmentSet": true, "environmentIntensity": 1.0, "exposure": 1.579, "hemisphereIntensity": 0.556, "sunIntensity": 3.0 },
+    "matte_breakdown": {
+      "imported_or_unnamed": 86,
+      "buildings/": 23,
+      "props/": 19,
+      "roads/": 13,
+      "traffic/": 1,
+      "imported_matte_without_roughnessMap": 34,
+      "roughness_1.00_and_metalness_1.00": 11
+    },
+    "verdict": "clearcoat target MET (41 vs >=15). environmentIntensity target MET (1.0 vs 0.52). p10 target MET (0.15 vs 0.38). Bucket distribution NOT met: mirror 24/35-60, paint-wet 20/40-70, semigloss 51/60-90, matte 142/60-100. The whole shortfall is the 86 unregistered imported materials."
+  },
+  "tooling_bug": "tools/matstats.mjs default URL (http://127.0.0.1:5180/?seed=7&time=17.5) has no &headless=1, so since the menu module landed it blocks forever on the start screen and reports 'Waiting failed: 150000ms exceeded'. Every matstats run in this report had to pass --url with &headless=1 explicitly. Fix the default.",
+  "issues": [
+    {
+      "module": "props",
+      "severity": "blocker",
+      "description": "86 of the 142 materials still at roughness >=0.7 are imported GLB / unnamed MeshStandardMaterials that the specular pass never registered. 34 of them have no roughness map at all, and 11 sit at roughness 1.00 AND metalness 1.00 simultaneously — metal_trash_can, metal_trash_can_rust x2, fire_hydrant, fire_hydrant_aged, planter_box_01, street_lamp_02, street_lamp_02_glass, street_lamp_02_bulb, covered_car x2. A fully-rough fully-metal surface has no diffuse term and a uniform-blur specular term, i.e. it renders black. This is directly visible: the traffic-signal heads in shots/press/p5/wet2_lowC_20.png and wet_lowB_20.png are unlit black rectangles hanging in the foreground of the two strongest press frames, and street_lamp_02_glass/_bulb never catch a highlight. The reference frame that beat us 8.4 to 3.6 was praised specifically for its 'layered emissive sources (traffic signal, neon storefronts, street lamps)'.",
+      "suggestion": "Run every imported GLB material through the same registration path the procedural families use: clamp metalness to 0 unless the asset is genuinely metal, set roughness from the MATERIAL_TARGET table by name (street_lamp_02_glass and _bulb -> 0.10 / metalness 0 / emissive; metal_trash_can and fire_hydrant -> 0.45 / metalness 0.95; planter_box_01 -> 0.80 / metalness 0; covered_car -> 0.30 / metalness 0 / clearcoat 1.0), and assign envMapIntensity 1.0. Retargeting these 86 alone moves the matte bucket from 142 toward the 60-100 target without touching a single correct material."
+    },
+    {
+      "module": "environment",
+      "severity": "blocker",
+      "description": "Golden hour is not golden. At --time 17.5 the sun still reads high: in a_suburb_evening_17h5.png and gold_lowA_17h5.png cast shadows are short, soft and low-contrast, and in a_downtown_golden_17h5.png the downtown is effectively shadowless — the carpet-of-boxes read the judges killed in pair 1. The CS2 reference reference/cs2_04.jpg is the same kind of oblique neighbourhood frame and every house, hedge, conifer and street lamp throws a long raking shadow across the road, which is what makes its massing read three-dimensional. Flat lighting was systemic defect #2 in JUDGE_FEEDBACK.md and it is the one defect this pass did not move. It costs us every daytime pair.",
+      "suggestion": "Either drop the sun elevation at the hours the presets use so 17.0-17.5 gives a 15-25 degree sun, or re-point the golden-hour presets to the hour that actually produces it, and verify by measuring shadow length against object height in the frame (CS2 at cs2_04 runs roughly 2-3x object height). Also widen the warm-key / cool-sky-fill split so shadowed facades go blue and lit facades go amber, and confirm the cascade near-split is tight enough that the contact end of a long shadow is still sharp."
+    },
+    {
+      "module": "roads",
+      "severity": "major",
+      "description": "The junction apron / crossing plane renders as a flat pale-tan matte surface with no specular, wet or dry. roads/apron is roughness 0.80 with a pale albedo and it does not respond to uWetness. In shots/press/p5/wet2_lowD_20.png it occupies the entire lower third of a hard-rain frame as a beige plane while the storefront glass two metres away mirrors perfectly into the wet pavement beside it — the split is glaring. Same defect in night_lowA_21h5.png, where the whole intersection is a pale warm beige plate at 21:30. This is verbatim the sentence a judge wrote about our p3 frame: 'it is raining hard and the asphalt is a matte pale-tan surface with zero specular reflection.'",
+      "suggestion": "Bring roads/apron, roads/verge and roads/skirt onto the same wetness path as roads/asphalt_local and roads/asphalt_avenue (which do work — they already carry clearcoat 0.14 and darken correctly). Wet target is roughness 0.20 with albedo x 0.55, puddles 0.06. Also drop the dry apron albedo: at night inside a lamp pool it should sit near tarmac, not near concrete."
+    },
+    {
+      "module": "props",
+      "severity": "major",
+      "description": "Foreground tree canopies are bright lime-green faceted low-poly blobs in a single flat tone with visible polygon facets and no shading variation. In gold_closeup_17h5.png two of them sit dead centre and block the vanishing point of an otherwise strong avenue frame; in a_street_level_17h5.png two more dominate the lower right. They are a completely different hue and detail class from the midground trees, which read fine. Both frames are unusable as press because of this alone. tree-leaves measures roughness 0.70 with clearcoat 0.30, which is correct — the problem is geometry, LOD selection at close range, and albedo hue.",
+      "suggestion": "Force the high-detail canopy LOD inside about 40 m, desaturate the leaf albedo toward the midground hue, and add per-instance hue and scale jitter. The reference frames carry three to five distinguishable species per frame with varied silhouette and autumn hue range; one lime tone at one silhouette is the tell."
+    },
+    {
+      "module": "props",
+      "severity": "major",
+      "description": "props/fence_metal (roughness 0.40, metalness 0.85) renders as a hard 1-pixel white hairline that runs diagonally across the frame with no LOD fade and no aliasing control. It appears in 4 of the 14 frames shot this pass — gold_lowA_17h5.png, night_lowA_21h5.png, wet_lowA_20.png, wet2_lowD_20.png — as a solid white diagonal, and as a dotted white line along the kerb at greater distance. A polished metal rail seen edge-on at sub-pixel width blows out to full white and reads as a rendering artifact, not as a railing. It is the single most obvious 'this is not a shipped game' tell left in the street-level frames.",
+      "suggestion": "Give the railing real cross-section width or an alpha-to-coverage / LOD collapse past the distance where it drops below about 1.5 px, and cut envMapIntensity on it. Verify at 1280x720 in the low-camera views, which is where it shows."
+    },
+    {
+      "module": "buildings",
+      "severity": "minor",
+      "description": "buildings/glass measures 0.05, correct, and the curtain walls do reflect — gold_civic_17h5.png shows a genuine horizon line and a top-to-bottom gradient across a whole tower face. But the opaque tower shells around them are still large matte dark slabs (buildings/concrete 0.80, buildings/plaster 0.88), and at night the lit-window emission does not spill onto adjacent facades or onto the street below, so the emission reads as a decal rather than as a light. In night_downtown_night_21h5.png the fully-lit tower at frame right throws no bounce at all onto its neighbours or the plaza in front of it. Judge 2 named this specifically.",
+      "suggestion": "Add a cheap emissive bounce — a per-building point or area light scaled by lit-window count, or a screen-space bloom spill term — and vary window colour temperature per unit. Also add cornice/setback shadow catchers so the slabs get some self-shadowing relief."
+    },
+    {
+      "module": "zoning",
+      "severity": "minor",
+      "description": "Large uniform saturated-green fields sit directly against dense blocks. The right half of a_suburb_evening_17h5.png is a flat lawn plane running to the shoreline with no path, dirt, fence, hedge or scatter, and the plaza in the lower right of night_downtown_night_21h5.png is a bare pale paved slab. This is systemic defect #5 from JUDGE_FEEDBACK, 'buildings on a golf course', and it is what forced me to cull the two widest golden-hour frames.",
+      "suggestion": "Break the undeveloped parcels with scatter (tufts, shrubs, rocks, fences, driveways) and desaturate the base lawn, and dress the downtown plaza with kerbs, planters, seating, signage and parked cars so it stops being a dead specular-free plane in the corner of the night frame."
+    }
+  ],
+  "strengths": [
+    "Wet-night street level is now genuinely competitive. wet2_lowC_20.png has mirrored storefronts and pickup reflected in the carriageway, headlight beams laid down the lane as specular streaks, taillight red smearing into the wet surface, a green signal reflection, rain streaks, and real foreground-to-vanishing-point depth.",
+    "Vehicle paint reads as car paint for the first time: props/car_paint 0.30 / clearcoat 1.0 / ccRoughness, props/car_glass 0.06, props/car_trim 0.15 metal 1.0. The clearcoat highlight is visible across roof and hood in gold_lowA_17h5.png.",
+    "Curtain wall glass at 0.05 with envMapIntensity 1.8 on props/shelter_glass and a working PMREM probe. gold_civic_17h5.png shows a full-tower reflection with a real horizon and vertical gradient.",
+    "Traffic density and headlight/taillight population at night is strong — 12-20 readable vehicles per street frame with beam pools on the road.",
+    "Composition and mood continue to win, which the p4 judges already conceded. Dusk skies carry colour and cloud structure and the corridor framings have real depth layering.",
+    "Zero console errors across all 14 frames shot this pass."
+  ],
+  "press_frames": [
+    "shots/press/p5/wet2_lowC_20.png",
+    "shots/press/p5/wet_lowB_20.png",
+    "shots/press/p5/gold_lowA_17h5.png",
+    "shots/press/p5/night_downtown_night_21h5.png"
+  ],
+  "culled": [
+    { "file": "a_downtown_golden_17h5.png", "reason": "shadowless downtown aerial — the exact carpet-of-boxes frame that lost pair 1" },
+    { "file": "a_street_level_17h5.png", "reason": "two lime low-poly canopy blobs in the foreground" },
+    { "file": "a_suburb_evening_17h5.png", "reason": "close to reference/cs2_04 in composition but shadows are short and the right half is a bare lawn plane" },
+    { "file": "gold_closeup_17h5.png", "reason": "lime canopy blobs block the vanishing point; HVAC boxes attached to a vertical facade" },
+    { "file": "gold_waterfront_dusk_17h5.png", "reason": "flat light, white box towers, untextured container ship, dead brown field" },
+    { "file": "gold_civic_17h5.png", "reason": "camera clipped into a tower — good specular evidence, broken composition" },
+    { "file": "wet_junction_20.png", "reason": "black tower slab dead centre" },
+    { "file": "wet_street_level_20.png", "reason": "road does not read wet at this distance" },
+    { "file": "wet_lowA_20.png", "reason": "near-clip blob at the bottom edge plus the fence hairline" },
+    { "file": "wet2_lowD_20.png", "reason": "pale-tan apron fills the lower third of a rain frame; fence hairline across the whole image" },
+    { "file": "wet2_downtown_night_20.png", "reason": "wet plaza reads better than the dry version but the frame is too dark and low-contrast overall" },
+    { "file": "night_lowB_21h5.png", "reason": "dry road is matte grey and the signal heads are black boxes" },
+    { "file": "night_lowA_21h5.png", "reason": "whole intersection renders as a pale warm beige plate at 21:30" }
+  ],
+  "perf": {
+    "note": "Six agents share this machine so fps in the logs is meaningless. Judged on drawCalls and triangles only.",
+    "drawCalls_range": [1926, 2518],
+    "triangles_range": [9539672, 12534834],
+    "assessment": "Draw calls are healthy for a scene of this density. Triangle count is high — 9.5M-12.5M at 1280x720 street level — and the 12.5M peak on gold_civic (a single tower filling the frame) suggests foliage and facade LOD are not collapsing aggressively enough at close range, which is the same root cause as the lime canopy blobs.",
+    "errors": 0
+  },
+  "notes": "14 frames shot at 1280x720, quality ultra, seed 7, HUD hidden via .fc-hud is-hidden, into shots/press/p5/. Two street-level framings were produced with low --view cameras derived from the street_level preset (distance 34-58 m, pitch 0.055-0.10 rad). Every frame was read. Next pass should do exactly two things and nothing else: register the 86 imported GLB materials, and drop the sun. Those two close the remaining gap; the named material families are done and must not be regressed."
+}

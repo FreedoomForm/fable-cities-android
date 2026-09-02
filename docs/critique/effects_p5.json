@@ -1,0 +1,67 @@
+{
+  "module": "effects",
+  "pass_id": "p5",
+  "score": 5.5,
+  "pass": false,
+  "summary": "matstats --filter effects: 1 material, effects/puddle roughness 0.06 / metalness 0.00 / envMapIntensity 1.90 — exactly on MATERIAL_TARGET. Whole scene: 237 materials, roughness p10 0.30 median 0.72 p90 1.00; buckets <0.2:18 (target 35-60), 0.2-0.4:20 (40-70), 0.4-0.7:55 (60-90), >=0.7:144 (60-100); clearcoat>0: 40 (target >=15, MET); scene.environmentIntensity 0.5187, unchanged and still half the sky the brief asked for. Zero console errors, all 12 modules ok. 1354-1386 draw calls, 5.1-5.5M tris in rain vs 1346-1377 dry — the puddle field and spray cost ~9 calls, in budget. Grade clipping is genuinely fixed: pure RGB(0,0,0) measures 0.00% on all three rain frames, down from 36%. Day rain now has real specular. Night rain, the frame that matches reference/cs2_08, does not.",
+  "specularVerdict": "Split. DAY RAIN (effects_detail 17h5): YES, I can see it — the carriageway reads dark blue-grey with a broad sky-gradient sheen, and the bus headlights and the orange car both throw vertical reflection smears onto the road. That is genuine specular and it is new. NIGHT RAIN (effects_night/hero 21h): NO. Twelve lit street lamps, ~40 lit windows and several headlights sit above a wet roadway and not one of them puts a reflected column on it. cs2_08 smears the police car's tail lights ~15 m down the carriageway and gives every lamp a vertical specular tail; our road under the same conditions is flat dark grey. PUDDLES: the geometry is there — dark ellipses in the gutter and by the crosswalk — but nothing is mirrored in any of them, in day or night, at any zoom. effects/puddle hits roughness 0.06 / env 1.90 on the meter and produces no visible highlight, which by the brief's own rule is still a failure. SPRAY: not visible behind any moving vehicle in four rain frames.",
+  "measurements": {
+    "matstats_effects": "1 material · effects/puddle rough 0.06 metal 0.00 env 1.90 coat 0.00 · buckets <0.2:1, 0.2-0.4:0, 0.4-0.7:0, >=0.7:0 · roughnessMap 0, normalMap 0",
+    "matstats_scene": "237 materials · p10 0.30 median 0.72 p90 1.00 · <0.2:18 · 0.2-0.4:20 · 0.4-0.7:55 · >=0.7:144 · clearcoat>0:40 · metalness>0.5:33 · roughnessMap 94 · normalMap 115",
+    "scene_uniforms": "environmentIntensity 0.5187 · exposure 1.607 · hemisphereIntensity 0.553 · sunIntensity 2.984",
+    "perf_rain": "hero17h5 1386 calls / 5.36M tris · hero21 1378 / 5.17M · detail17h5 1362 / 5.41M · detail21 1354 / 5.22M · night17h5 1369 / 5.51M · night21 1358 / 5.24M · 0 errors",
+    "perf_dry": "1346-1377 calls / 5.08-5.43M tris · 0 errors",
+    "tone_ours_night_rain": "pureBlack 0.00% · lum p01 0.0894 p10 0.1317 p50 0.2222 p90 0.4302 p99 0.8475",
+    "tone_cs2_08_reference": "lum p01 0.0126 p10 0.0493 p50 0.1690 p90 0.5345 p99 0.8986",
+    "contrast_span_p10_to_p90": "ours 0.298 vs reference 0.486 — 61% of the reference range"
+  },
+  "issues": [
+    {
+      "severity": "blocker",
+      "description": "The wet night road reflects no light source at all. In p5rain_effects_night_21.png the roadway sits under 12 lit lamps, ~40 lit windows and several headlights and carries zero reflected columns; reference/cs2_08.jpg, the exact matching frame, smears the police tail lights ~15 m down the carriageway and gives every lamp a vertical specular tail. GroundFXPass does screen-space reflection (src/modules/effects/GroundFXPass.js:178-214) but at night the lamps and windows are emissive geometry that is mostly above the top of the frame, so every ray misses and falls back to the constant at line 214, vec3 miss = mix(uHaze, uSkyColor, ...) * 0.75 — a uniform wash instead of an image. This is the single largest gap to CS2 and it is on the frame the blind judges compare.",
+      "suggestion": "Do not rely on SSR for the light sources — the emitters are off-screen. Add an analytic wet-specular term: register each street lamp and vehicle lamp as a real THREE point/spot light (or feed a small light list into GroundFXPass as uniforms) and evaluate a GGX lobe against the wet normal at roughness 0.20, stretched along the view-vertical by the ripple tilt already computed at GroundFXPass.js:201-209. Also clamp the SSR miss fallback to near-zero when night > 0.5 so a missed ray goes dark rather than pale blue."
+    },
+    {
+      "severity": "blocker",
+      "description": "The black floor regressed ~6x while fixing the clipping. Measured on p5rain_effects_night_21.png (rows 60-640): lum p01 0.0894, p10 0.1317. The brief stated the floor was 0.015 against a 0.010 target and was correct, and said do not darken further; the soft-knee replacement over-corrected the other way and there are now no true blacks anywhere. reference/cs2_08.jpg measures p01 0.0126, p10 0.0493. Contrast span p10-to-p90 is 0.298 against the reference's 0.486, so the frame carries 61% of the reference's range and reads milky. A dark mirror needs a dark substrate; this is also why the new day-rain specular does not pop. Cause is additive, not the knee: src/modules/effects/index.js:291 sets uAerial.z to 0.42, which drives c += uHaze * 0.42 * f at GroundFXPass.js:270 — 70x the 0.006 default in the shader — and it is a pure addition with no distance floor.",
+      "suggestion": "Drop uAerial.z from 0.42 toward 0.05-0.08 and gate it by night (aerial glow belongs to daylight scattering, not a 21:00 street). Keep the soft knee in ColorGradingPass but re-seat the toe so lum p01 lands 0.012-0.020 and p10 0.05-0.07, then re-measure against cs2_08 rather than against the 36%-clipping frame."
+    },
+    {
+      "severity": "major",
+      "description": "Puddles hit the target number and show no reflection. effects/puddle measures roughness 0.06, metalness 0.00, envMapIntensity 1.90 — exactly MATERIAL_TARGET — and the pools are visible as dark ellipses in the gutter and beside the crosswalk in both p5rain_effects_detail_17h5.png and p5rain_effects_night_21.png. At 2x zoom none of them contains an inverted image of a lamp post, tree, vehicle or building. They read as stains, not standing water. The material has no normalMap and no roughnessMap (matstats: rMap 0, nMap 0), so it is a perfectly flat 0.06 plane whose only reflection source is the PMREM probe at environmentIntensity 0.5187 — a dimmed sky and nothing else.",
+      "suggestion": "The pool plane cannot mirror the scene from the env probe alone. Either raise the pool's reflected content by feeding GroundFXPass's SSR result into the pool region at full strength (the drainage map R channel already marks it, GroundFXPass.js uPoolMap), or give the pools a cheap per-pool planar reflection of the nearest lamp and building silhouette. Verify by finding a recognisable inverted lamp post in a puddle at 2x zoom, not by re-reading the roughness value."
+    },
+    {
+      "severity": "major",
+      "description": "Vehicle spray is not visible. src/modules/effects/VehicleSpray.js:158 lowers the threshold to 1.8 m/s as reported, but across four heavy-rain frames containing moving buses and cars (p5rain_effects_detail_17h5.png has a bus and five cars in motion) there is no plume, mist or wheel-arch spray behind any vehicle at any zoom. Whatever the 44 live emitters are emitting is either too small, too transparent, or occluded by the road surface.",
+      "suggestion": "Shoot a dedicated close preset behind one moving vehicle and confirm the sprite actually rasterises before tuning: check the particle world size, the depth-test/offset against the road (a sheet emitted at wheel height will z-fight into the asphalt), and the alpha against the new lifted background — a 0.1-alpha grey sprite is invisible over a 0.13-luminance road."
+    },
+    {
+      "severity": "major",
+      "description": "Contact shadows and AO cannot darken. GroundFXPass.js:176 resolves occlusion as c = c*(1-occ) + uSkyColor*(luma(c)+0.0015)*occ*uOcclusion.y with uOcclusion set to (0.95, 0.30+0.10*night) at index.js:296, so a fully occluded pixel retains roughly 30-40% of its own luminance tinted sky-blue. Combined with the additive haze this leaves object bases only slightly cooler than the road around them. In the frames, the parked cars on the right of p5rain_effects_night_21.png and the bus in the detail frame have no visible darkening where tyre meets asphalt, which is the exact note every blind judge wrote.",
+      "suggestion": "Split the term: keep a cool bounce for broad AO but let the narrow contact band (the uContact radius) multiply toward 0.10-0.15 of local luminance with little or no sky add, so the first 0.3 m under a wheel actually goes dark. Re-check by cropping a tyre contact patch and confirming it measures below the surrounding asphalt luminance."
+    },
+    {
+      "severity": "minor",
+      "description": "Horizontal banding on the wet carriageway. In p5rain_effects_detail_17h5.png the foreground asphalt carries alternating light and dark bands running across the road, roughly 20-40 px apart at that depth, most visible in the lower third. It reads as a tiling or noise-frequency artifact in the wet normal or drainage map rather than as water.",
+      "suggestion": "The world-space noise at GroundFXPass.js:201 uses a single frequency (W.xz * 1.45); at grazing angles this aliases into bands. Add a second octave at ~0.3x frequency and scale the whole tilt by a depth-derived mip factor so the far field converges rather than strobing."
+    },
+    {
+      "severity": "minor",
+      "description": "The default showcase URL shows no wetness at all. node tools/shot.mjs against ?showcase=effects&seed=7 without &weather=rain renders a dry sunny street (p5_effects_hero_17h5.png, p5_effects_night_21.png), so the module's entire headline deliverable is invisible on the URL the review procedure specifies. Six renders were spent before the feature could be seen.",
+      "suggestion": "Make the effects showcase default to weather=rain, or add explicit effects_wet_* presets that set wetness themselves, so any reviewer shooting the documented URL lands on the surface the module is judged on."
+    },
+    {
+      "severity": "minor",
+      "description": "scene.environmentIntensity is still 0.5187, unchanged by this pass. MATERIAL_TARGET calls it out directly: glass and paint cannot reflect a sky dimmed by half, and a puddle at roughness 0.06 whose only reflection source is that probe inherits the same halving. effects/puddle compensates locally with envMapIntensity 1.90 but every wet asphalt surface around it does not.",
+      "suggestion": "This is shared with the environment module, but effects should raise the request explicitly rather than paper over it per-material: envMapIntensity 1.9 on one material is a workaround, and the whole-scene buckets (<0.2: 18 of a 35-60 target, >=0.7: 144 of a 60-100 target) show the distribution has not moved into range."
+    }
+  ],
+  "screenshots": [
+    "shots/critic/effects/p5_effects_hero_17h5.png",
+    "shots/critic/effects/p5_effects_night_21.png",
+    "shots/critic/effects/p5rain_effects_detail_17h5.png",
+    "shots/critic/effects/p5rain_effects_night_21.png",
+    "reference/cs2_08.jpg"
+  ]
+}

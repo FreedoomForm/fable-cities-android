@@ -1,0 +1,20 @@
+{
+  "id": "Grass004",
+  "res": "1K",
+  "fmt": "JPG",
+  "license": "CC0",
+  "source": "https://ambientcg.com/view?id=Grass004",
+  "files": [
+    "Grass004.png",
+    "Grass004_1K-JPG.blend",
+    "Grass004_1K-JPG.mtlx",
+    "Grass004_1K-JPG.tres",
+    "Grass004_1K-JPG.usdc",
+    "Grass004_1K-JPG_AmbientOcclusion.jpg",
+    "Grass004_1K-JPG_Color.jpg",
+    "Grass004_1K-JPG_Displacement.jpg",
+    "Grass004_1K-JPG_NormalDX.jpg",
+    "Grass004_1K-JPG_NormalGL.jpg",
+    "Grass004_1K-JPG_Roughness.jpg"
+  ]
+}

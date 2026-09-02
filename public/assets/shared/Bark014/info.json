@@ -1,0 +1,20 @@
+{
+  "id": "Bark014",
+  "res": "1K",
+  "fmt": "JPG",
+  "license": "CC0",
+  "source": "https://ambientcg.com/view?id=Bark014",
+  "files": [
+    "Bark014.png",
+    "Bark014_1K-JPG.blend",
+    "Bark014_1K-JPG.mtlx",
+    "Bark014_1K-JPG.tres",
+    "Bark014_1K-JPG.usdc",
+    "Bark014_1K-JPG_AmbientOcclusion.jpg",
+    "Bark014_1K-JPG_Color.jpg",
+    "Bark014_1K-JPG_Displacement.jpg",
+    "Bark014_1K-JPG_NormalDX.jpg",
+    "Bark014_1K-JPG_NormalGL.jpg",
+    "Bark014_1K-JPG_Roughness.jpg"
+  ]
+}

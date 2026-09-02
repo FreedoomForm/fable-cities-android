@@ -1,0 +1,80 @@
+{
+  "score": 7.5,
+  "pass": false,
+  "summary": "Real progress: trees are no longer lollipops (branch skeletons, drooping conifer boughs, stands/copses), contract is complete, 0 errors, perf easily inside budget (873 calls / 6.2 M tris peak), night specular smears gone, zones:changed now gates on buildingId. But the money shot still reads indie, and measurement against CS2 (reference/cs2_02.jpg) shows why: colour is 2-4x oversaturated (meadow sat 0.49-0.59, water 0.77-0.87 vs CS2 0.11-0.31) and the water is brighter than the land at noon (river lum 69.8 vs meadow 62.5; close-up lum 82.6 rgb 19/96/137 vs CS2 open water lum 30.3 rgb 14/34/42). 9.8% of a hero forest clump is pure black. Ground blotches, lone meadow trees, charcoal rock and the beige coast band from round 2 are still there.",
+  "strengths": [
+    "Full world.terrain contract verified in src/modules/terrain/index.js:178-250 (getHeight/getNormal/isWater/raycast, flattenRect, conformPath, conformDisc, clearVegetationRect/Circle/Path/Oriented, biome) plus services:changed and a buildingId-gated zones:changed clear.",
+    "Zero console errors; perf far inside budget: 438-873 draw calls, 2.6-6.2 M triangles across six presets.",
+    "Tree silhouettes are a genuine generation better: layered drooping conifer boughs and irregular branch-skeleton broadleaf crowns with size and hue jitter, grouped into stands (p3r1b_terrain_forest_13.png).",
+    "Macro landform is strong: meandering river, wide gently sloped buildable valleys, ridged snow-capped range with aerial haze (p3r1b_terrain_mountain_13.png).",
+    "Night water correctly darker than land (sea lum 20.0 vs grass 33.8) and the round-2 orange specular smears are gone.",
+    "Shoreline at 48 m has real soft foam and a wet darkening gradient (p3r1_terrain_detail_13.png, x100-560,y150-620)."
+  ],
+  "issues": [
+    {
+      "severity": "blocker",
+      "description": "Water is far too bright and too saturated at every range, and at noon it is brighter than the land - the opposite of CS2. The close-up surface is also nearly featureless: no visible ripple normals, no sun glitter, and zero reflection of the forest on the near bank; just a flat azure wash with soft white smears.",
+      "evidence": "shots/critic/terrain/p3r1_terrain_detail_13.png water x600-1280,y150-660 measures lum 82.6, sat 0.87, rgb(19,96,137); shots/critic/terrain/p3r1_terrain_hero_13.png river x560-760,y300-620 lum 69.8 vs meadow x60-520,y300-600 lum 62.5. reference/cs2_02.jpg open water x60-600,y700-1000 is lum 30.3, rgb(14,34,42) - roughly half the land's luminance.",
+      "suggestion": "Retarget the water base to CS2's numbers: deep colour ~rgb(12,32,40) linear, shallow ~rgb(30,60,62), and clamp final water luminance to <= 0.7x the mean terrain luminance at the same sun elevation. Drop the sky-reflection tint's blue channel weight and desaturate the reflected sky by ~40%. At <100 m add two scrolling detail normal octaves at 0.4 m and 1.6 m plus an anisotropic sun-glitter lobe, and make sure LAYER_REFLECTED includes vegetation so the tree line reflects on the bank."
+    },
+    {
+      "severity": "major",
+      "description": "Global colour grading reads toy-like next to CS2: lime-green meadows and cyan water at 2-4x CS2's saturation, with no atmospheric desaturation with distance. CS2's distant hills are almost neutral (sat 0.11); Fable's stay fully saturated to the horizon.",
+      "evidence": "p3r1_terrain_hero_13.png meadow sat 0.59, forest sat 0.61; p3r1_terrain_night_13.png grass sat 0.49. reference/cs2_02.jpg forest hillside sat 0.31, distant hills sat 0.11.",
+      "suggestion": "Multiply terrain and foliage albedo saturation by ~0.6 and shift the grass hue from lime (yellow-green) toward olive/khaki, and ramp saturation down toward 0.15 over 300-1500 m so distant land washes into the haze the way it does in cs2_02."
+    },
+    {
+      "severity": "major",
+      "description": "Black tree silhouettes at long range - 9.8% of a hero forest clump is pure black (lum<2) and isolated conifers on the meadow read as solid black spikes. The spec forbids black silhouettes; at 110 m the same trees are fine (0.43% black), so this is an LOD/impostor or ambient-term problem, not a shading one.",
+      "evidence": "shots/critic/terrain/p3r1_terrain_hero_13.png forest clump x200-420,y430-600 (9.79% of pixels lum<2); black conifer spikes at approx x805,y460-500, x880,y170-210, x975,y170-210, x1100,y320-360.",
+      "suggestion": "Raise the LOD2/impostor ambient floor: add a hemispherical sky-ambient term (>= 0.12 of sky colour) to the impostor and LOD1 leaf shader so no foliage pixel drops below ~0.05 luminance, and verify the impostor bake itself is not being multiplied by the shadow term twice."
+    },
+    {
+      "severity": "major",
+      "description": "Ground macro shading is still the round-2 problem: large soft brown-grey airbrush smudges on hill flanks plus pale chalk-white fall-line streaks that read as scuff marks, not geology. Sunlit hillsides also still show flat mesh facets.",
+      "evidence": "shots/critic/terrain/p3r1b_terrain_forest_13.png smudges x180-340,y240-330 and x830-1000,y120-200; chalk streaks x230-330,y350-450 and x900-1000,y400-470; visible triangle faceting x850-1250,y180-320. Also p3r1_terrain_hero_13.png streaks x1050-1200,y380-500.",
+      "suggestion": "Cut the cavity/macro-blotch amplitude by another 50% and break its silhouette with a 4-8 m noise threshold instead of a smooth ramp so it stops reading as an airbrush. Replace the pale streaks with a narrow (1-3 m) high-frequency scree albedo carrying the rock normal, and darken them rather than lightening them. Increase near-chunk tessellation or add a 0.5 m curvature-driven normal so 50-200 m hillsides stop faceting."
+    },
+    {
+      "severity": "major",
+      "description": "Near-camera undergrowth reads as a bed of identical 1-2 m cabbage/kale rosettes in a sickly yellow-green - a single repeated card silhouette tiled across the whole bank. Nothing at this range reads as grass.",
+      "evidence": "shots/critic/terrain/p3r1_terrain_detail_13.png, entire left bank x0-520,y150-660.",
+      "suggestion": "Halve the undergrowth card size, add 3-4 distinct silhouettes (fine grass tuft, low fern, small shrub, dry stalk cluster) with per-instance yaw and 40% scale jitter, desaturate them to match the ground albedo within ~15%, and add a dense sub-0.3 m grass-blade card layer under 25 m so the ground plane is not visible between rosettes."
+    },
+    {
+      "severity": "minor",
+      "description": "Straight card edges are still visible on broadleaf crowns at forest range - the crown silhouette is cut by hard quad boundaries rather than dissolving into leaves.",
+      "evidence": "shots/critic/terrain/p3r1b_terrain_forest_13.png crowns at x640-740,y250-350 and x950-1080,y330-430.",
+      "suggestion": "Rotate leaf-spray cards off-axis (random roll +/-40 deg) so no two share a plane, and taper leaf-texture alpha to zero within the outer 12% of each card's UV so a clipped card edge can never fall on the crown silhouette."
+    },
+    {
+      "severity": "minor",
+      "description": "Round-2 issue 'lone trees scattered uniformly across the coastal meadow' is NOT fixed - single trees are still sprinkled evenly across the coastal grass.",
+      "evidence": "shots/critic/terrain/p3r1_terrain_night_13.png singles at approx x370,y395; x600,y345; x885,y380; x945,y420; x490,y505.",
+      "suggestion": "Apply the same clump threshold used inland to the coastal biome, and merge surviving singles into 3-6 tree copses or a hedgerow along the shore-parallel contour."
+    },
+    {
+      "severity": "minor",
+      "description": "Night terrain has no moonlit modelling - land is a flat dark green-grey with no readable form - while the shore reads as a continuous pale grey-lavender band, the brightest land feature in the frame. That is the 'glowing shoreline outline' the spec forbids.",
+      "evidence": "shots/critic/terrain/p3r1_terrain_night_21.png band x200-1150,y290-460 (lum 36.5 vs grass 33.7, frame p99.9 = 67 concentrated in the band); land x160-1160,y460-640 shows no slope shading.",
+      "suggestion": "Fade the shore sand/wet band's albedo toward the grass value as env.nightFactor -> 1 (it should disappear at night, not persist), and add a cool blue-grey moon diffuse (~rgb(28,36,52), direction from the moon) so hillside forms still read after sunset."
+    },
+    {
+      "severity": "minor",
+      "description": "Round-2 issue on mountain rock is NOT fixed: high faces are a near-black uniform charcoal with hard-edged snow caps and no wind-blown transition, and a faint diamond mesh moire shows on the dark faces.",
+      "evidence": "shots/critic/terrain/p3r1b_terrain_mountain_13.png rock x400-900,y60-220; hard snow line x520-780,y95-150; diamond moire x690-790,y140-210.",
+      "suggestion": "Lift rock albedo to ~0.10-0.14 with a warm grey-brown tint and add altitude-blended lichen mottling; break the snow line with a 3-8 m noise threshold plus slope bias so leeward gullies hold snow lower, and lower the rock normal-map intensity or raise its mip bias at >400 m to kill the moire."
+    }
+  ],
+  "perf": { "drawCalls": 873, "triangles": 6232375, "consoleErrors": 0 },
+  "screenshots": [
+    "shots/critic/terrain/p3r1_terrain_hero_13.png",
+    "shots/critic/terrain/p3r1_terrain_hero_21.png",
+    "shots/critic/terrain/p3r1_terrain_detail_13.png",
+    "shots/critic/terrain/p3r1_terrain_detail_21.png",
+    "shots/critic/terrain/p3r1_terrain_night_13.png",
+    "shots/critic/terrain/p3r1_terrain_night_21.png",
+    "shots/critic/terrain/p3r1b_terrain_forest_13.png",
+    "shots/critic/terrain/p3r1b_terrain_mountain_13.png"
+  ]
+}

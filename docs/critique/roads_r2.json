@@ -1,0 +1,82 @@
+{
+  "score": 7.8,
+  "pass": false,
+  "summary": "Round 2 fixes the worst of r1: local/avenue asphalt is no longer black, kerbs and paving read at 60 m, markings are worn off-white/yellow (matches CS2's NA theme), night pools are warm with a specular streak and lamp heads are no longer white spheres, dead-end bulbs are clean, the §5 API is complete (types/build/remove/snap/nearest/sampleEdge/segmentsInRadius/laneGraph with Map connections), one conformPath per segment + conformDisc per junction verified in RoadNetwork._conformPaths, dirty-set rebuilds verified. Zero console errors; 754-1070 draw calls, 2.7-4.6 M tris, 170-334 fps. But the showcase still fails the CS2 bar in two places the builder did not look at: the highway renders as a near-white concrete slab (146-155 sRGB) while local/avenue asphalt in the same noon sun measures 60-72 sRGB with a blue cast (builder claimed 115-125), and the highway->avenue transition node is a giant blank pale fan pad with a hard seam where lanes and barrier stop dead, on a slab with a vertical wall edge. Raw dirt/rock cut slopes beside hillside roads still dominate the hero and avenue shots. Skirt halo persists as a lime band. Good indie, not yet AAA.",
+  "issues": [
+    {
+      "severity": "major",
+      "description": "Highway/transition: highway asphalt renders 146-155 sRGB (flat washed-out pale slab, no visible aggregate or tonal variation) while local (60/66/76) and avenue (67/72/81) asphalt sit 2.3x darker under the same sun; the highway->avenue transition node is a huge blank pale fan pad with a hard straight seam at which the 2x3 lane markings and the median barrier stop abruptly; the highway slab sits 1-2 m above grass with a vertical dark wall edge instead of an embankment.",
+      "evidence": "shots/critic/roads/r2c_roads_transition_13.png x0-1100 y300-560; shots/critic/roads/r2b_roads_highway_13.png (whole ribbon), shots/critic/roads/r2_crop_highway.png; pixel means measured with PIL.",
+      "suggestion": "Make all asphalt types share one diffuse pipeline and verify with a pixel probe: the local/avenue stack (tonal variation x wheel tracks x gutter AO x stain) multiplies albedo down to ~0.5 while the highway skips most of it - clamp the product to >=0.8 and target 105-125 sRGB in sun for all three, neutral tint. At the transition node continue the dominant carriageway's lane lines and median through the pad, taper the barrier over 10 m, mark lane-drop chevrons, and replace the flat fan with a proper trumpet/merge polygon. Give the elevated slab a 1:2 grass embankment skirt (or retaining wall geometry) instead of a vertical face."
+    },
+    {
+      "severity": "major",
+      "description": "Terrain conform still leaves raw dark dirt/rock cut slopes directly beside roads on every hillside; they dominate the hero (whole right half looks scorched) and the avenue shot (right third). 8-16 m falloff on 3-5 m side drops is still a steep bare bank; CS2 grades a grassy verge or shows a retaining wall.",
+      "evidence": "shots/critic/roads/r2_roads_hero_13.png x850-1280 y250-460 and x500-700 y100-220; shots/critic/roads/r2b_roads_avenue_13.png x880-1280 y240-450 (dirt mean 84/91/94 vs grass 42/55/18).",
+      "suggestion": "In RoadNetwork._conformPaths set falloff = max(8, 2.5 * sideDrop) (1:2.5 slope) and cap the local max cut; where sideDrop > 3 m emit retaining-wall/embankment geometry from the road mesher (CS2 does exactly this) instead of asking terrain to blend. Coordinate with terrain so graded corridor slopes below ~35 deg keep the grass splat (pass a 'graded' flag or widen the corridor mask)."
+    },
+    {
+      "severity": "minor",
+      "description": "Local/avenue asphalt is still darker than claimed and blue-cast: sunlit lane 60/66/76, avenue 67/72/81 sRGB (r1 measured 68/73/79, so effectively unchanged) versus builder's '115-125 rendered'. Blue exceeds red by 14-16 because a low final albedo lets sky ambient dominate. Crosswalk paint in full sun measures only 83/90/103.",
+      "evidence": "shots/critic/roads/r2_roads_detail_13.png boxes (330,540)-(400,580) and (950,470)-(1050,500); crosswalk (520,300)-(560,320).",
+      "suggestion": "Probe the final diffuse in-shader; raise base tint or reduce stacked darkening so sunlit asphalt lands at 105-125 sRGB neutral grey and paint at 170-200; add a slight warm bias (R>=B) to the asphalt tint."
+    },
+    {
+      "severity": "minor",
+      "description": "Skirt halo persists: a bright lime-green flat band along sidewalks that is more saturated and smoother than the tufted terrain grass; under the transition pad it becomes a glowing lime wedge.",
+      "evidence": "shots/critic/roads/r2b_roads_avenue_13.png x0-300 y440-520; shots/critic/roads/r2c_roads_transition_13.png x840-870 y505-560; shots/critic/roads/r2_roads_hero_13.png along the avenue x280-520 y300-345.",
+      "suggestion": "Sample the terrain's actual splat/albedo for the skirt (share the terrain material or read its splat texture), include the terrain's grass detail scatter, or drop the skirt entirely now that conformPath grades the verge."
+    },
+    {
+      "severity": "minor",
+      "description": "Vegetation clearance corridor is too narrow: pines stand within ~1 m of the highway guard rail and on local sidewalk edges.",
+      "evidence": "shots/critic/roads/r2b_roads_highway_13.png (800,420), (300,520), (470,520); shots/critic/roads/r2_roads_detail_13.png (1150,450); shots/critic/roads/r2c_roads_transition_13.png (690,220-300).",
+      "suggestion": "Pass a wider clear width to conformPath (width + 6 m for highway, + 3 m for local/avenue) or call clearVegetationRect for the verge separately."
+    },
+    {
+      "severity": "minor",
+      "description": "Path type reads as a flat pale beige stripe with no edging, no visible cobble at 55 m, and the roads_path preset frames a local dead-end while the path is half-occluded at the bottom edge of the frame.",
+      "evidence": "shots/critic/roads/r2c_roads_path_13.png y520-580.",
+      "suggestion": "Add a 5 cm edging/AO line and a slightly darker, higher-contrast cobble tint; re-aim roads_path so the path fills the frame."
+    },
+    {
+      "severity": "minor",
+      "description": "Kerb still low-contrast at showcase distance: the 17 cm face has no visible shadow/AO line at 62 m and the road-to-sidewalk edge reads as a paint boundary; stop bars on the local 4-way approaches are not visible before the zebra crossings.",
+      "evidence": "shots/critic/roads/r2_crop_junction.png (3.2x zoom of r2_roads_detail_13.png).",
+      "suggestion": "Darken the 0.3 m gutter band to ~0.55 albedo and shade the kerb face as a true vertical normal so it catches sun; reduce the wear mask on stop bars (keep >=0.75) so they survive at 60 m."
+    },
+    {
+      "severity": "minor",
+      "description": "Dead-end cap seam: the wheel-track darkening of the segment ends in a hard rectangular edge before the cul-de-sac bulb.",
+      "evidence": "shots/critic/roads/r2b_roads_deadend_13.png x450-620 y470-530.",
+      "suggestion": "Fade wheel tracks out over the last 6 m of a segment that ends in a dead-end and continue them as a circular sweep into the bulb."
+    },
+    {
+      "severity": "minor",
+      "description": "Night hero: every lamp pool is identical in brightness and size so roads read as continuous glowing tubes with a uniform grid of white bloom dots; no distance falloff or per-lamp variation.",
+      "evidence": "shots/critic/roads/r2_roads_hero_21.png whole frame.",
+      "suggestion": "Add +-15% per-lamp intensity/colour-temperature jitter (seeded) and attenuate pool intensity with fog/distance; shrink the bloom threshold for luminaires beyond 300 m."
+    }
+  ],
+  "strengths": [
+    "Local/avenue asphalt no longer black; sidewalk paving PBR, corner fillets, zebra crossings and turn arrows read well at 60 m",
+    "Night is now warm with inverse-square pools, a visible specular streak toward camera, and lamp heads that are no longer detached white spheres",
+    "Dead-end bulbs, curved loop and 4-way junctions are geometrically clean with no z-fighting",
+    "Full §5 API present incl. laneGraph (Map connections); one conformPath per segment + conformDisc per junction; dirty-set partial rebuilds",
+    "Zero console errors; perf well within budget (754-1070 calls, 2.7-4.6 M tris, 170-334 fps)"
+  ],
+  "perf": { "fps": 276, "drawCalls": 962, "triangles": 3330326, "consoleErrors": 0 },
+  "screenshots": [
+    "shots/critic/roads/r2_roads_hero_13.png",
+    "shots/critic/roads/r2_roads_detail_13.png",
+    "shots/critic/roads/r2_roads_detail_21.png",
+    "shots/critic/roads/r2_roads_hero_21.png",
+    "shots/critic/roads/r2b_roads_highway_13.png",
+    "shots/critic/roads/r2b_roads_avenue_13.png",
+    "shots/critic/roads/r2b_roads_deadend_13.png",
+    "shots/critic/roads/r2c_roads_transition_13.png",
+    "shots/critic/roads/r2c_roads_path_13.png",
+    "shots/critic/roads/r2_crop_junction.png",
+    "shots/critic/roads/r2_crop_highway.png"
+  ]
+}

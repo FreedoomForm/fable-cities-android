@@ -1,0 +1,78 @@
+{
+ "score": 7.2,
+ "pass": false,
+ "summary": "Effects r2 is a real step up from r1 (6.8) but stops at good-indie. Verified: 0 console errors in 14 shots, all modules ok; world.effects.api complete (addSource/removeSource/clearSources/addGroundPlate/refresh/refreshMaterials/grading/setLUT/setEnabled/stats + getters); grading via engine.post.insertBeforeOutput (index.js:130); particles on LAYER_NO_AO (index.js:109); depth-driven soft particles and 13-tap sun occlusion probe (EffectsPass.js:136-157, SmokeSystem tDepth); uWetness written in WetSurfaces.js:320; time/weather reactive. Effects CPU measured live 0.016-0.032 ms; 966-1113 calls, 2.8-4.3 M tris, ~265 fps (one 57 fps sample while another agent rendered). Visually: rain is now visible, wet asphalt and sky puddles work, snow no longer white-outs, night and sunset frames are pleasant. But the grade never reaches white (p99 luminance 0.70 at noon, 0.66 in snow vs CS2 0.86-0.93) so noon and snow read veiled and grey; rain streaks are hard-edged uniform white rods brighter than the overcast sky (the builder's 'darker than sky' claim is false in the frame); snow flakes are same-size confetti and the tyre-track slush is speckle noise; smoke is soft steam-white airbrush with no dense core or readable terminator, identical for industry and steam; dust still unreadable. Not at 8.5.",
+ "issues": [
+  {
+   "severity": "major",
+   "description": "Colour grade has no whites: highlights are compressed so the frame reads veiled. Noon p99 luminance 0.70 (hero, detail), snow 0.66, versus CS2 0.86-0.93 (cs2_04/06/08). Shoulder 0.62 + gain cap 1.12 + contrast 1.42 leaves clouds, white halls and snow at mid-grey.",
+   "evidence": "shots/critic/effects/r2_effects_hero_13.png white hall x620-800 y270-330 and sky; shots/critic/effects/r2snow.png yards/roofs; measured with PIL percentiles over y70-620",
+   "suggestion": "Raise the shoulder to ~0.82 so scene 1.0 maps to >=0.92 sRGB and only the top ~5% compresses; let auto white point target ~0.90 in snow/overcast; keep the toe. Re-measure p99 against cs2_04.jpg (target 0.88-0.93)."
+  },
+  {
+   "severity": "major",
+   "description": "Rain streaks are uniform hard-edged white rods (~2-3 px, 30-80 px long) with identical brightness over sky, asphalt and brick, no along-streak blur gradient, no depth/distance fade; over the overcast sky they are brighter than the sky, reading as scratches drawn on the frame.",
+   "evidence": "shots/critic/effects/r2rain_effects_closeup_13.png x380-700 y230-430; shots/critic/effects/r2rain_effects_street_13.png sky band x560-880 y90-290 (see r2_crops.png rows 2)",
+   "suggestion": "Taper alpha along the streak (gaussian along length, soft 1 px edges), colour = refracted scene colour behind + small sky lift so streaks sit at <=0.15 luminance contrast to the background, fade with fog/distance and against bright sky, and use 3 depth layers with different length/width. Reference cs2_08.jpg."
+  },
+  {
+   "severity": "major",
+   "description": "Snow still lacks structure: flakes are identical ~4 px white discs at every depth (confetti), the 'tyre-track slush' on roads is random white speckle on black asphalt rather than two smooth track bands, no accumulation on kerbs/roof edges, snow surfaces are flat grey with no micro-detail or sparkle at hero distance.",
+   "evidence": "shots/critic/effects/r2snow.png roads x200-1000 y380-640 and crop in r2_crops.png row 3 left (x300-620 y380-560)",
+   "suggestion": "Flake size proportional to 1/depth with defocus on near flakes and a near-camera bokeh layer; tracks as two low-frequency bands per lane from vUv lateral metres with soft edges and darker wet asphalt between; add snow normal/roughness micro-noise and a kerb-edge accumulation term; raise snow output albedo (see grade issue)."
+  },
+  {
+   "severity": "major",
+   "description": "Industrial smoke reads as soft steam-white airbrush: plume is already ~2 stack diameters wide at the mouth with no dense opaque core, lobes are blurry blobs with no readable lit/shadow terminator at 3x, and industrial stacks emit the same white as steam vents (no soot/brown grade).",
+   "evidence": "shots/critic/effects/r2_effects_detail_13.png stacks x860-1010 y80-260 (r2_crops.png top-left, 3x); r2_effects_hero_13.png x700-800 y130-260",
+   "suggestion": "Birth radius 0.6x stack radius, opacity >=0.9 for the first 2 s, growth after; light lobes with N.L against world.env.sunDirection with ~0.3 ambient so the terminator reads; industrial albedo 0.35-0.45 grey-brown versus steam 0.9; keep the backlit rim."
+  },
+  {
+   "severity": "minor",
+   "description": "Splashes read as scattered uniform white dots/blobs; crowns are not readable at street distance and there are no ripple rings in the wet asphalt specular.",
+   "evidence": "shots/critic/effects/r2rain_effects_closeup_13.png x100-700 y400-620",
+   "suggestion": "Tint splash sprites with sky radiance at ~0.3 alpha, add a ring normal perturbation in the wet material within 0-15 m of the camera."
+  },
+  {
+   "severity": "minor",
+   "description": "Construction dust is still essentially unreadable at the crane/steel-frame sites; only a faint wisp appears.",
+   "evidence": "shots/critic/effects/r2_effects_hero_13.png x560-680 y180-300; shots/critic/effects/r2sun.png x1000-1250 y150-350",
+   "suggestion": "Ground-hugging tan puffs 2-4 m, alpha ~0.25, spawned at the frame base and the hook, sized to read from the hero distance (235 m)."
+  },
+  {
+   "severity": "minor",
+   "description": "Bright white sparkle pixels in the tree band around the low sun; specular aliasing or the shimmer feature. Sun glare and anamorphic streak themselves are fine.",
+   "evidence": "shots/critic/effects/r2sun.png x630-730 y195-245",
+   "suggestion": "Disable shimmer in the flare shot to attribute; if it is the effects shimmer, clamp it below foliage luminance and fade it with distance."
+  },
+  {
+   "severity": "minor",
+   "description": "Not this module, noted: foliage is flat lime-green lumps, showcase windows are uniform cream rectangles at night, evergreen hills stay green in snow (terrain). All hurt the effects frames.",
+   "evidence": "shots/critic/effects/r2rain_effects_street_13.png trees x700-980 y200-460; r2_effects_hero_21.png windows",
+   "suggestion": "Report to props/showcase/terrain owners."
+  }
+ ],
+ "strengths": [
+  "Rain is finally readable and the wet look works: dark glossy asphalt, sky-reflecting puddles, wet kerbs (r2rain_effects_street_13.png)",
+  "Snow no longer white-outs: covered roofs/yards, dark slushy roads, blue shadow tint, plumes readable against the overcast",
+  "Night is the best frame: warm varied lamp temperatures with soft halos, red aviation lights on stacks, faint horizon glow (r2_effects_hero_21.png)",
+  "Sunset glare with anamorphic streak and lens ghost, partially occluded by the stack; backlit plume rims (r2sun.png)",
+  "Technically solid: 0 console errors, API complete, depth-driven occlusion/soft particles, 0.016-0.032 ms CPU measured live"
+ ],
+ "perf": {
+  "fps": 265,
+  "drawCalls": 1050,
+  "triangles": 3400000,
+  "consoleErrors": 0
+ },
+ "screenshots": [
+  "shots/critic/effects/r2_effects_hero_13.png",
+  "shots/critic/effects/r2_effects_detail_13.png",
+  "shots/critic/effects/r2_effects_hero_21.png",
+  "shots/critic/effects/r2rain_effects_street_13.png",
+  "shots/critic/effects/r2rain_effects_closeup_13.png",
+  "shots/critic/effects/r2snow.png",
+  "shots/critic/effects/r2sun.png",
+  "shots/critic/effects/r2_crops.png"
+ ]
+}

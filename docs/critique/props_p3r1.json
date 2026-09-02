@@ -1,0 +1,77 @@
+{
+  "score": 7.0,
+  "pass": false,
+  "summary": "Breadth is real: lamps/halos, mast-arm signals, signs, trees+grates, benches, bins, shelters, hydrants, hedges/fences, bollards, planters, parked cars all exist, instanced, LOD'd, deterministic; props.api.refresh/setDensity/stats present; 0 console errors; props' own cost measured by hiding the 'props' group is only 309-336 draw calls / 0.79-1.34M tris. But it fails the CS2 bar in three places. (1) Night has essentially no light pools: the only ground light is 12 PointLights (intensity 16, decay 2, range 22-40), so a whole 4-lane avenue renders unlit. (2) Foliage crowns are opaque blotchy lumps with black AO patches and untapered tiled trunks. (3) Parked cars are featureless white shells with no glass, rims or shut-lines, and their plates glow at night. Sidewalk density is roughly a third of CS2's. Day mid-distance reads well; every close-up and every night frame gives it away.",
+  "issues": [
+    {
+      "severity": "blocker",
+      "description": "Night street lighting has no ground light pool. PropRenderer allocates 12 PointLights (PropRenderer.js:51, intensity 16, decay 2, range 22-40 from PropScatter.js:208) and nothing else touches the road, so every lamp past the nearest ~12 contributes zero illumination. In p3r1_props_hero_21.png the entire 4-lane avenue (x 480-780, y 90-620) is black between car headlight beams, with only ~30px warm smudges directly under 4 heads (x515,y295; x237,y663; x390,y660; x865,y635). In p3r1_notraffic_23.png (traffic disabled) the near 25 m of carriageway (y 420-660) is pitch black. cs2_08 shows every luminaire laying a wide bright pool plus a hard glare bloom.",
+      "evidence": "shots/critic/props/p3r1_props_hero_21.png; shots/critic/props/p3r1_notraffic_23.png; shots/critic/props/p3r1_junc_props_junction_22.png",
+      "suggestion": "Add a per-luminaire ground pool: an additive radial-gradient quad lying on the road plane (y = sampleEdge y + 0.03), radius ~1.4x mounting height, one instanced kind with the halo shader, faded by nightFactor and by the surface normal, drawn for EVERY lamp source out to drawDistance -- not just the 12 with real lights. Then raise the real PointLights to intensity ~30 / range ~34 so the nearest ones give real falloff and shadowed contact, and add a mild glare bloom on the emissive head."
+    },
+    {
+      "severity": "major",
+      "description": "Sidewalk prop density is roughly a third of CS2's. In p3r1_top.png all four quadrants of a downtown avenue/local junction have near-bare sidewalks (top-left corner x390-460 y60-280 holds nothing; bottom-right x700-960 y430-560 holds one object). Live instance counts for the whole hero frame: bench=8, bin=5, hydrant=1, bollard=6. cs2_08 shows stacked blade signs, bench, bollards, illuminated panel, bike, scooter and pedestrian pushbutton within 15 m.",
+      "evidence": "shots/critic/props/p3r1_top.png; shots/critic/props/p3r1_junc_props_junction_13.png (near avenue sidewalks x180-430 and x960-1280, y380-560)",
+      "suggestion": "Halve the spacings in PropScatter.js: benchStep 48/34 -> 22/16, binStep 34 -> 18, drop the bench gate sidewalk>=1.9 to >=1.5, and raise the rng gates (0.6-0.66) to ~0.85. Add the missing CS2 staples: utility cabinets, manhole/valve covers, A-boards outside commercial lots, trash bags on collection days, wall-mounted lamps on building faces, and pedestrian push-button boxes on signal poles."
+    },
+    {
+      "severity": "major",
+      "description": "Tree crowns read as opaque broccoli lumps, not foliage. In p3r1_junc_props_junction_13.png the two foreground LOD0 trees (x540-760, y340-660) are solid mid-green masses with large near-black blotches from the baked crown AO in vertex colour, no sky punching through the silhouette and no branch structure. Trunks are untapered cylinders with no root flare, and the bark texture tiles visibly with a hard horizontal repeat seam (p3r1_close_13.png, trunk x960-1090, seam at y~390).",
+      "evidence": "shots/critic/props/p3r1_junc_props_junction_13.png; shots/critic/props/p3r1_junc_props_junction_22.png; shots/critic/props/p3r1_close_13.png",
+      "suggestion": "Raise alphaTest and shrink the opaque core of the leaf-cluster texture so card edges are ragged and sky shows through; clamp the baked AO floor to ~0.65 and modulate it with a fine noise so it stops reading as camouflage blotches; add 2-3 real branch tubes from the trunk into the crown so the silhouette has structure; taper the trunk with a root flare at the base; triple the bark UV scale in V and add a subtle vertical noise break so the repeat seam disappears."
+    },
+    {
+      "severity": "major",
+      "description": "Parked cars are featureless up close. The foreground white car in p3r1_close_13.png (x250-660, y360-660) has no windscreen or rear glass -- the whole greenhouse is body paint -- no door shut-lines, no mirrors, and matte black wheel discs with no rim or hub (visible at x600,y560). Only two flat red rectangles and a flat plate break the surface. PropCar.js:182 picks the roof/glass material from Math.sin(a) > 0.82, which paints the entire cab on low-roof bodies, so glass only survives on the steepest-roofed styles (compare the dark blue car at x330-480,y255-350, which does show glass).",
+      "evidence": "shots/critic/props/p3r1_close_13.png; shots/critic/props/p3r1_notraffic_23.png",
+      "suggestion": "In PropCar.js, split the greenhouse into an explicit painted roof band (|a| within ~15 deg of vertical) and glass everywhere else including front and rear rings, so every body style gets a windscreen and backlight. Add a 3 cm inset panel-gap groove around doors, two small mirror boxes, a bright car_trim rim disc recessed inside each tyre, and darken the arch liner so the wheel opening reads as an opening."
+    },
+    {
+      "severity": "major",
+      "description": "Parked cars self-illuminate at night. PropCar.js:225-226 gives both number plates the car_lamp material, and PropAssets.js:248 registers car_lamp in nightMaterials (emissive 0x9fb4c4, intensity 0.12 * nightFactor), so every unoccupied kerbside car's plates and headlamps glow after dark. Visible on the parked white car at x130-390, y310-415 in p3r1_notraffic_23.png as two bright bars on the tail, with traffic density forced to 0 so no moving vehicle can be responsible.",
+      "evidence": "shots/critic/props/p3r1_notraffic_23.png; src/modules/props/PropCar.js:216,225-226; src/modules/props/PropAssets.js:246-248",
+      "suggestion": "Give plates their own non-emissive material (a plain off-white car_plate), and either drop car_lamp from nightMaterials entirely for parked cars or split it into car_lamp_off (parked, no emissive) and car_lamp_on. Parked cars in CS2 are completely dark; only the tail reflector should catch a passing headlight."
+    },
+    {
+      "severity": "minor",
+      "description": "Traffic signals show no lit aspect in daylight and never cycle. In p3r1_junc_props_junction_13.png the two mast-arm heads (x770 and x832, y290-320) and the pole head (x875, y345) are uniformly dark boxes at 13:03; in p3r1_junc_props_junction_22.png all three show red at once with no green anywhere. Lenses have no visor hoods and there are no pedestrian heads. cs2_08's signal shows a lit green aspect with bloom, visored hoods and a DONT WALK head, in a weathered orange housing.",
+      "evidence": "shots/critic/props/p3r1_junc_props_junction_13.png; shots/critic/props/p3r1_junc_props_junction_22.png; reference/cs2_08.jpg",
+      "suggestion": "Keep one aspect lit at all times -- emissiveIntensity ~1.5 by day and ~4 at night -- and drive which aspect from a per-junction phase so opposing approaches differ. Add a short visor tube over each lens and a small pedestrian head with a red hand on the kerbside pole."
+    },
+    {
+      "severity": "minor",
+      "description": "Hydrants sit on the grass verge rather than the paved sidewalk: in p3r1_close_13.png the hydrant at x780,y355-410 stands in the lawn behind the kerb. Real hydrants sit on the walk, 0.5 m back from the kerb face, on a small concrete pad.",
+      "evidence": "shots/critic/props/p3r1_close_13.png",
+      "suggestion": "Clamp the hydrant inset to min(sidewalk - 0.5, 1.0) from the kerb face instead of the current inset off the outer sidewalk edge (PropScatter.js:299-305), and add a 0.6 m concrete pad decal under it."
+    },
+    {
+      "severity": "minor",
+      "description": "Props spends 309-336 draw calls for its own content because each car style is split across 7 materials (car_paint, car_glass, car_dark, car_tyre, car_trim, car_lamp, car_tail) = 28 calls for parked cars alone, plus 6 for bus shelters and 3 per signal kind. Measured by hiding the 'props' group: hero 1939->1630 calls / 10.45M->9.66M tris, detail 2008->1672 / 9.67M->8.33M. Within the 2500-call budget, but the scene total of 10.4M triangles exceeds the 8M budget -- 9.7M of which is NOT props.",
+      "evidence": "shots/critic/props/p3r1_noprops.log.json vs shots/critic/props/p3r1.log.json",
+      "suggestion": "Merge car_trim, car_dark, car_lamp and car_tail into one small 64x64 palette atlas so each car style costs 3 draw calls (paint, glass, tyre) instead of 7 -- about 16 calls saved. The 10.4M scene triangle overage is another module's (terrain/vegetation/buildings) and is only noted here for the record."
+    }
+  ],
+  "strengths": [
+    "Prop vocabulary is genuinely broad and correctly categorised by road type: mast-arm signals on avenues, stop/priority/speed/no-parking signs, name blades, bus shelters with stop flags, bollards, planters, cycle stands, news boxes, tree grates, hedges, picket and chain-link fences, gravel drives.",
+    "Contract complete and clean: props.api.refresh/setDensity/density/stats all present (index.js:40-48), roads:changed subscribed (index.js:60), placement derived entirely from roads.api.sampleEdge, night driven by world.env.nightFactor (index.js:91).",
+    "Real vehicle proportions: sedan 4.56 m, hatch 4.02, estate 4.78, van 5.05 (PropCar.js:121-124) -- correct against the 4.5 m CS2 car and 3.5 m lane.",
+    "Placement discipline works: per-(segment, side, channel) 1-D occupancy prevented every intersection I looked for; the top-down (p3r1_top.png) shows median trees inside the median strip and parked cars in the kerb lane, nothing standing in a live traffic lane.",
+    "Instancing, two-level tree LOD, distance and frustum culling all verified live: hero frame carries 2 full-detail vs 66 LOD broad trees, and the whole module costs only 309 draw calls / 0.79M triangles.",
+    "Zero console errors or warnings across 11 renders; all 12 modules report ok."
+  ],
+  "screenshots": [
+    "shots/critic/props/p3r1_props_hero_13.png",
+    "shots/critic/props/p3r1_props_hero_21.png",
+    "shots/critic/props/p3r1_props_detail_13.png",
+    "shots/critic/props/p3r1_props_detail_21.png",
+    "shots/critic/props/p3r1_props_night_21.png",
+    "shots/critic/props/p3r1_close_13.png",
+    "shots/critic/props/p3r1_close_23.png",
+    "shots/critic/props/p3r1_notraffic_23.png",
+    "shots/critic/props/p3r1_junc_props_junction_13.png",
+    "shots/critic/props/p3r1_junc_props_junction_22.png",
+    "shots/critic/props/p3r1_top.png"
+  ],
+  "perf": { "drawCalls": 336, "triangles": 1339748, "consoleErrors": 0 }
+}

@@ -1,0 +1,20 @@
+{
+  "id": "Rock035",
+  "res": "1K",
+  "fmt": "JPG",
+  "license": "CC0",
+  "source": "https://ambientcg.com/view?id=Rock035",
+  "files": [
+    "Rock035.png",
+    "Rock035_1K-JPG.blend",
+    "Rock035_1K-JPG.mtlx",
+    "Rock035_1K-JPG.tres",
+    "Rock035_1K-JPG.usdc",
+    "Rock035_1K-JPG_AmbientOcclusion.jpg",
+    "Rock035_1K-JPG_Color.jpg",
+    "Rock035_1K-JPG_Displacement.jpg",
+    "Rock035_1K-JPG_NormalDX.jpg",
+    "Rock035_1K-JPG_NormalGL.jpg",
+    "Rock035_1K-JPG_Roughness.jpg"
+  ]
+}

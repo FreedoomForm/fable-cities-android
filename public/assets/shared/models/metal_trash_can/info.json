@@ -1,0 +1,12 @@
+{
+  "id": "metal_trash_can",
+  "name": "Metal Trash Can",
+  "type": "models",
+  "authors": {
+    "GurJas Studios": "All"
+  },
+  "license": "CC0",
+  "source": "https://polyhaven.com/a/metal_trash_can",
+  "res": "1k",
+  "fmt": "gltf"
+}

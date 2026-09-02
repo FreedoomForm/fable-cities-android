@@ -1,0 +1,68 @@
+{
+  "module": "environment",
+  "pass_id": "p4",
+  "score": 6.5,
+  "pass": false,
+  "summary": "The numeric work is real and verified: at the module's own showcase hero (17.5) every LOOK_TARGET row environment owns is now on target - lum_p10 0.012 (target 0.010), okL 0.42 (0.42-0.50), ground shadow ratio 19.4 (19.5), haze far/near luminance 2.03 (1.44-4.10), haze contrast 0.47 (0.35-0.52), sky 0.253 (0.268), C_matched 0.051 (0.048). Aerial perspective is genuinely good and the 21:00 blue hour is the best frame this project has produced. But two assignment requirements are not delivered. The GAME still opens at hour 14.0 (src/core/Config.js), a near-noon sun - only the showcase overrides to 17.5. And cast shadows vanish beyond ~200-300 m from camera: at distance 130 m they are long and correct, at 420 m an ambient-zeroed render shows every street, roof and lawn fully lit with not one tower shadow. That is judge defect #2 verbatim at the distance a city-builder press shot is taken.",
+  "perf": { "drawCalls": 2057, "triangles": 4947889, "consoleErrors": 0, "verdict": "in budget" },
+  "systemicProgress": {
+    "materials": "Not environment's blocker and not regressed. The showcase cobble is a real PBR set with albedo grain, normal and roughness variation, readable at 40 m in p4_environment_detail_17h5. In the game the terrain, road and facade materials remain flat colour fields (terrain/roads/buildings own these). Environment's material hook correctly reaches all 697 shadow-receiving materials.",
+    "lighting": "Half fixed. Warm key / cool hemisphere is implemented and measurable (sun ffe7d2 at I=2.97, hemisphere a2bffd at I=0.56, IBL 0.52); sun altitude at 17.5 is 15.2 deg. Long soft shadows appear ONLY within ~200-300 m of camera (p4f_street.png). Beyond that there are no cast shadows at all - p4e_sunonly.png (hemisphere and IBL forced to 0) shows a fully lit city with zero occlusion. No contact darkening under vehicles at range. Shadow fill coolness is +0.41 against a +0.45-2.0 target, so shadows still read near-neutral. Shadow edges are uniform blurred blobs with no penumbra gradient and visible acne speckle on the plaza.",
+    "density": "Unchanged and not environment's to fix. The showcase set is 25 towers plus a sphere array. The game frame at 17.5 carries reasonable vehicle counts on arterials but empty side streets.",
+    "variety": "Showcase towers now vary in footprint, height and rotation - a real improvement over 40 clones. Cloud shapes and the sky read varied. Building variety in the game is unchanged (buildings module).",
+    "colour": "Fixed, and this is the strongest result. Global exposure and ambient now put lum_p10 at 0.012 against 0.158 before, vegetation luminance 0.066 against 0.271, sky 0.253 against 0.423. Aerial desaturation toward the horizon is present and correct - far hills in p4c/p4f read neutral and hazy. Residual: vegetation chroma 0.070 vs 0.053 target (props/terrain own albedo)."
+  },
+  "issues": [
+    {
+      "severity": "blocker",
+      "description": "The game's default look is still a high-noon sun. src/core/Config.js line 23 sets `this.time = float(p.get('time'), 14.0)`. At latitude 47.3 on 30 Apr, hour 14 is ~52 deg elevation. The showcase gates its own 17.5 default on the absence of a ?time param (showcase.js:272), so the module's own frames look low-sun while the shipping game opens flat. Screenshot shots/critic/environment/p4g_default.png (no ?time) against p4f_street.png (?time=17.5), identical camera: the 14:03 frame has short shadows, no warm/cool split and a bright saturated hillside; the 17:33 frame has a long raking shadow off the police station and warm roof edges.",
+      "evidence": "shots/critic/environment/p4g_default.png vs shots/critic/environment/p4f_street.png; src/core/Config.js:23",
+      "suggestion": "Change the Config default hour from 14.0 to 16.2 (LOOK_TARGET's 16.0-16.5 band, elevation 22-34 deg). If core/Config.js is out of bounds for this module, have the environment module clamp the opening hour on init when no ?time param was supplied, the same way showcase.js already does."
+    },
+    {
+      "severity": "blocker",
+      "description": "Cast shadows disappear at press-shot camera distance. At camera distance 130 m every object throws a long correct shadow. At 420 m - the standard city-builder overview - not a single shadow is cast anywhere in frame: no tower shadow across a street, no tree shadow, no vehicle contact shadow. Proven by rendering with hemisphere and IBL forced to 0 and exposure at 2.2 (p4e_sunonly.png): the sun-lit-only image shows every road, lawn and roof fully lit and only N.L facade falloff on the towers. The rig itself is healthy - probed live: 4 cascades, 2048 map, maxFar 1400, breaks 0.127/0.264/0.457/1.0, all four lights castShadow=true, shadow maps allocated, 358 casters, 697/697 shadow-receiving materials passed through csm.setupMaterial. So this is cascade sizing / fade / bias falling apart in cascades 2-3, not a missing feature.",
+      "evidence": "shots/critic/environment/p4e_sunonly.png (whole frame), shots/critic/environment/p4d.png region x560-1120 y330-620, versus shots/critic/environment/p4f_street.png; src/core/Engine.js:55-72",
+      "suggestion": "Bisect the cascade range: render distance 200/300/400/600 m and find where shadows die. Likely culprits, in order - (a) csm.fade=true with maxFar 1400 fades cascades 2-3 to nothing at typical view distances, try fade=false first; (b) shadowBias -0.00025 measured against lightFar 6000 is ~1.5 m of depth offset, which peter-pans a whole cascade-3 shadow off the ground, make bias proportional to cascade extent; (c) lightMargin 400 is smaller than the 380 m shadow a 100 m tower throws at 15 deg, raise to 1200. Add a regression shot at distance 420 m so this cannot silently return."
+    },
+    {
+      "severity": "blocker",
+      "description": "Shoreline interaction is undemonstrated and presumed undelivered. The assignment required 'real shoreline interaction rather than a hard line where beach meets water'. The environment showcase's only water is a rectangular reflecting pool inside a stone coping (showcase.js:112-140) - a hard geometric edge by construction - and none of the six presets (hero, detail, night, sky, aerial, pool) frames a beach or a lake margin. The claim cannot be verified from the module's own showcase.",
+      "evidence": "shots/critic/environment/p4_environment_hero_17h5.png, p4_environment_detail_17h5.png; src/modules/environment/showcase.js:112-140, 306-331",
+      "suggestion": "Add an environment_shore preset that frames a real terrain/water boundary at 17.5 and at 21, showing depth-based absorption, a wet-sand darkening band and foam. If the shoreline shader lives in terrain, state that in docs/requests/environment.md rather than reporting it as delivered."
+    },
+    {
+      "severity": "major",
+      "description": "Shadow fill is still close to neutral. Measured (B-R)/Y shadow minus lit is +0.41 on the showcase hero, below LOOK_TARGET row 13's +0.45 floor and well under the 0.70 median. Visually confirmed in shots/critic/environment/p4f_street.png: the grass shadows on the right-hand slope read dark green, not blue - the cool sky-fill bounce the judges specifically named is present but too weak to read.",
+      "evidence": "shots/critic/environment/p4_environment_hero_17h5.png, measured with tools/lookmeasure.py; shots/critic/environment/p4f_street.png region x850-1280 y280-620",
+      "suggestion": "Push the hemisphere sky colour further toward 214 deg hue and raise its share of total ambient relative to the IBL probe, or cool the probe's lower hemisphere. Target +0.70, then re-measure with lookmeasure."
+    },
+    {
+      "severity": "major",
+      "description": "Shadow quality inside the working range is poor: edges are a single uniform blur with no penumbra gradient, so a tree canopy shadow reads as an amorphous blob rather than a silhouette, and the plaza shows dark speckle clusters that look like shadow acne. CS2's reference frames show shadow edges that sharpen at the contact point and soften with distance from the occluder.",
+      "evidence": "shots/critic/environment/p4_environment_detail_17h5.png region x560-760 y350-420 (acne speckle on cobble); p4_environment_hero_17h5.png region x100-700 y380-620 (blobby tree shadows)",
+      "suggestion": "Raise shadowMapSize on cascade 0 or narrow cascade 0's extent, and use a contact-hardening PCSS-style blocker search instead of a fixed PCF radius. Re-check normalBias 0.03 against the cobble - the speckle appears where the shadow is near-parallel to the surface."
+    },
+    {
+      "severity": "major",
+      "description": "No contact shadow or ambient occlusion under vehicles and building bases at gameplay range. Buses, cars and streetlights on the arterial sit on the asphalt with zero darkening at the tyre/base line, and building walls meet the lawn with no AO tuck. The judges named 'firm contact shadows under every vehicle and prop' and 'AO tucked under kerbs and eaves' explicitly.",
+      "evidence": "shots/critic/environment/p4d.png region x560-1120 y330-620 (brightened crop) - bus at approx x760 y890 scaled, cars along the arterial, tower bases against grass",
+      "suggestion": "Once the cascade-range blocker is fixed, verify GTAO is actually running at these distances - the AO pre-pass may be distance-limited the same way. Add a short-range screen-space contact-shadow trace (8-16 steps) for the first 30 m so vehicles ground even when the cascade fades."
+    },
+    {
+      "severity": "minor",
+      "description": "environment_detail is a sphere-and-cobble lookdev set, not a city set. It demonstrates material response well but proves nothing about the judges' complaint, which was about asphalt, facades and ground cover in a city. A critic cannot use it to answer the systemic questions.",
+      "evidence": "shots/critic/environment/p4_environment_detail_17h5.png",
+      "suggestion": "Point environment_detail at a street corner with kerb, asphalt, a vehicle and a building base at 40 m, so shadow, AO and contact behaviour are visible on the surfaces the judges named."
+    }
+  ],
+  "screenshots": [
+    "shots/critic/environment/p4_environment_hero_17h5.png",
+    "shots/critic/environment/p4_environment_detail_17h5.png",
+    "shots/critic/environment/p4_environment_night_21.png",
+    "shots/critic/environment/p4d.png",
+    "shots/critic/environment/p4e_sunonly.png",
+    "shots/critic/environment/p4f_street.png",
+    "shots/critic/environment/p4g_default.png"
+  ]
+}

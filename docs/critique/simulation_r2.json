@@ -1,0 +1,64 @@
+{
+  "score": 7.5,
+  "pass": false,
+  "summary": "Round 2 is a real step up from 6.5: the city is visible, night has thousands of per-pane lights, service sites connect to roads with kerb cuts and bay markings, vehicles are real-proportion PBR, the info view is single-service, economy is per-week. Model side verified: contract complete (setSpeed/setTax/tick/stats + world.time/economy/services), deterministic across two cold loads, 60 sim-minutes cost 0.6 ms, zero console errors/warnings, 1112-1527 draws / 3.0-5.1 M tris. Presentation is still 'good indie': the stand-in city is flat massing blocks (decal windows with no reveal, identical dark speckled flat roofs that dominate the aerial, no entrances, no rooftop detail, two-tone palette), the fire info view paints the entire city an alarming uniform red because one 380 m radius covers everything, stand-in plinths cut dirt scars into slopes, and a 'Large Village' of 1,944 people wears a skyline of ~100 towers. Not CS2-class yet; fails the 8.5 bar.",
+  "strengths": [
+    "simulation.api contract complete and deterministic (identical stats() across two cold loads, seed=7); tick(60) = 0.6 ms, effectively free per frame",
+    "Economy per week with vs-last-week delta; milestones fire notifications at days 1/5/14; RCI demand, happiness (83 %), coverage all exposed in stats()",
+    "Night hero (r2_simulation_hero_21.png) now shows thousands of individually varied lit panes with staggered switch-on; power plant and fire house have per-pane variation",
+    "Fire house apron (r2_simulation_detail_13.png): driveway with drop kerb to the street, bay lines, edge lines, tyre-wear streaks, membrane roof with coping, brick mullioned windows",
+    "Zero console errors/warnings; draws 1112-1527, tris 3.0-5.1 M, steady fps 215-240 at 1280x720"
+  ],
+  "issues": [
+    {
+      "severity": "major",
+      "description": "Stand-in buildings are flat massing blocks: window grid is a flat decal on every face with no reveal, no ground-floor/entrance differentiation, no balconies, no parapets or rooftop mechanicals, and every flat roof is the same dark speckled texture, so from the hero camera the high-density blocks read as dark grey slabs. Palette is two tints (blue-grey, beige). Nothing like the silhouette and material variety of cs2_04.",
+      "evidence": "shots/critic/simulation/r2c_block.png (whole frame); shots/critic/simulation/r2_simulation_hero_13.png (blocks at 300-700 x 250-500)",
+      "suggestion": "In standins.js: give flat roofs a lighter membrane with a parapet band and 1-3 instanced rooftop boxes (HVAC/stair core); recess panes via parallax offset in the facade shader or a normal-mapped reveal; a distinct double-height ground floor with entrance/shopfront on the frontage face; per-building albedo from a 6-8 swatch palette (brick red, buff, white render, dark glass); vary massing with a setback at the top 1-2 floors for tall types."
+    },
+    {
+      "severity": "major",
+      "description": "Fire info view paints the entire developed area a uniform red wash: fire's service colour is 0xef5350 and the single 380 m radius covers the whole 480 m grid, so 'served' = red across the board with a single barely visible ring. Red reads as danger, and the wash carries no gradation (distance, capacity strain), unlike cs2_03/cs2_07 where colour encodes magnitude. No in-scene legend visible.",
+      "evidence": "shots/critic/simulation/r2_composite.png top-left quadrant (r2b_simulation_infoview_13.png)",
+      "suggestion": "Encode coverage strength (distance falloff x 1-strain) as a 3-stop ramp and cap the served wash alpha ~0.12; use a non-alarm hue for served fire coverage (CS2 style: desaturate the world, tint covered buildings, keep red for unserved/at-risk); draw the ring at 2 px with a soft outer glow; scale the fire radius or add a second station so the view shows an actual boundary in the showcase."
+    },
+    {
+      "severity": "major",
+      "description": "Stand-in plinths on sloping terrain leave exposed dirt cut/fill scars and a visible grass-to-dirt seam around buildings; block interiors between the four building rows are bare terrain with random trees rather than yards, parking or back lots.",
+      "evidence": "shots/critic/simulation/r2c_block.png (centre-left slope below the 9-storey block, and right of centre beige block base)",
+      "suggestion": "Flatten each stand-in lot footprint (+2 m margin) via terrain.api.flattenRect with a ~6 m falloff, or drop a retaining-wall skirt mesh where the plinth exceeds 0.4 m exposure; fill block interiors with a simple instanced parking/yard slab and hedge line."
+    },
+    {
+      "severity": "minor",
+      "description": "Scale/progression inconsistency: HUD says 'Large Village, 1,944 residents' while the synthetic city shows roughly a hundred 6-14 storey towers pre-built. In CS2 a village is detached houses; buildings appear as people move in.",
+      "evidence": "shots/critic/simulation/r2_simulation_hero_13.png (HUD top-left vs skyline)",
+      "suggestion": "Gate stand-in floors by current residentialCapacity fill (render only occupied buildings, or cap floors at 3 until the 'Town' milestone), or start the showcase at a higher population so numbers match the skyline."
+    },
+    {
+      "severity": "minor",
+      "description": "Night stand-in windows are white-dominant with little visible 2700/4000 K spread at distance and no bloom halo; buildings are pitch-black silhouettes with no ambient bounce from street lighting. Fire engines vanish from the apron at night (no rendered vehicle lights).",
+      "evidence": "shots/critic/simulation/r2_simulation_hero_21.png; r2_composite.png bottom-left (r2_simulation_detail_21.png)",
+      "suggestion": "Bias the pane temperature hash toward warm (60 % 2700 K) and raise emissive to bloom threshold on ~10 % of panes; add a faint 0.02 warm ambient term on facades below 6 m via nightFactor; give parked service vehicles low-intensity marker lights or park them inside bays at night."
+    },
+    {
+      "severity": "minor",
+      "description": "Service-site micro-detail still below cs2_04: lawn is a flat single-tone green with sparse flower dots, no fence/hedge/site boundary, no signage pole or hydrant; procedural fire engines have unglazed cab faces and plain dark disc wheels.",
+      "evidence": "shots/critic/simulation/r2_simulation_detail_13.png (apron and lawn, 300-900 x 380-620)",
+      "suggestion": "Add a perimeter hedge/chain-link instanced along the lot edge, a hydrant and flagpole prop, mown-stripe albedo variation on the lawn; give vehicles a dark glass cab band, rim highlights and a mudflap/bumper so they read at 84 m."
+    },
+    {
+      "severity": "minor",
+      "description": "Budget balance is inert: starting treasury 452,472 against a -324/week net makes milestone rewards (25k/40k/60k) and the weekly report irrelevant to play.",
+      "evidence": "HUD in every screenshot; stats(): money 452472, income 9180, expenses 9504",
+      "suggestion": "Start the showcase at ~60-80k so weekly swings and rewards are visible in the treasury; tune upkeep so a 2k village runs +/-1-2k/week."
+    }
+  ],
+  "perf": { "fps": 220, "drawCalls": 1527, "triangles": 5130284, "consoleErrors": 0 },
+  "screenshots": [
+    "shots/critic/simulation/r2_simulation_hero_13.png",
+    "shots/critic/simulation/r2_simulation_detail_13.png",
+    "shots/critic/simulation/r2_simulation_hero_21.png",
+    "shots/critic/simulation/r2_composite.png",
+    "shots/critic/simulation/r2c_block.png"
+  ]
+}

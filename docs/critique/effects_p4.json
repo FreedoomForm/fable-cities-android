@@ -1,0 +1,82 @@
+{
+  "score": 5.0,
+  "pass": false,
+  "summary": "Real progress: wet asphalt is no longer identical to dry (dark albedo, screen-space light smears, red tail-light reflections), dry asphalt now carries aggregate grain, contact shadows sit under cars, 292 vehicles, hero has genuine aerial haze, zero console errors, 1860-2020 draw calls. But the grade over-corrected catastrophically: 20-36% of every daytime frame is clipped to pure RGB(0,0,0) (CS2 refs: 0.0-0.1%), so ground_shadow_ratio measures 85-15703 against a CS2 band of 6.8-31.2. The builder's reported 'lum_p10 0.008-0.021, ground shadow 12-27' is not reproducible on his own presets. The headline deliverable - puddles in camber and gutters - is absent from every frame I shot, including effects_puddles. Wet asphalt loses ALL grain, ending up flatter than dry: a direct regression against judge defect #1.",
+  "issues": [
+    {
+      "severity": "blocker",
+      "description": "Grade clips a third of the frame to absolute black. shots/critic/effects/p4rainclose.png: 36.2% of pixels are exactly RGB(0,0,0); p4rain_effects_detail_17h5.png 30.0%; p4_effects_detail_17h5.png 20.5%. CS2 refs cs2_04/08/11 measure 0.0-0.1%. lum_p10 reads 0.0000 on three frames (LOOK_TARGET band 0.007-0.017), and ground_shadow_ratio blows to 4349 / 7620 / 15703 against the CS2 band 6.8-31.2 because the denominator is zero. The left half of p4_effects_detail_17h5.png (x 0-500, y 100-400) is a featureless black cutout where buildings, trees and the CAFE facade should read. This is a worse failure than the noon-flat frames it replaced: the judges asked for three-dimensional surfaces and got silhouettes.",
+      "evidence": "python3 tools/lookmeasure.py go(): lum_p10 0.0000 / ground_shadow_ratio 15703 on p4rain_effects_detail_17h5.png vs cs2_04 0.0073 / 31.2",
+      "suggestion": "Do not hit lum_p10 by crushing. Lift the toe from -0.92 back to about -0.60 and raise black level so no more than ~0.2% of pixels clip, then take the remaining black-floor drop from the exposure/ambient key. Add a hard assert in the showcase log: fail if pure-black fraction > 1%."
+    },
+    {
+      "severity": "blocker",
+      "description": "No puddles exist. The assignment named 'puddles in road camber and gutters' first. shots/critic/effects/p4rainclose.png is preset effects_puddles at 24 m and shows zero discrete puddle shapes - no gutter ponding along the kerb at x 300-520, no wheel-rut pools in the carriageway, no puddle edges anywhere. Same in p4rain_effects_detail_17h5.png and p4rain_effects_night_21.png. The wet road is one uniform smooth sheet.",
+      "evidence": "shots/critic/effects/p4rainclose.png (effects_puddles, weather=rain, 17.5) - road surface right of the tree, x 640-1280 y 300-650, is a continuous gradient with no puddle boundary",
+      "suggestion": "The vUv-space puddle mask is either masked out by the SSR pass or its amplitude is near zero. Render the mask straight to screen to confirm it is non-zero, then give puddles a hard boundary: albedo x0.16 with roughness 0.03 inside, an aggregate-visible ring at the edge, and 15-25% coverage biased to the gutter. Verify from effects_puddles before reporting."
+    },
+    {
+      "severity": "blocker",
+      "description": "The re-aimed presets shoot into the sun and destroy the frame. shots/critic/effects/p4_effects_hero_17h5.png has a blown white hole covering roughly x 700-980, y 190-620 (0.8% fully clipped white, plus a large near-white wash) that erases the avenue, the plaza and the buildings behind it. p4_effects_detail_17h5.png is worse: the right third is a white sheet and the left two thirds are black silhouettes. Because the sun is dead ahead, cast shadows point away from camera and hide behind their own casters, so the preset shows fewer readable shadows than before, which is the opposite of the stated intent.",
+      "evidence": "shots/critic/effects/p4_effects_hero_17h5.png region x 700-980 y 190-620; p4_effects_detail_17h5.png right third",
+      "suggestion": "Yaw the hero and detail presets 60-90 degrees off the sun azimuth so the light rakes ACROSS the avenue. Cross-light is what cs2_04 and cs2_11 use; shadows then fall sideways into frame and read at full length. Cap the specular sun-glint sheet so no more than 0.1% of pixels clip white."
+    },
+    {
+      "severity": "major",
+      "description": "Wet asphalt is flatter than dry asphalt. Comparing the same road patch (x 330-700, y 380-470) between p4_effects_detail_17h5.png and p4rain_effects_detail_17h5.png, local luminance std falls from 0.218 to 0.164 and, visually, the aggregate speckle that is clearly present in the dry frame is completely gone in the wet one - replaced by a smooth blue-grey gradient with soft blobby light wedges. Real wet asphalt keeps its aggregate visible everywhere except inside standing water. The micro-relief flatten of 0.82 is applied globally instead of only inside puddles.",
+      "evidence": "scratchpad road_cmp.png crop of shots/critic/effects/p4_effects_detail_17h5.png vs p4rain_effects_detail_17h5.png, box (180,300,760,600)",
+      "suggestion": "Gate the micro-relief flatten by the puddle mask: flatten 0.85 inside water, at most 0.15 on damp-but-drained asphalt. Keep the normal-map and roughness-map grain at full strength on the road crown."
+    },
+    {
+      "severity": "major",
+      "description": "Shadows are warmer than lit surfaces - LOOK_TARGET row 13 is inverted, not just missed. Measured shadow/lit blue-over-red ratio: p4rain_effects_detail_17h5.png 0.61, p4rain_effects_night_17h5.png 0.35, p4_effects_hero_17h5.png 0.59, p4_effects_night_17h5.png 0.65. Values below 1.0 mean the shadow side is redder than the key. CS2 daytime refs run 1.27-2.21 (cs2_02 13.0). Judges named 'cool sky-fill bounce inside the shadows' explicitly; there is none, which is part of why the crushed areas die to black rather than to blue.",
+      "evidence": "lookmeasure BoverR_ratio: ours 0.35-1.31 across six frames; cs2_04 1.59, cs2_11 1.27, cs2_12 2.21",
+      "suggestion": "Tint the ambient/sky-fill term to hue 214 and raise it enough that shadow B/R lands at 1.4-2.0, then take the extra darkness out of the toe instead. This buys the black floor and the cool shadow at the same time."
+    },
+    {
+      "severity": "major",
+      "description": "Aerial perspective is measured but backwards in most frames. far/near non-sky luminance: 1.16 (detail 17h5), 0.30 (rain detail 17h5), 0.92 (hero 17h5), 0.72-0.81 at night. CS2 target 2.15, band 1.44-4.10. The far field is darker than the near field in five of six frames, so distant geometry gains contrast with distance instead of losing it. Only p4rain_effects_night_17h5.png (1.57) lands in band. The hero frame's mountains do look hazy, so the pass works in principle - it is being cancelled by the black crush pulling the midground down.",
+      "evidence": "lookmeasure atmos_lum_far_over_near across shots/critic/effects/p4*.png",
+      "suggestion": "Make the aerial term additive toward sky colour and apply it BEFORE the toe, not after, so it lifts distant blacks instead of being crushed with them. Re-measure until far/near sits at 1.8-2.5."
+    },
+    {
+      "severity": "major",
+      "description": "Rain streaks are a uniform full-screen overlay. In p4rain_effects_night_21.png the streaks are identical in length, angle, opacity and spacing from the near kerb to the far vanishing point and are drawn at high contrast over the black building at x 0-260. cs2_08.jpg shows fine, dense, depth-attenuated streaks that fade out past mid-distance. Ours read as scratches on the lens. Sparse count also makes each individual streak conspicuous.",
+      "evidence": "shots/critic/effects/p4rain_effects_night_21.png full frame vs reference/cs2_08.jpg",
+      "suggestion": "Attenuate streak alpha and length by view depth, raise count 3-4x while cutting per-streak opacity, and thin the streaks to 1-1.5 px at 40 m so they read as volume rather than overlay."
+    },
+    {
+      "severity": "major",
+      "description": "Blown, aliased 1 px white lines on kerbs and lane markings. shots/critic/effects/p4rainclose.png carries a continuous pure-white diagonal from about (215,318) to (490,700) along the kerb edge; p4rain_effects_night_21.png has the same at (255,455)-(390,350) and (850,430)-(870,470). At night, in rain, painted lines and kerb edges should be dimmed and smeared by the water film, not the brightest thing in frame. The roughness drop to 0.035 is amplifying specular aliasing on thin edges.",
+      "evidence": "shots/critic/effects/p4rainclose.png diagonal kerb line; p4rain_effects_night_21.png dashed markings",
+      "suggestion": "Clamp the wet specular lobe on thin high-curvature edges (roughness floor 0.10 rather than 0.035 outside puddles) and multiply lane-marking albedo by the wetness factor so paint darkens like the asphalt around it."
+    },
+    {
+      "severity": "minor",
+      "description": "Vehicle spray is not visible in any frame I took. VehicleSpray.js gates emission at speed >= 3.2 m/s, and at 17:33 the detail and night presets show traffic queued at the signal, so the plume never fires where the camera is pointed. The showcase log does not surface sprayEmitters per shot either, so the claim cannot be checked from the log.",
+      "evidence": "src/modules/effects/VehicleSpray.js line 156 'if (speed < 3.2) continue'; no mist visible behind the moving truck in shots/critic/effects/p4rainclose.png",
+      "suggestion": "Add a preset that frames free-flowing traffic on the wet avenue, drop the threshold to about 2.0 m/s, and emit sprayEmitters into the per-shot log entry so the count is verifiable."
+    },
+    {
+      "severity": "minor",
+      "description": "Triangle count sits at the ceiling: 8,232,961 (effects_night 17h5), 8,132,659 (rain night 17h5), 8,111,456 (effects_puddles). The 8M budget is exceeded on three of eleven shots. Rain does not add to it - the dry night frame is the heaviest - so this is scene geometry rather than effects, but effects owns the presets that frame it.",
+      "evidence": "shots/critic/effects/p4.log.json and p4rainclose.log.json triangle counts",
+      "suggestion": "No effects change needed; flag the count to the owning modules or pull the night preset back slightly so it does not sit above budget."
+    }
+  ],
+  "screenshots": [
+    "shots/critic/effects/p4_effects_hero_17h5.png",
+    "shots/critic/effects/p4_effects_detail_17h5.png",
+    "shots/critic/effects/p4rain_effects_detail_17h5.png",
+    "shots/critic/effects/p4rain_effects_night_21.png",
+    "shots/critic/effects/p4rainclose.png",
+    "reference/cs2_08.jpg"
+  ],
+  "systemicProgress": {
+    "materials": "Half fixed. Dry asphalt now shows genuine aggregate grain at 40 m and tyre-path darkening reads in p4_effects_detail_17h5.png - a real advance on the flat colour field the judges named first. But wet asphalt throws that away: local variance drops 0.218 to 0.164 and the surface becomes a smooth plastic sheet with blobby light wedges, so rain is now the flattest material in the build. Vehicle bodies remain untextured flat white/grey with no dirt, wear or clearcoat break-up, and the building facades that are still legible (the CAFE block, the grey wall left of hero) are flat colour with painted-on window rectangles.",
+    "lighting": "Contact shadows are the clear win: cars in the dry detail crop sit in firm dark pools and AO reads along the kerb line. Sun elevation is correct at hour 17.5. Everything else fails. The presets aim into the sun so long shadows point away from camera and stay hidden; there is no cool sky-fill at all - shadow blue-over-red measures 0.35-0.65 against a CS2 1.27-2.21, meaning shadows are warmer than the key; and 20-36% of the frame clips to pure black, which is not shadow but absence of data. Surfaces do not read as three-dimensional in the shadow half of any daytime frame.",
+    "density": "Fixed as far as effects controls it. 292 vehicles in scene, queued traffic fills both carriageways, headlight cones and red tail-light smears are present at night, and rain adds splash activity. Pedestrians are sparse - two figures in the whole detail frame - and vehicle spray never fires because the visible traffic is stationary at the signal.",
+    "variety": "Not this module's contract and not improved by it. The two white pickups sitting side by side in p4_effects_detail_17h5.png are the same mesh in the same colour, and the effects grade cannot hide it.",
+    "colour": "Overcorrected past the target rather than onto it. C_matched 0.026-0.047 sits inside the CS2 0.026-0.059 band, so the chroma correction landed. Everything tied to lightness overshot: lum_p10 0.0000 against a 0.007-0.017 band, ground_shadow_ratio 85-15703 against 6.8-31.2, okL_mean 0.24-0.27 on rain daytime frames which is darker than CS2's night reference cs2_08 at 0.357, and aerial far/near 0.30-1.16 against 1.44-4.10. The reported figures (lum_p10 0.008-0.021, ground shadow 12-27) do not reproduce on the module's own presets under tools/lookmeasure.py."
+  }
+}

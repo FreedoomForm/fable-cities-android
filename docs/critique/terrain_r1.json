@@ -1,0 +1,81 @@
+{
+  "score": 6.5,
+  "pass": false,
+  "summary": "Round 1 fixed the mechanics (no edge seam, no tiling, zero console errors, full world.terrain contract, perf well inside budget) but the picture is still good-indie, not CS2. The river is an opaque, uniformly saturated tropical turquoise that is brighter than the land at noon and ~2x brighter than the land at night; a continuous pale sand ribbon lines both banks of the whole river; the land is smooth blob-noise with no erosion or ground-cover breakup; trees outside the one dense block are scattered evenly like savanna lollipops. Shoreline is stair-stepped at the 8 m grid in the detail view. Nothing is broken, several things are unconvincing.",
+  "perf": { "fps": 257, "drawCalls": 822, "triangles": 3172103, "consoleErrors": 0 },
+  "screenshots": [
+    "shots/critic/terrain/r1_terrain_hero_13.png",
+    "shots/critic/terrain/r1_terrain_detail_13.png",
+    "shots/critic/terrain/r1_terrain_hero_21.png",
+    "shots/critic/terrain/r1_terrain_detail_21.png"
+  ],
+  "strengths": [
+    "world.terrain contract complete: getHeight/getNormal/isWater/raycast, flattenRect, conformPath, conformDisc, clearVegetationRect/Circle/Path/Oriented, biome; zones:changed and services:changed footprint clearing wired (src/modules/terrain/index.js:154-275).",
+    "Zero console errors/warnings, all modules ok in r1.log.json; 563-822 draw calls, 2.0-3.2 M tris, 257-457 fps at 1280x720 - inside the 2500 calls / 8 M tris / 50 fps budget.",
+    "Map-edge seam is gone; no visible texture tiling at either zoom; soft shadows without acne or peter-panning.",
+    "Shoreline foam, animated water normals and sun glitter are present; the dense forest block at hero left reads as a canopy.",
+    "Twilight sky gradient at 21:03 and treeline silhouette in detail_21 are pleasant."
+  ],
+  "issues": [
+    {
+      "severity": "major",
+      "description": "Water tonality: opaque, uniformly saturated tropical turquoise across the whole river with no Fresnel darkening at grazing angles and no readable sky/tree reflection. Brighter than the land at noon. CS2 (reference/cs2_02.jpg) water is deep desaturated blue-green, darker than the land, dominated by sky reflection with sparse whitecaps.",
+      "evidence": "r1_terrain_hero_13.png river centre mean RGB (97,139,139) vs land (64,82,35); r1_terrain_detail_13.png water (77,139,176), right two-thirds of frame is one flat cyan field.",
+      "suggestion": "Deep absorption colour ~ (0.02,0.08,0.10) linear reached within ~6 m depth; shallow turquoise tint only in the 0-3 m band. Schlick Fresnel (F0 0.02) blending refraction to the planar reflection; verify terrain + sky are actually on LAYER_REFLECTED and the reflection is contributing at quality=high. Cut the scatter/turbidity term by ~60%, keep specular a tight GGX lobe instead of broad glitter."
+    },
+    {
+      "severity": "major",
+      "description": "Night water is self-illuminated: at 21:03 the river is ~2x brighter than the land and the foam is a hard white stroke. Night water should be near-black sky reflection plus a narrow moon glitter path.",
+      "evidence": "r1_terrain_hero_21.png water (38,59,80) vs land (25,31,28); r1_terrain_detail_21.png water (53,81,114) vs land (31,33,34), foam line along x 100-600.",
+      "suggestion": "Scale the scatter/albedo and foam terms by sun+moon irradiance (or 1 - 0.9*nightFactor), source the ambient term from the sky probe rather than a constant, and fade foam alpha to ~25% at night."
+    },
+    {
+      "severity": "major",
+      "description": "Continuous ~10-15 m pale sand ribbon on both banks along the entire river. The builder's 'patchy sand bars' claim does not hold at hero distance; temperate river banks are grass/mud to the waterline (cs2_02.jpg).",
+      "evidence": "r1_terrain_hero_13.png every bank from top (700,150) to bottom (350,650) shows the band; sample (468-488,370-395) = (122,138,54).",
+      "suggestion": "Sand only where biome == coast, or on the convex (inner) side of meanders via curvature sign, AND low-frequency noise > 0.55 AND slope < 4 deg; elsewhere use wet dirt/darkened grass with a 1-2 m wet band."
+    },
+    {
+      "severity": "major",
+      "description": "Terrain morphology and ground cover: land is smooth low-frequency blob noise with no drainage, ridgelines or erosion, and one green with blurry yellow-green ovals. No dry-grass/dirt/rock breakup at hero distance.",
+      "evidence": "r1_terrain_hero_13.png entire land area; r1_terrain_hero_21.png silhouette shows only soft bumps.",
+      "suggestion": "Bake a thermal/hydraulic erosion pass (or domain-warped ridged FBM on the upland mask) into the heightmap at generation; drive a dry-grass/dirt layer from slope + aspect + height + drainage noise; expose rock outcrops above 30 deg slope inside the playable area too, not only on the horizon ring."
+    },
+    {
+      "severity": "major",
+      "description": "Vegetation distribution is not forest-like: outside the dense block at hero left, trees are scattered uniformly across the valley like savanna, each reading as a lollipop (thin dark trunk, small blob crown).",
+      "evidence": "r1_terrain_hero_13.png right half and centre (x 600-1280, y 150-600); r1_terrain_detail_13.png treeline y 60-110.",
+      "suggestion": "Forest mask = thresholded low-frequency noise (80-300 m clumps) x moisture with density falloff at edges; 0.03-0.06 trees/m^2 inside clumps so crowns touch, near-zero outside except riparian strips and hedgerows; crowns 8-14 m wide at 12-20 m height with 2-3 crown lobes."
+    },
+    {
+      "severity": "minor",
+      "description": "Shoreline is stair-stepped/faceted at close range - the 8 m heightmap grid intersecting the water plane is visible at a 48 m camera distance.",
+      "evidence": "r1_terrain_detail_13.png x 300-450, y 200-350 and the lower-left shore x 100-300, y 400-600.",
+      "suggestion": "2-4 m tessellation on LOD0 chunks near the shore, or (cheaper) a signed shore-distance texture sampled in terrain and water shaders to drive the wet band, foam and soft-depth fade so the edge is not geometry-defined."
+    },
+    {
+      "severity": "minor",
+      "description": "Undergrowth is sparse and reads as flat card sprites; CS2 has continuous grass near camera.",
+      "evidence": "r1_terrain_detail_13.png foreground and mid-ground tufts (x 0-500, y 150-450).",
+      "suggestion": "3-5x density within 40 m, crossed-quad clumps in two layers, distance fade, base colour sampled from the ground splat under each clump."
+    },
+    {
+      "severity": "minor",
+      "description": "Dark grey-brown streaks on the river's east bank read as smears rather than cliffs.",
+      "evidence": "r1_terrain_hero_13.png around (700,380) and (820,215).",
+      "suggestion": "Give steep bank faces a rock albedo with visible strata via the triplanar path; cap wet darkening on land at ~18% as claimed and verify it is applied in linear space."
+    },
+    {
+      "severity": "minor",
+      "description": "Ground macro variation reads as blotches - large soft yellow-green ovals at hero distance and dark brown burnt-looking patches up close.",
+      "evidence": "r1_terrain_hero_13.png land at (50-500, 100-350); r1_terrain_detail_13.png lower-left (80-200, 380-450).",
+      "suggestion": "Replace low-frequency colour ovals with higher-frequency dry-grass patches and dirt trails aligned to slope/drainage; add a detail normal so brown patches have relief."
+    },
+    {
+      "severity": "minor",
+      "description": "Grey-mauve desaturated strip under the treeline base, likely the forest-floor layer or impostor atlas colour space.",
+      "evidence": "r1_terrain_detail_13.png x 140-360, y 88-100 mean (125,132,106) vs grass just below (135,152,109).",
+      "suggestion": "Check colorSpace (sRGB) on the forest-floor/impostor textures and blend the forest-floor layer only under canopy coverage."
+    }
+  ]
+}

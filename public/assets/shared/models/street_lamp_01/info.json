@@ -1,0 +1,12 @@
+{
+  "id": "street_lamp_01",
+  "name": "Street Lamp 01",
+  "type": "models",
+  "authors": {
+    "Josh Dean": "All"
+  },
+  "license": "CC0",
+  "source": "https://polyhaven.com/a/street_lamp_01",
+  "res": "1k",
+  "fmt": "gltf"
+}

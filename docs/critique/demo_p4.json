@@ -1,0 +1,110 @@
+{
+  "module": "demo",
+  "pass_label": "p4",
+  "score": 7.0,
+  "pass": false,
+  "summary": "Big, real progress: exposure is fixed (lum_p10 0.015 vs target 0.010, was 0.158), downtown silhouette variety is genuinely solved, dense blocks are paved, port/motorway/rail all verify, traffic fills the roads and all 8 presets carry a non-noon hour. Zero console errors, drawCalls 1876-2286. But the two defects the judges named FIRST are still open: asphalt has no aggregate grain and no tyre-wear wheel paths, and facades are painted-on rectangles with no recess or mullion depth. Worse, the flagship street preset is dominated by lurid faceted lime-blob trees (S 0.572, hue 105 vs CS2's 74) that stay bright green at night. Not a pass.",
+  "measurements": {
+    "drawCalls": [1876, 2286],
+    "triangles": [7777423, 10283095],
+    "triangle_budget": 8000000,
+    "consoleErrors": 0,
+    "consoleWarnings": 0,
+    "moduleStatus_demo": "ok",
+    "presets_registered": 8,
+    "lum_p10_downtown_golden": 0.015,
+    "lum_p10_target": 0.010,
+    "okL_mean_downtown_golden": 0.517,
+    "okL_target": "0.42-0.50",
+    "shadow_depth_downtown_golden": 5.6,
+    "shadow_depth_cs2_09_goldenhour": 6.1,
+    "veg_Y_downtown_golden": 0.052,
+    "veg_Y_target": "0.048-0.080",
+    "veg_C_street_foreground": 0.084,
+    "veg_C_target": 0.053,
+    "veg_hue_street_foreground": 105,
+    "veg_hue_cs2": 74,
+    "facade_S_downtown": 0.269,
+    "facade_S_target": 0.31,
+    "facade_hue_downtown": 237,
+    "facade_hue_target": 41,
+    "asphalt_hue_ours": 237,
+    "asphalt_hue_cs2": 51,
+    "asphalt_C_ours": 0.045,
+    "asphalt_C_cs2": 0.025,
+    "facade_HF_energy_ours": 10.36,
+    "facade_HF_energy_cs2": 2.98
+  },
+  "systemicProgress": {
+    "materials": "NOT FIXED — the headline defect. Asphalt in p4_street_level_17h5.png (x560-760, y470-700) is a uniform blue-grey field: no aggregate grain, no tyre-wear darkening in the wheel paths, no joints, patches or worn decals. It measures hue 237 / C 0.045 against CS2's neutral-warm hue 51 / C 0.025, so our road is both bluer and more chromatic than the reference. Facades in p4_downtown_golden_17h5.png carry a grime/speckle overlay but windows are painted-on dark rectangles with zero recess, zero mullion depth and zero glass specular; high-frequency energy is 10.36/255 against the reference's 2.98, i.e. we ship 3.5x the reference's per-pixel noise but none of its structured material detail — that noise is aliasing, not grain. Facade saturation has improved to S 0.269 (target 0.31) but sits at hue 237 (cool blue-grey) where CS2 is hue 41 (warm brick/render). Park lawn in p4_downtown_night_21.png (x850-1200, y330-470) and lawn pockets inside the aerial's downtown core are still flat untextured colour fields.",
+    "lighting": "PARTLY FIXED. Exposure and black floor are solved: lum_p10 0.015 (was 0.158, target 0.010) and ground shadow depth 5.6 now matches the golden-hour reference cs2_09's 6.1. Every preset carries a low sun (16.15-21h, none at noon) and cast shadows are readable on streets and roofs. Contact shadows under vehicles are present at street level and at night. Still missing: AO/contact darkening at building bases — towers meet paving with a clean undarkened edge in both p4_downtown_golden_17h5.png and p4_downtown_night_21.png — and no AO tucked under kerbs, eaves or guardrails. Sky-fill in shadow is now cool, but the road reads over-cooled (hue 237) rather than warm-neutral.",
+    "density": "FIXED. p4_street_level_17h5.png carries ~20 vehicles plus a bus at one crossing; p4_downtown_night_21.png shows lit windows across every tower, warm street-lamp pools, parked cars and headlights. p4b_aerial.png reads as a genuinely dense city with a port, beach and full road grid. Ground cover still lacks undergrowth variety.",
+    "variety": "FIXED for buildings. p4_downtown_golden_17h5.png shows at least six distinct silhouettes — stepped deco with spire, round glass tower, brick church with steeple, twin slabs, domed civic, plus varied mid-rise fill. The 'one tower forty times' complaint is answered. Vegetation variety is NOT fixed: two tree assets appear in one frame and the near-field one is a faceted blob.",
+    "colour": "MOSTLY FIXED globally, one severe local failure. Global okL 0.517 (target 0.42-0.50, was 0.70), vegetation Y 0.052 (target 0.048-0.080, was 0.271), haze reads correctly on the aerial. The failure is the foreground street trees: Y 0.139, C 0.084, S 0.572, hue 105 against the CS2 measurement of Y 0.085 / C 0.035 / hue 74 — 2.4x the reference chroma at a pure lime hue, and they occupy 8.4% of the street frame."
+  },
+  "issues": [
+    {
+      "severity": "blocker",
+      "description": "Foreground street trees are lurid faceted lime-green blobs with flat vertex-colour facets, no texture and no leaf silhouette. In shots/critic/demo/p4_street_level_17h5.png they occupy the bottom-centre and bottom-right (x 300-960, y 430-720) and the canopy is wider than the bus beside it. Measured S 0.572, C 0.084, hue 105, Y 0.139 against CS2's C 0.035 / hue 74 / Y 0.085 — 2.4x the reference chroma at 1.6x its luminance. In p4_street_level_21.png the same blobs still render bright lime at 21:03, so they are not taking the night lighting at all. A better dark-green tree asset is visible on the sidewalk in the SAME frame (x 940-1100, y 400-560), so the near-distance LOD is serving the crude mesh while the far LOD serves the good one. This single asset drags the flagship street preset below programmer-art level.",
+      "evidence": "shots/critic/demo/p4_street_level_17h5.png bottom third; p4_street_level_21.png x 780-960 y 550-720; measured hue 105 / S 0.572 vs CS2 hue 74 / S 0.482.",
+      "suggestion": "Demo owns three of the eight press cameras that frame these. Either (a) re-aim street_level, downtown_night and closeup so the median-tree row is not the dominant foreground mass, or (b) file a blocker against props to fix the near-LOD: swap the faceted blob for the sidewalk tree mesh, cut foliage albedo to Y 0.085, pull chroma to 0.035, shift hue from 105 to 74-80, and make the canopy receive the night light rig. Until then this preset must not ship in a press kit."
+    },
+    {
+      "severity": "blocker",
+      "description": "Asphalt is still a flat untextured colour field — the defect all four judges named first. The carriageway in shots/critic/demo/p4_street_level_17h5.png (x 560-760, y 470-700) is uniform blue-grey: no aggregate grain, no tyre-wear darkening in the two wheel paths per lane, no joint lines, no patch decals, no worn or scuffed lane paint. Compare reference/cs2_01.jpg (x 60-420, y 300-700), where the wheel paths are visibly darker than the crown, the surface carries grain, and a painted route number '55' is worn into it. Ours also measures hue 237 / C 0.045 against CS2's hue 51 / C 0.025 — the road is bluer and 1.8x more chromatic than the reference, reading as cold plastic.",
+      "evidence": "shots/critic/demo/p4_street_level_17h5.png carriageway vs reference/cs2_01.jpg lower-left motorway; hue 237 vs 51, C 0.045 vs 0.025.",
+      "suggestion": "Use the CC0 asphalt PBR set in public/assets/shared (indexed in MANIFEST.md): tile albedo+roughness+normal at roughly 4 m so aggregate resolves at 40 m, then multiply a wheel-path darkening mask (two ~0.9 m bands per lane at ~0.85 albedo) along the carriageway UV, add sparse patch/joint decals, and neutralise the base tint from hue 237 toward hue 45-55 at C <= 0.025."
+    },
+    {
+      "severity": "major",
+      "description": "Facade windows have no geometric depth. In shots/critic/demo/p4_downtown_golden_17h5.png (crop x 760-1280, y 380-660) every window on every mid-rise is a painted-on dark rectangle flush with the wall — no recess, no frame, no mullion, no glass specular or fresnel, so at 40 m the towers read as decal sheets. The procedural facade texture supplies per-pixel noise (HF energy 10.36/255 against the reference's 2.98) which registers as aliasing, not material. Facade saturation has improved to S 0.269 but hue is 237 (cool blue-grey) where the LOOK_TARGET row 8 asks for hue 41 with S 0.31 (warm brick/render).",
+      "evidence": "shots/critic/demo/p4_downtown_golden_17h5.png x 760-1280 y 380-660; HF 10.36 vs cs2_01 2.98; hue 237 vs target 41.",
+      "suggestion": "For demo-owned landmarks and any demo-authored facade texture: inset window quads 0.15-0.25 m behind the wall plane so they self-shadow, add a spandrel/mullion band with real geometry on at least the podium floors, give glass roughness 0.1 with an envmap so it catches sky, and shift the base albedo from hue 237 to hue 30-55 at S 0.20-0.40. Drop the per-pixel noise amplitude, which is currently doing more harm than good."
+    },
+    {
+      "severity": "major",
+      "description": "No ambient occlusion or contact darkening where buildings meet the ground. In shots/critic/demo/p4_downtown_golden_17h5.png the towers at x 60-190 y 440-660 and x 900-1100 y 400-660 meet the paving with a clean, undarkened edge; the same is true at every building base in p4_downtown_night_21.png. There is no AO tucked under the kerb skirts the builder added, under eaves, or under the guardrails on the motorway embankment. Judges named this in three of the four pairs — it is why our masses read as 'pasted on' rather than sitting in the world.",
+      "evidence": "shots/critic/demo/p4_downtown_golden_17h5.png building bases; p4_downtown_night_21.png x 200-620 y 400-720.",
+      "suggestion": "The kerb skirts are already modelled, so the geometry is there — either enable an SSAO pass over the demo scene or, cheaper and demo-owned, bake a 1.5-2 m radial darkening decal (0.6 albedo falling to 1.0) into the DistrictGround paving cells at every building footprint edge and along the kerb skirts."
+    },
+    {
+      "severity": "major",
+      "description": "industrial_dusk aims a press camera at the weakest assets in the game. shots/critic/demo/p4b_industrial_dusk.png fills the top half with low-poly cone mountains speckled with acid-green conifer blobs (x 0-1280, y 60-300), the midground with opaque grey puffball smoke plumes (x 280-940, y 230-520), and the foreground with primitive coloured cubes standing in for crates (x 330-450, y 555-600). The composition itself is sound but no press kit should ship this frame.",
+      "evidence": "shots/critic/demo/p4b_industrial_dusk.png upper half and x 330-450 y 555-600.",
+      "suggestion": "Lower the pitch and shorten the distance so the mountain range falls behind the stack tops rather than filling the upper half, push the camera to a rail-siding or quay foreground so the coloured-cube crates are out of frame, and raise the fog so the conifer speckle desaturates. If the mountains cannot be kept out, drop industrial_dusk from the shipped preset list rather than shipping it as framed."
+    },
+    {
+      "severity": "major",
+      "description": "The aerial still shows flat bright-green lawn pockets inside the downtown core, so the 'buildings on a golf course' read is reduced but not eliminated. In shots/critic/demo/p4b_aerial.png see x 470-560 y 400-560 and the bright strip at x 300-430 y 590-640. The water in the same frame (x 0-420, y 430-720) is a flat grey-blue plane with no sun glint, no shore-to-deep gradient and no foam at the beach line.",
+      "evidence": "shots/critic/demo/p4b_aerial.png x 470-560 y 400-560; x 300-430 y 590-640; water x 0-420 y 430-720.",
+      "suggestion": "Extend the DistrictGround paving pass to every office/commercial/civic block inside the downtown ring, not just the ones that received it, and audit by rendering the paving mask alone. The water gradient and glint belong to terrain — raise it there."
+    },
+    {
+      "severity": "minor",
+      "description": "Triangle count exceeds the 8M budget on four of the six shots at 1280x720: downtown_golden 8.98M, downtown_night 10.28M, street_level 9.66M, industrial_dusk 9.39M. Draw calls are comfortably in budget at 1876-2286.",
+      "evidence": "shots/critic/demo/p4.log.json and p4b.log.json; peak 10,283,095 triangles on p4_downtown_night_17h5.png.",
+      "suggestion": "The heaviest additions are the parked-car fleet (~280 cars) and the container stacks. Give both an aggressive distance LOD or an impostor swap beyond ~250 m; that should recover 2-3M triangles without touching what the camera actually resolves."
+    },
+    {
+      "severity": "minor",
+      "description": "Two presets waste a large share of the frame on dead near-field mass. In shots/critic/demo/p4_downtown_night_21.png the left 45% (x 0-620) is unlit black building wall with no readable detail, and the preset shows a park and low-rise rather than the downtown skyline its name promises. In p4_street_level_17h5.png the left edge (x 0-90) is a black glass slab eating a seventh of the width.",
+      "evidence": "shots/critic/demo/p4_downtown_night_21.png x 0-620; p4_street_level_17h5.png x 0-90.",
+      "suggestion": "Yaw downtown_night about 25-35 degrees toward the tower cluster and raise the eye so the lit skyline occupies the left half instead of a black wall; the near buildings should frame the shot as a silhouette edge, not as a wall. Nudge street_level's eye 3-4 m right to trim the black slab."
+    },
+    {
+      "severity": "minor",
+      "description": "Edge aliasing on rooflines, poles, lane markings and the observation tower. Our facade region carries high-frequency energy of 10.36/255 against the reference's 2.98 at a comparable scale, and the excess is stairstep noise rather than material detail. Judges flagged this in three of four pairs.",
+      "evidence": "shots/critic/demo/p4_downtown_golden_17h5.png distant rooflines x 300-700 y 140-260; measured HF 10.36 vs cs2_01 2.98.",
+      "suggestion": "Not demo-owned, but demo is the frame that gets judged — escalate to effects for TAA or MSAA, and meanwhile render press stills at 2x and downsample, which the shot tool can do with --w 2560 --h 1440."
+    }
+  ],
+  "screenshots": [
+    "shots/critic/demo/p4_downtown_golden_17h5.png",
+    "shots/critic/demo/p4_downtown_night_21.png",
+    "shots/critic/demo/p4_street_level_17h5.png",
+    "shots/critic/demo/p4_street_level_21.png",
+    "shots/critic/demo/p4b_aerial.png",
+    "shots/critic/demo/p4b_industrial_dusk.png",
+    "shots/critic/demo/p4.log.json"
+  ]
+}

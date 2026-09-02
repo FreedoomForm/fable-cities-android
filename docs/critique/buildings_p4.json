@@ -1,0 +1,68 @@
+{
+  "score": 7.0,
+  "pass": false,
+  "summary": "Real progress: plaster/brick/concrete albedo+normal is genuinely textured at 40 m, ground floors differ from upper floors, res-low has garages, driveways, shingle grain and ridge caps, downtown silhouette variety is fixed, and LIT facades now measure on target (hue 39/24, S 0.19-0.22, Y 0.24-0.30 vs CS2 33-43 / 0.19-0.40 / 0.24-0.31; C 0.037 vs target 0.036). The named blocker survives in two places: office curtain wall renders near-black (wall and typical pane Y 0.000-0.001) with scattered blown-out white panes at Y 0.194 - a 200:1 jump and no sky reflection at all; and every punched window on low/mid-rise is still an opaque BLACK card in a white frame. Zero console errors, 1786-2136 draw calls, LAYER_REFLECTED verified enabled on all pooled meshes.",
+  "issues": [
+    {
+      "severity": "blocker",
+      "description": "Downtown curtain-wall towers are near-black masses with random white stickers. Measured on the centre tower of shots/critic/buildings/p4_buildings_night_17h5.png (region x 630-900, y 140-420, ~120 m): mullion/spandrel Y=0.0000, typical pane Y=0.0010, 'bright' pane Y=0.1937. The coated-dielectric change zeroed diffuse but the reflection term contributes nothing, so glass gets no sky at all; the only readable detail is a 200:1 pane-to-pane jump that reads as noise, not reflection. Same on every navy tower in p4_buildings_hero_17h5.png (x 560-1120, y 140-340).",
+      "evidence": "shots/critic/buildings/p4_buildings_night_17h5.png centre tower; measured linear Y 0.0000 / 0.0010 / 0.1937",
+      "suggestion": "Add an explicit sky-gradient reflection to the pane: sample sky colour by reflect(V,N).y with a fresnel ramp and floor the specular at ~8-15% of sky luminance so a vertical pane lands Y 0.04-0.12 at 17:30 with a visible top-to-bottom gradient. Cap the bright/blind pane variant at <=1.3x the wall luminance instead of 200x, and bias it to contiguous vertical runs rather than uniform random."
+    },
+    {
+      "severity": "blocker",
+      "description": "Punched windows on res-low, res-med and com-low are still opaque black rectangles inside a light frame - no tint, no sky reflection, no fresnel, no interior. The glass rewrite landed only on the curtain-wall branch. Clearest at the 2-storey cream commercial in shots/critic/buildings/p4_buildings_detail_17h5.png (x 440-620, y 320-430, ~45 m) where the panes are flat pure black, and on the brick house at (x 1020-1180, y 330-420).",
+      "evidence": "shots/critic/buildings/p4_buildings_detail_17h5.png x 440-620 y 320-430 (2-storey commercial) and x 1020-1180 y 330-420 (brick house)",
+      "suggestion": "Route the punched-window branch through the same pane shading as the curtain wall. Target pane luminance 0.4-0.7x the adjacent wall luminance (currently ~0.02x) with a cool sky tint on the upper half and a warm interior floor on the lower half, so the opening reads as glass rather than a hole."
+    },
+    {
+      "severity": "major",
+      "description": "Rooftop mast reads as a placeholder material: a flat, untextured, highly saturated pale-yellow slab-mast with a plain grey box and a flat unlit red cube beacon, sitting at the top of the downtown silhouette in shots/critic/buildings/p4_buildings_night_17h5.png (x 760-900, y 40-180). Unpainted saturated yellow with zero texture is the classic missing-material tell and it is the most eye-catching wrong thing in the frame.",
+      "evidence": "shots/critic/buildings/p4_buildings_night_17h5.png region x 760-900 y 40-180; same mast visible in p4_buildings_hero_17h5.png near x 710 y 90-140",
+      "suggestion": "Retexture the mast to painted/galvanised steel from public/assets/shared (corrugatedsteel or concrete-grey metal) or red-white banded aviation paint, narrow it to a lattice or tube profile, and replace the red cube with a small emissive lens that actually glows at night."
+    },
+    {
+      "severity": "major",
+      "description": "Rooftop plant is untextured flat primitives and some decks have no parapet. The two grey cylinders on the right-hand tower deck (shots/critic/buildings/p4_buildings_night_17h5.png x 960-1180, y 330-470) are smooth featureless cylinders with no ribs, ladders, handrails, pipework or dirt, and the concrete deck ends at a razor edge with no parapet so the slab reads as floating. The white AC boxes on the commercial roof in p4_buildings_detail_17h5.png (x 440-620, y 320-430) are the same flat colour fields - they are no longer near-black, but they are now flat white instead.",
+      "evidence": "shots/critic/buildings/p4_buildings_night_17h5.png x 960-1180 y 330-470; p4_buildings_detail_17h5.png x 440-620 y 320-430",
+      "suggestion": "Assign the corrugatedsteel/concrete PBR sets to plant bodies, add rib bands, a side ladder and a low handrail ring, dirt-streak the vertical faces, and give every flat roof a 0.6-1.0 m parapet with a coping so the deck edge is not a bare slab."
+    },
+    {
+      "severity": "major",
+      "description": "Shadowed facades flip hue to blue-violet. Using tools/lookmeasure.py building mask: our shadowed building pixels sit at hue 252-264 deg where CS2 (cs2_02/04/11/12) holds shadowed facades at hue 32-44 deg - CS2 gets its cool shadow from the B/R ratio while keeping the wall's own warm hue. Ours abandons the material hue entirely, so every north/east elevation reads lavender rather than a darker version of its brick or plaster.",
+      "evidence": "tools/lookmeasure.py masks over shots/critic/buildings/p4_buildings_hero_17h5.png (shadow hue 252) and p4_buildings_detail_17h5.png (shadow hue 264) vs reference/cs2_02,04,11,12 (32-44)",
+      "suggestion": "Cut the blue tint the ambient/IBL term contributes to facade indirect diffuse (roughly halve its blue channel weight) and add a small warm bounce from the ground, so a shadowed wall keeps hue within ~20 deg of its lit hue while still measuring cooler in B/R. Coordinate with environment - the sky-fill colour is shared."
+    },
+    {
+      "severity": "major",
+      "description": "res-high balcony slabs are stark near-white untextured cards laid on a perfectly regular grid, brighter than anything else in the frame (p90 Y 0.72). Seen on the cream slab block in shots/critic/buildings/p4_buildings_detail_17h5.png (x 330-430, y 55-250): seven identical rows of identical white rectangles with no railing, no clutter, no per-instance variation and only a faint drop shadow on the wall below.",
+      "evidence": "shots/critic/buildings/p4_buildings_detail_17h5.png x 330-430 y 55-250; sampled p90 Y 0.72 on the balcony band",
+      "suggestion": "Drop balcony slab albedo into the wall's colour family (0.6-0.8x wall Y), add railing bars or a glass balustrade, vary presence/depth per unit so 20-30 percent of bays have none, add occasional clutter, and strengthen the slab's cast shadow onto the wall and the soffit AO underneath."
+    },
+    {
+      "severity": "minor",
+      "description": "Tower corners are razor-hard 90 degree edges with no corner mullion or bevel, and crowns are plain flat slab parapets with no cornice, no crown step and no plant enclosure - exactly what judge 2 named ('stacked boxes with hard unbevelled corners, no cornices'). Visible on every tower in shots/critic/buildings/p4_buildings_night_17h5.png.",
+      "evidence": "shots/critic/buildings/p4_buildings_night_17h5.png centre and left towers, corner at x ~865 y 150-620",
+      "suggestion": "Add a 0.15-0.3 m corner chamfer or a wider corner mullion column to curtain-wall pools, and give at least three of the six crown archetypes a projecting cornice band or a stepped crown cap so the roofline is not a flat cut."
+    },
+    {
+      "severity": "minor",
+      "description": "Downtown material palette is narrow: navy glass, pale concrete and brick account for essentially all of the core, so despite the new silhouette variety the district still reads as one colour family (building-mask hue clusters tightly, S 0.29-0.31). CS2 downtowns mix stone, metal panel, coloured render and darker brick.",
+      "evidence": "shots/critic/buildings/p4_buildings_hero_17h5.png x 560-1120 y 140-340 vs reference/cs2_11.jpg",
+      "suggestion": "Add two more facade families to the office/com-high pools from public/assets/shared - metal panel (corrugatedsteel tinted bronze/champagne) and a warm stone/plaster - and weight per-instance selection so no single family exceeds ~40 percent of downtown instances."
+    }
+  ],
+  "screenshots": [
+    "shots/critic/buildings/p4_buildings_hero_17h5.png",
+    "shots/critic/buildings/p4_buildings_detail_17h5.png",
+    "shots/critic/buildings/p4_buildings_night_17h5.png",
+    "shots/critic/buildings/p4_buildings_night_21.png"
+  ],
+  "systemicProgress": {
+    "materials": "Mostly fixed on opaque walls, not on glass or roof plant. Plaster, brick and concrete carry real albedo with course lines, colour variation and legible grain at 40 m (p4_buildings_detail_17h5.png x 440-620 y 320-430); res-low shows shingle course grain and a warm non-white fascia. Still flat untextured colour fields: all window glass (punched windows are pure black cards, curtain wall is Y 0.001 black with 200:1 white sticker panes), rooftop AC boxes and cylinders, the pale-yellow antenna mast, and res-high balcony slabs. No wear or grime streaking anywhere on residential or commercial - only the industrial branch got weathering.",
+    "lighting": "Sun is now low (17:33) and casts long soft-edged shadows across blocks - fixed. Contact shadows are present under rooftop plant, AC units and porches, and there is AO under eaves, canopies and the new sill drop shadows. Two faults remain: sky-fill inside shadow is far too blue, flipping shadowed facade hue to 252-264 deg against CS2's 32-44 deg; and the office-tower ambient/reflection contribution collapses to ~0, so curtain-wall masses go pure black in evening light instead of holding a sky-lit gradient.",
+    "density": "Not a buildings defect this pass and not made worse - lot fill in the detail and hero frames is dense and continuous with no bald blocks, 68 pools / 21.7 k instances. Night window-light density is high and per-window, though the lit panes are uniform white/cream cards with no colour-temperature spread and no bounce onto adjacent facades or the street.",
+    "variety": "Largely fixed. Downtown no longer repeats one silhouette: p4_buildings_hero_17h5.png shows varied footprints, heights, setbacks, stepped crowns and three facade families, and res-low shows mixed roof pitch, colour, garage placement and porch. Remaining repetition is material-level - navy glass and pale concrete dominate the core - and the res-high balcony module repeats identically seven rows deep with no per-bay variation.",
+    "colour": "On target for lit surfaces, off target in shadow. LOOK_TARGET rows 7/8 ask for building Y 0.177 (0.135-0.316), C 0.036, hue 41, S 0.31; our lit facades measure hue 39 / S 0.22 / Y 0.244 (hero) and hue 24 / S 0.19 / Y 0.303 (detail), all inside the CS2 band, and whole-mask C 0.037 vs target 0.036. The violet fascia is gone. The failure is the shadow side at hue 252-264 and the office towers sitting at Y 0.001, which drags the hero building-mask median to 0.087 against CS2's 0.093-0.337."
+  }
+}

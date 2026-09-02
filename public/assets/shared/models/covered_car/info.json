@@ -1,0 +1,12 @@
+{
+  "id": "covered_car",
+  "name": "Covered Car",
+  "type": "models",
+  "authors": {
+    "MP": "All"
+  },
+  "license": "CC0",
+  "source": "https://polyhaven.com/a/covered_car",
+  "res": "1k",
+  "fmt": "gltf"
+}

@@ -1,0 +1,79 @@
+{
+  "module": "audio",
+  "round": "p3r1",
+  "score": 8.0,
+  "pass": false,
+  "summary": "All three round-1 blockers/majors are genuinely fixed and I verified each myself: api.toggle() exists and every §5 name resolves (notify→notification, warn→warning, money→cash, demolish→bulldoze; unknowns counted in ui.unknown, never logged); the NaN entry point is sealed (playWorld/audio:sfx with NaN/Infinity/strings leaves guard 0/0 over 3 s, all spawned events finite and clamped inside ±1024, selfTest() 49 cases 0 throws); the showcase is now a real 196-building / 114-road / 389-vehicle district with markers pinned to actual cars (measured 0.0–0.3 m from the nearest vehicle) and ?audiodebug=0 renders a completely clean frame. Zero console errors AND zero warnings across 9 shots and 5 live sessions; suspended-context abuse throws nothing; offline solo isolation is now clean (leaks [] at −80 dB) with distinct spectra (wind 280 Hz, city 864 Hz, birds 2666 Hz, crickets 4192 Hz, rain 4958 Hz). Gating is right everywhere I looked: birds −22 dB by day / −67 dB at night vs crickets −37, rain follows env.precipitation 0.85 → level 0.63 while wetness is 0.33, birds duck to −52 dB in the downpour. What stops it at AAA: renderOffline({solo:'traffic'}) ALWAYS throws (car-pass one-shots leak into the un-soloable events bus), the zones bus renders −120 dB with 0 voices in every offline configuration and the documented `lots` option is dead code, and the shore mix is simply wrong — 20 m from breaking surf the Water layer is −38 dB, 15 dB UNDER city hum and traffic, with no gulls. Fix those three and this is an 8.5+.",
+  "perf": { "drawCalls": 1835, "triangles": 9488952, "consoleErrors": 0 },
+  "screenshots": [
+    "shots/critic/audio/p3r1_audio_hero_13.png",
+    "shots/critic/audio/p3r1_audio_detail_13.png",
+    "shots/critic/audio/p3r1_audio_detail_21.png",
+    "shots/critic/audio/p3r1_audio_night_21.png",
+    "shots/critic/audio/p3r1_audio_hero_21.png",
+    "shots/critic/audio/p3r1_audio_night_13.png",
+    "shots/critic/audio/p3r1_rain.png",
+    "shots/critic/audio/p3r1_shore.png",
+    "shots/critic/audio/p3r1_clean.png"
+  ],
+  "strengths": [
+    "§5 contract complete and verified live: api = {unlock,state,running,context,setVolume,setMuted,toggle,toggleMute,getSettings,play,sounds,playWorld,setDebug,debug,groups,setGroupMuted,setSolo,setSimulatedCity,setEventRate,getState,selfTest,renderOffline}; missing=[] against ARCHITECTURE §5.",
+    "Hostile-input hardening is the best in the project: 49-case selfTest returns 0 throws / guardDelta 0-0 / allFinite / settingsRestored, and my own abuse pass (NaN, ±Infinity, 'abc', null, 1e12 positions, audio:volume NaN, audio:mute 'yes') left guard.skipped at 0 over 3 s with every spawned event clamped inside ±world.half.",
+    "Zero console errors AND zero warnings in all four .log.json files (9 renders) plus 5 puppeteer sessions including a context.suspend() abuse pass (state 'blocked', no throw, no output).",
+    "Showcase is honest now: a real district built through the other modules' APIs (196 buildings, 114 roads, 389 vehicles, 2.1k residents / 4.2k jobs, suburb→mid-rise→downtown→industry→construction gradient), and ?audiodebug=0 hides HUD and markers completely (p3r1_clean.png).",
+    "Emitter markers are correctly attached: 9 live traffic voices measured 0.00–0.29 m from the nearest real vehicle at y = vehicle + 0.8 m, and the marker group costs 23 meshes / 424 triangles — visually and perf-wise negligible.",
+    "Environmental gating verified live in three weathers and two times: birds −22 dB day / −67 dB night (crickets −37), rain 100 % → Rain −19 dB with birds ducked to −52 dB, wind rising 35 %→86 % with windStrength, listener altitude 15 m→363 m folding birds out and wind/city in."
+  ],
+  "issues": [
+    {
+      "severity": "major",
+      "description": "renderOffline({ solo:'traffic' }) always throws — the module's own verification API fails on its busiest layer. Mixer.js:19 GROUPS = ['wind','city','traffic','zones','water','rain','birds','crickets'] has no 'events', so setSolo() (Mixer.js:125-128) never mutes the one-shot bus, and TrafficEmitters' car-pass one-shots render into it even with randomEvents:false (offline.js:69 sets oneShots.rateScale=0, which does not gate spawnPassBy). The isolation check then counts events as a leak and throws. The builder's 'solo isolation verified exact' therefore cannot have covered traffic.",
+      "evidence": "Live, 3 independent runs on ?showcase=audio&seed=7: api.renderOffline({solo:'traffic',seconds:3,randomEvents:false,state:{hour:12,altitude:25,vehicles:400,population:4000}}) → 'Error: [audio] solo isolation broken: events −38 dB' (also −45.2 dB, −46.2 dB). With allowLeak:true it renders fine (rms −21.4 dB, centroid 117 Hz) and reports leaks:['events −46.2 dB']. Every other solo returns leaks:[].",
+      "suggestion": "In Mixer.setSolo() also mute the events and ui buses (they are already separate GainNodes), or route car-pass one-shots to the traffic bus so 'traffic' solo is self-consistent; then drop allowLeak from the traffic path. Add a solo:'traffic' case to selfTest() so this can never regress silently."
+    },
+    {
+      "severity": "major",
+      "description": "The zones bus renders silence in EVERY offline configuration, so the 9 zone/service ambiences — the module's headline new feature — have no offline proof, and the documented `lots` option is dead code. offline.js:44-45 hard-pins the listener/target at (0,0,60) while collectZoneSources uses radius 330 (ZoneEmitters.js:39,46) and the showcase city sits at x≈300–660; and ZoneEmitters.js:74 `const lots = (world.zones?.lots && world.zones.lots.length) ? world.zones.lots : (simulatedLots || [])` discards the caller's lots whenever the world has any, contradicting offline.js:28 ('lots: simulated lot records … for zone emitters').",
+      "evidence": "renderOffline({solo:'zones',seconds:3,state:{hour:12,altitude:30,vehicles:200,population:4000}}) → rmsDb −120, centroidHz 0, zones:{voices:0}. Passing lots:[{x:40,z:30,type:'ind',w:40,d:40},{x:-50,z:20,type:'com-high',…},{x:20,z:-60,type:'res-low',…}] gives the identical −120 dB / 0 voices, while world.zones.lots.length = 200 and the LIVE mix shows 8 zone voices (ind/com/res/office/construction) at −16 to −41 dB.",
+      "suggestion": "Add `state.x`/`state.z` (or a `target` option) to renderOffline and feed it into listener/target, and pass an explicit-override flag so `o.lots` wins over world.zones.lots in collectZoneSources. Then assert non-silence for solo:'zones' and solo:'traffic' in selfTest()."
+    },
+    {
+      "severity": "major",
+      "description": "Shore mix is wrong: standing ~20 m from breaking surf, the Water layer is the second-quietest audible bed at −38 dB — 15 dB BELOW City hum (−23) and Traffic (−24) from a city 500 m behind the camera — and Birds are −inf, i.e. there are no gulls or coastal birds at all (BirdLayer's species are woodland-only: sparrow, chaffinch, pigeon, tit, wren, blackbird, crow). CS2's beach cameras are surf-dominant with gulls; this reads as a city recording with a distant tap running.",
+      "evidence": "shots/critic/audio/p3r1_shore.png, HUD LAYERS block (left panel, y≈190-350): Water −38 dB, City hum −23, Traffic −24, Zones −29, Wind −40, Birds −inf; LISTENER block reads water 68 %, forest 3 %, altitude 30 m, and the frame is 60 % open sea with the shoreline ~150 px from the camera.",
+      "suggestion": "Scale the water bus by distance to the nearest shore cell rather than by a smoothed water-coverage fraction — target ≈ −12 dB within 30 m of the waterline — and duck city/traffic by the same factor (both are occluded by terrain at that range). Add a gull voice to BirdLayer gated on state.water > 0.3 and give it a different call rate from the woodland set."
+    },
+    {
+      "severity": "minor",
+      "description": "Emitter glyphs read as detached from their source at street level. They are drawn ~0.8 m above the vehicle with no stem or contact shadow, so under a 17–25° pitch several land over the grass median or bare asphalt rather than on a car, and the sprite art is a hard-edged flat cyan vector 'sonar' ring with visible stair-stepping — a UI sticker sitting on top of an otherwise PBR scene.",
+      "evidence": "shots/critic/audio/p3r1_audio_detail_21.png: glyphs at approx (440,417) and (492,607) sit over the planted median with no vehicle under them; 3× crop of the region (380,360)-(700,540) shows the upper glyph centred over the kerb with its car down-and-right, and hard aliased ring edges. Cross-checked against live data: traffic voices are in fact 0.00–0.29 m from a real vehicle, so this is purely a marker-anchoring/readability problem, not mis-attachment.",
+      "suggestion": "Anchor the sprite at vehicle roof + 0.2 m, draw a 1 px stem down to the ground contact point, and give the rings a soft radial alpha falloff (and a subtle per-category hue at street level — every street glyph is the same cyan, while the aerial view already colour-codes by zone)."
+    },
+    {
+      "severity": "minor",
+      "description": "Rain balance at street level: in a 100 % downpour the Rain bed sits 12 dB under Traffic and only 3 dB above City hum, and nothing about the traffic voices changes when the road is soaked — no wet-tyre hiss shift, no HF roll-off on the rest of the mix. CS2's heavy rain brings the rain bed to near-parity with traffic and dulls everything behind it.",
+      "evidence": "shots/critic/audio/p3r1_rain.png, HUD LAYERS block: Rain −19 dB, Traffic −7 dB, City hum −22, Zones −19, Master −12, with LISTENER rain 100 %, wet 100 %, wind 86 %. layers.js:144 keeps tyre hiss inside CityLayer only.",
+      "suggestion": "Raise the rain target with precipitation at low altitude (≈ −10 dB at precip 1.0, alt < 40 m), and drive a shared low-pass on the city/zones buses plus a wetness-dependent HF tilt on the traffic pass-by voices so a soaked avenue sounds different from a dry one."
+    },
+    {
+      "severity": "minor",
+      "description": "The audio showcase's own scenes exceed the ARCHITECTURE §3 triangle ceiling (8 M) in three of six review renders. The audio module itself is blameless — its marker group measures 23 meshes / 424 triangles — but the showcase chooses the city density that the critic renders, so its review shots sit outside budget.",
+      "evidence": "shots/critic/audio/p3r1.log.json run output: audio_detail@21:00 tris 9,488,952; audio_detail@13:00 8,774,612; audio_night@21:00 8,588,942 (hero renders 4.1–4.5 M). Draw calls are comfortable throughout: 1383–1835 vs the 2500 ceiling.",
+      "suggestion": "Trim the zoned footprint by ~20 % or drop the street presets' drawDistance in showcase.js so audio_detail/audio_night land under 8 M triangles; the audible content does not need the extra blocks."
+    }
+  ],
+  "previousRoundStatus": {
+    "fixed": [
+      "blocker §5 api.toggle() missing + audio:play('notify') dropped — toggle present, aliases resolve (notify/warn/money/demolish), unknown names counted not logged",
+      "major playWorld/audio:sfx accepts non-finite positions — guard 0/0 under NaN/Infinity/string abuse, events clamped inside ±world.half, selfTest 49 cases 0 throws",
+      "major showcase was a labelled stand-in — now a real 196-building/114-road/389-vehicle district; markers small, depth-tested, pinned to real cars; ?audiodebug=0 fully clean",
+      "minor bird calls ringing after a clock jump — birds −67 dB at 21:00 vs crickets −37 dB; meter down to −68 dB within 300 ms of a jump to 22.5 h",
+      "minor birds too loud at altitude — at 363 m Birds −inf, City hum −31, Wind −36 (arguably over-corrected: birds go fully off rather than to a whisper)",
+      "minor rain gating ignored env.rain — Mixer.js:206-207 honours env.rain when precipitation is non-finite; live weather:set rain gives precipitation 0.853 → rain level 0.633 while wetness is 0.33",
+      "round-1 solo contamination (layers re-writing out.gain) — offline isolation now reports leaks:[] at −80 dB for wind/birds/city/crickets/rain/zones"
+    ],
+    "notFixed": [
+      "none of the listed open issues remain; the three majors in this verdict are newly found (offline traffic solo throws, offline zones bus silent + dead lots option, shore water mix)"
+    ]
+  }
+}

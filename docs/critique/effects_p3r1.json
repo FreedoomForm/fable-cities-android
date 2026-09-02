@@ -1,0 +1,93 @@
+{
+  "score": 7.5,
+  "pass": false,
+  "summary": "Real progress: plumes now leave the buildings module's actual stacks, industrial soot reads grey-brown vs white steam, day smoke has a tight opaque mouth, and rain streaks are soft background-relative strokes readable on asphalt and near-invisible on sky (2 of r2's 4 majors genuinely fixed). Contract complete, 0 console errors across 11 shots, all modules ok, 1600-1961 calls / 5.3-7.2M tris. But the grade fix chased p99 only and lifted the whole curve: hero13 ground measures mean 0.582 / p50 0.603 / p1 0.162 / sat 0.155 against CS2_04's 0.314 / 0.285 / 0.017 / 0.469 - milky, no blacks, a third of CS2's colour. Puddles render as opaque flat near-white 20 m amoebas with no reflected scene. Night plumes are structureless black holes. Ground snow is one uniform white sheet. Two r2 minors (construction dust, splash crowns) are untouched.",
+  "strengths": [
+    "Plumes emit from the real b.stacks/b.vents the buildings module publishes - no columns out of bare roofs; twin-stack hero plant reads correctly",
+    "Industrial soot (grey-brown, albedo ~0.30) is now clearly distinct from white steam vents; day plume mouths are tight and opaque with visible billow lobes",
+    "Rain streaks are soft, head-weighted, background-relative: readable over dark asphalt, no longer white scratches over the sky",
+    "Golden-hour frame (p3r1sun.png) has a convincing warm sky, sun occlusion behind the ridge works, no fake flare where the sun is hidden",
+    "Full spec wiring verified in source: LAYER_NO_AO on particle meshes, readBuffer.depthTexture consumed by EffectsPass, engine.post.insertBeforeOutput(grading), engine.globalUniforms.uWetness driven",
+    "Zero console errors, all modules ok, perf comfortably inside the 3000-call / 8M-tri gate"
+  ],
+  "issues": [
+    {
+      "severity": "major",
+      "description": "The colour grade is milky and desaturated - the module's most global deliverable measurably misses CS2. Whites were recovered by lifting the entire tone curve rather than adding contrast: midtones are ~2x too bright, nothing in the frame approaches black, and saturation is a third of CS2's. The ColorGradingPass header claims 'shadow CRUSH (p1 reaches black)'; the render disproves it.",
+      "evidence": "shots/critic/effects/p3r1_effects_hero_13.png ground region x180-1150 y260-620: mean 0.582, p1 0.162, p50 0.603, p99 0.901, sat 0.155. p3r1_effects_detail_13.png same box: mean 0.541, p1 0.160, p50 0.561, sat 0.171. reference/cs2_04.jpg x200-1750 y300-1000: mean 0.314, p1 0.017, p50 0.285, p99 0.930, sat 0.469; reference/cs2_12.jpg: mean 0.287, sat 0.491. Night is the same story: p3r1_effects_night_21.png sat 0.158 vs cs2_08 0.450 / cs2_10 0.491.",
+      "suggestion": "Stop optimising p99 alone; target the triple (p50, p1, sat). Raise uSaturation until frame sat lands 0.40-0.48; restore a real negative uToe so p1 <= 0.05 by day; drop mid-grey exposure ~0.8 stops so p50 lands 0.28-0.34 while holding p99 at 0.88. Add the measurement of all four numbers to the module's own verification step so this cannot regress again."
+    },
+    {
+      "severity": "major",
+      "description": "Puddles are opaque flat near-white sheets, not water. Interiors are a uniform matte fill with no reflected lamp post, tree, truck or building; edges are hard cookie-cutter curves; and a single pool spans ~20 m straight across the road crown, the kerb and the sidewalk, ignoring camber and gutters. CS2's wet roads are dark mirrors.",
+      "evidence": "shots/critic/effects/p3r1rain_effects_closeup_13.png x40-440 y140-340 and p3r1rain_effects_street_13.png x360-760 y280-480 (2x crops in shots/critic/effects/p3r1_crop_wet.png rows 1-2). Puddle measures lum 0.635, sat 0.117, rgb(156,162,172) vs adjacent wet asphalt lum 0.281 - 2.3x brighter. reference/cs2_08.jpg x300-1600 y700-1050 wet asphalt: mean 0.220, p1 0.006, sat 0.434.",
+      "suggestion": "Composite the puddle as a Fresnel-weighted mirror of the real scene (reuse the planar-reflection RT, or SSR-march engine.post.depthTexture) instead of a flat sky fill; cap the sky-only term to ~0.35 of the reflection and darken the diffuse under the water (albedo x0.55) so a puddle is never brighter than ~0.8x the sky. Shrink the low-frequency octave in fxPuddleField so pools are 2-5 m, and bias the field by road camber/height so water collects in the gutter line, not on the crown."
+    },
+    {
+      "severity": "major",
+      "description": "Night plumes are structureless black holes. The column is a uniform near-black brown mass with no internal lobes, no terminator, and no rim light from the plant floodlights 20 m below it, plus visible blotchy banding. It reads as a hole punched in the frame rather than a lit volume - the exact failure the spec forbids ('thick lit volume, not grey specks').",
+      "evidence": "shots/critic/effects/p3r1_effects_night_21.png x660-780 y90-260 and the left stack x800-870 y230-330; 3x crop is the right-hand tile of shots/critic/effects/p3r1_crop_smoke.png.",
+      "suggestion": "Feed the same localLights set the module already tracks into the smoke shading at night so the plume base picks up warm floodlight from below while the top stays cool; keep a floor of 0.06-0.10 x albedo x skyAmbient so the medium never renders darker than the dusk sky behind it; and dither the density lookup to kill the banding."
+    },
+    {
+      "severity": "major",
+      "description": "Ground snow is a flat white paper sheet. Road, kerb, verge and sidewalk render as one uniform near-white with no micro-detail, no blue shadow tint, no drift or edge accumulation, and the kerb line is invisible. The 'smooth ploughed tyre bands' are irregular grey airbrush smudges with no direction, width or edge - not tracks.",
+      "evidence": "shots/critic/effects/p3r1snow_effects_street_13.png road x300-900 y330-620: mean 0.704, p50 0.774, sat 0.170 (2x crop = row 3 of shots/critic/effects/p3r1_crop_wet.png). p3r1snow_effects_hero_13.png ground x100-1100 y300-620: mean 0.684, sat 0.138. reference/cs2_06.jpg x200-1750 y500-1050: mean 0.268, p50 0.158, sat 0.506, with dark exposed tarmac and blue-shadowed snow.",
+      "suggestion": "Drop snow albedo to ~0.72 and let sky-blue ambient tint the shadowed side so snow lands near lum 0.55-0.65 with sat >= 0.25 rather than 0.70/0.14. Add a 0.2-0.5 m granular normal plus per-metre sparkle so it is not flat. Drive the tyre bands off world.roads.api.laneGraph(): two hard-edged 0.20 m strips at +/-0.9 m from each lane centre that expose dark wet tarmac, instead of a noise-modulated grey wash."
+    },
+    {
+      "severity": "minor",
+      "description": "Construction dust is still essentially invisible - unchanged from the r2 critique despite being listed as addressed. Three construction sites (two cranes plus a steel frame) produce one ~15 px wisp between them.",
+      "evidence": "shots/critic/effects/p3r1_effects_hero_13.png x390-690 y170-290 (2x crop = top row of shots/critic/effects/p3r1_crop_dust.png); the only dust is at x~660 y~255.",
+      "suggestion": "Raise dust opacity ~3x and emit from the site perimeter and the crane base rather than one centre point; add a low, wide ground-hugging haze layer (0.5-2 m tall, 60 % of the lot rect) plus occasional vertical puffs so the site reads as active at 200 m."
+    },
+    {
+      "severity": "minor",
+      "description": "Splash crowns and ripple rings are unreadable on asphalt at 11 m. Streak ends produce formless 2 px white dots and the wet tarmac carries no ripple rings at all - rings appear only inside the oversized white puddles. Also unchanged from r2.",
+      "evidence": "shots/critic/effects/p3r1rain_effects_closeup_13.png x520-1120 y430-650 (2x crop = bottom row of shots/critic/effects/p3r1_crop_dust.png).",
+      "suggestion": "Make the crown a 2-frame billboard with a visible V silhouette ~12 cm wide at 11 m, and drive an expanding ripple ring into the wet-surface normal on ALL wet ground (not only inside fxPuddleMask) so the specular breaks up across the whole road."
+    },
+    {
+      "severity": "minor",
+      "description": "Rain is unevenly distributed across the frustum and every streak is dead vertical - no wind lean, despite the same wind visibly drifting the smoke plumes; and streak length does not grow toward the camera.",
+      "evidence": "shots/critic/effects/p3r1rain_effects_closeup_13.png: x0-450 y400-660 is nearly empty while x600-1100 y250-600 is dense; compare the drifted plumes in p3r1_effects_hero_13.png x730-820 y90-210.",
+      "suggestion": "Re-seed the rain volume as a camera-locked box so density is uniform over the whole frustum, tilt streaks by world.env wind (typically 5-20 degrees from vertical), and scale streak length with 1/depth so near drops are visibly longer."
+    },
+    {
+      "severity": "minor",
+      "description": "Stray white specks over foreground geometry at low sun - dozens of soft 2-6 px white dots spread over a dark wall and roof in clear weather, reading as dirt on the lens. Related to the r2 sparkle nit but now on buildings, not just trees.",
+      "evidence": "shots/critic/effects/p3r1sun.png x400-700 y470-620 and x700-1280 y620-700 (3x crop = top of shots/critic/effects/p3r1_crop_speck.png); the same roofs are clean at 13:00 in p3r1_effects_hero_13.png x430-730 y430-580.",
+      "suggestion": "Clamp the particle forward-scatter gain when the sun is within ~15 degrees of the view vector, and confirm the soft-particle depth test rejects sprites that are behind opaque geometry rather than only fading them - a sprite whose depth exceeds scene depth should be discarded outright."
+    },
+    {
+      "severity": "minor",
+      "description": "Plausibility: every residential chimney emits a plume at 13:03 on 1 May. About a dozen wisps rise from suburban roofs at spring midday, which no CS2 frame shows.",
+      "evidence": "shots/critic/effects/p3r1_effects_hero_13.png x180-800 y320-560 (wisps at x~330 y~340, x~490 y~430, x~630 y~520, x~715 y~450 and more).",
+      "suggestion": "Gate chimney emitters on world.env temperature and hour: zero output above ~12 C, and only a fraction of houses lit at any time (hash the building id) so plumes are occasional, not universal."
+    },
+    {
+      "severity": "minor",
+      "description": "Not this module, noted: vegetation stays full summer green under total snow cover, which wrecks the winter frames the effects module is judged on.",
+      "evidence": "shots/critic/effects/p3r1snow_effects_street_13.png trees x750-980 y200-450 and x40-330 y170-350; p3r1snow_effects_hero_13.png conifer band x40-260 y60-130.",
+      "suggestion": "Raise with the terrain/vegetation module - the effects module could optionally publish snowCover so vegetation can tint and load canopies."
+    }
+  ],
+  "screenshots": [
+    "shots/critic/effects/p3r1_effects_hero_13.png",
+    "shots/critic/effects/p3r1_effects_hero_21.png",
+    "shots/critic/effects/p3r1_effects_detail_13.png",
+    "shots/critic/effects/p3r1_effects_detail_21.png",
+    "shots/critic/effects/p3r1_effects_night_13.png",
+    "shots/critic/effects/p3r1_effects_night_21.png",
+    "shots/critic/effects/p3r1rain_effects_street_13.png",
+    "shots/critic/effects/p3r1rain_effects_closeup_13.png",
+    "shots/critic/effects/p3r1snow_effects_hero_13.png",
+    "shots/critic/effects/p3r1snow_effects_street_13.png",
+    "shots/critic/effects/p3r1sun.png",
+    "shots/critic/effects/p3r1_crop_smoke.png",
+    "shots/critic/effects/p3r1_crop_wet.png",
+    "shots/critic/effects/p3r1_crop_dust.png",
+    "shots/critic/effects/p3r1_crop_speck.png"
+  ],
+  "perf": { "drawCalls": 1961, "triangles": 7201501, "consoleErrors": 0 }
+}

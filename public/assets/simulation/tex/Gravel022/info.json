@@ -1,0 +1,20 @@
+{
+  "id": "Gravel022",
+  "res": "1K",
+  "fmt": "JPG",
+  "license": "CC0",
+  "source": "https://ambientcg.com/view?id=Gravel022",
+  "files": [
+    "Gravel022.png",
+    "Gravel022_1K-JPG.blend",
+    "Gravel022_1K-JPG.mtlx",
+    "Gravel022_1K-JPG.tres",
+    "Gravel022_1K-JPG.usdc",
+    "Gravel022_1K-JPG_AmbientOcclusion.jpg",
+    "Gravel022_1K-JPG_Color.jpg",
+    "Gravel022_1K-JPG_Displacement.jpg",
+    "Gravel022_1K-JPG_NormalDX.jpg",
+    "Gravel022_1K-JPG_NormalGL.jpg",
+    "Gravel022_1K-JPG_Roughness.jpg"
+  ]
+}

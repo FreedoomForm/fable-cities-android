@@ -1,0 +1,115 @@
+{
+  "module": "whole_game",
+  "round": "p4",
+  "role": "lead art director — press kit + final verdict vs Cities: Skylines II",
+  "score": 5.5,
+  "pass": false,
+  "calibration_note": "p3 self-scored 7.4 and then lost all four blind pairs at 3.6/5.0/5.0/5.5 against 8.0-8.5. This score is deliberately anchored to that blind result, not to our own progress. p4 is a real step up — roughly +1 to +1.5 on the blind scale — but it is not yet an 8.",
+  "summary": "Genuine, visible progress on four of the six systemic defects. Buildings now carry real albedo texture (brick, stucco, precast, cobble sidewalks), warm hues and per-instance variation; the downtown tower stock has spires, setbacks, cylinders and podiums instead of one cloned slab; traffic density is 10x p3 (12-20 vehicles readable per street frame, buses, headlights and taillights at night); the day-night stack is strong, with streetlight pools, lit windows, rain and a dusk sky; water finally has wave normals and depth variation; aerial haze exists. The look still loses on three things a judge names in the first ten seconds. (1) Asphalt: the carriageway albedo is far too bright — under night lamp pools it reads as sand or concrete, not tarmac — and it has no aggregate grain, no wheel-path darkening and no wet reflection in the rain preset, which is the exact surface the reference wet-night frame sells itself on. (2) A bright white hairline runs along every kerb in every low frame; at street level it reads as a debug wireframe and it is the single most disqualifying artifact in the kit. (3) Night window emission is still enormous flat quads spanning two to three floors that emit no bounce onto neighbouring facades or the ground, which breaks the scale read of the whole skyline. Below those: the sky cloud plate resolves into a jagged torn-paper silhouette band at the horizon in nearly every daytime frame, downtown parks and the core are still bare saturated green rectangles, and shadows are directional but soft with no firm contact darkening under vehicles.",
+  "issues": [
+    {
+      "module": "roads",
+      "severity": "blocker",
+      "description": "Asphalt albedo is far too bright and carries no surface detail. In every night frame (d_street_level_20, f_lowstreet_rain, b_downtown_night_21h5) the carriageway inside a streetlight pool renders as pale sand/cream rather than tarmac, and it dominates the lower half of the strongest press frames. LOOK_TARGET row 10 puts CS2 asphalt at Y 0.058; ours reads several times that under lamps. There is also no aggregate grain, no tyre-wear darkening in the wheel paths, no patch/crack decals and — critically for the rain preset — no wet specular, so the wet-night frame shows none of the coloured light smears that carry the reference frame.",
+      "suggestion": "Drop the asphalt base albedo to ~0.045-0.06 linear and stop the streetlight cookie from multiplying it into overexposure (clamp the lamp contribution, or apply it as an additive lobe on a dark base). Bind the CC0 asphalt set from public/assets/shared for albedo+roughness+normal, add a wheel-path darkening mask along each lane centreline, and in weather=rain drop roughness to 0.08-0.15 so the road takes headlight, taillight and window reflections."
+    },
+    {
+      "module": "roads",
+      "severity": "blocker",
+      "description": "A 1px pure-white hairline is drawn along the top edge of every kerb. It is visible in f_lowstreet_golden (a bright diagonal across the whole lower-left), and in g_closeup_17h9 it runs the full length of both kerbs down the boulevard. Against dark asphalt it reads as a debug wireframe or z-fighting seam and it disqualifies otherwise usable street-level frames.",
+      "suggestion": "Find the kerb edge geometry: it is either a zero-width strip catching a full specular hit, a coplanar overlay z-fighting with the sidewalk, or an unlit line primitive left in the kerb builder. Give the kerb top a real chamfer of 2-4 cm with the same material as the kerb face, and cap its specular; verify at 1280x720 with the sun at 15 degrees, which is where it shows worst."
+    },
+    {
+      "module": "buildings",
+      "severity": "blocker",
+      "description": "Night window emission is unchanged from p3: single lit quads span two to three storeys (d_downtown_night_20, d_junction_20 show towers built from ~15 giant rectangles). The emission is a texture, not a light — no bloom spill onto adjacent facades, no bounce onto the street or rooftops below, no per-window colour temperature variation. This is the defect the pair-2 judge said 'quietly breaks the scale read of the whole skyline'.",
+      "suggestion": "Reduce the emissive cell to one floor of the building's own floor grid (roughly 3.2 m) and randomise lit/unlit per cell per building with a 2700-4200K colour jitter. Add a cheap emissive bounce: a short-range point or a screen-space glow term per lit facade so window light lands on the facade opposite and on the pavement below."
+    },
+    {
+      "module": "environment",
+      "severity": "major",
+      "description": "The cloud layer resolves into a jagged 'torn paper' silhouette band sitting on the horizon in almost every daytime and dusk frame (e_downtown_golden_18h0, e_suburb_evening_18h0, g_bay_17h9, a_waterfront_dusk_17h5). It reads as a broken alpha cutout or an under-tessellated cloud plate rather than as cloud, and because it sits exactly where the eye looks for atmospheric depth it undercuts the haze work that is otherwise landing.",
+      "suggestion": "Fade the cloud layer's alpha to zero over the last 10-15 degrees above the horizon and blend the remainder into the sky/haze colour, so clouds dissolve into aerial perspective instead of terminating in hard silhouettes. Raise the plate's tessellation or switch the low-elevation band to a soft billboard so no hard edge survives at grazing angles."
+    },
+    {
+      "module": "environment",
+      "severity": "major",
+      "description": "Shadows are directional and long at 17.5-18.0 (real progress — g_park_17h9 shows a genuine raking plaza shadow), but they are uniformly soft and there is no firm contact darkening. Vehicles, street furniture, kerbs and building bases still lack the tight AO tuck the reference has under every car and eave, so objects read as sitting on the ground rather than in it. Preset sun-direction picking is also stale: e_city_18h0 shoots straight into the sun and turns the whole downtown into black silhouettes.",
+      "suggestion": "Add a short-range contact-shadow / SSAO term (0.3-1.5 m radius, distance-scaled) on top of the cascade, and tighten cascade 0 so near shadows have a defined edge. Recompute sideLight() at the hour actually being rendered rather than the preset's authored hour, or clamp the presets to their own hour so the shot tool cannot invert the key light."
+    },
+    {
+      "module": "terrain",
+      "severity": "major",
+      "description": "Water is still the weakest large surface. It now has wave normals and depth variation (f_skyline_dawn is a real improvement over p3's cyan noise field) but it reflects nothing: no skyline, no sun glint lobe, no shoreline foam, and it meets the land on a hard geometric seam with a uniform tan beach band. In f_skyline_dawn it occupies ~45% of the frame and in a_waterfront_dusk_17h5 it is a flat navy plane against a lit port. In the night frames the lit city sitting directly on the water reflects into nothing at all.",
+      "suggestion": "Add planar or screen-space reflection of the skyline plus a specular sun/moon glint lobe, a depth-based shallow-to-deep absorption ramp, and a foam + wet-sand darkening band along the intersection instead of the current hard line. Reflections at night are worth more than anything else here: they are what the reference night waterfront is made of."
+    },
+    {
+      "module": "zoning",
+      "severity": "major",
+      "description": "Ground treatment in the dense core is still wrong. g_park_17h9 shows a large, perfectly flat, saturated green rectangle dropped in the middle of downtown with no paths, plaza, planting or texture — literally the 'untextured green field in the downtown core' the pair-2 judge named. e_suburb_evening_18h0 gives a third of the frame to one uniform bright lawn with no undergrowth, tufts, dirt or colour variation.",
+      "suggestion": "Give downtown open blocks a paved plaza / park treatment: path network, benches, planting beds, hedges, hard-surface albedo. For open ground everywhere, splat in dirt/gravel/worn-path layers with macro-variation noise and scatter grass tufts and shrubs at close range; drop lawn luminance towards the LOOK_TARGET vegetation figure (Y 0.056 vs our ~0.27)."
+    },
+    {
+      "module": "props",
+      "severity": "major",
+      "description": "Tree canopies are blobby low-poly lumps in one saturated lime green at close range. In a_street_level_17h5 two of them land squarely in the middle-foreground and destroy an otherwise good frame; in g_closeup_17h9 the whole median reads as green blobs. At distance they are fine, but every street-level press framing puts one in the foreground.",
+      "suggestion": "Add two or three more canopy silhouettes and a per-instance hue/lightness jitter (CS2 daytime foliage sits near Y 0.05 with C 0.053), and use a denser or alpha-card canopy for the nearest LOD so foreground trees stop reading as faceted lumps."
+    },
+    {
+      "module": "effects",
+      "severity": "minor",
+      "description": "Rain is a uniform full-screen streak overlay: the streaks are the same length, angle and opacity at 5 m and at 500 m, and they draw over the sky and the far city equally. There is also no splash, no puddle ripple, and headlight beams land on the road as hard-edged blown-out white stripes rather than as a falling-off cone.",
+      "suggestion": "Make the rain depth-aware — scale streak length and density with view distance and fade it out beyond the fog distance — and add a low-cost splash/ripple layer where rain meets road and roof. Soften the headlight cookie's edge and lower its peak so it stops clipping to white."
+    },
+    {
+      "module": "effects",
+      "severity": "minor",
+      "description": "No temporal or multisample AA. Tower edges, antennas, kerbs, lane markings and thin railings stairstep at 1280x720 (visible on every skyline frame), and the kerb hairline above is made worse by it. The sun also blows to a flat white blob with no veiling or bloom falloff in f_lowstreet_golden.",
+      "suggestion": "Add TAA (or FXAA plus a sharpen pass as the cheap option) and a proper bloom with a soft threshold so the low sun and the emissive windows spread rather than clip."
+    },
+    {
+      "module": "buildings",
+      "severity": "minor",
+      "description": "Facade albedo has come a long way (brick, stucco, tan render, precast) but the downtown tower cluster is still predominantly grey-white: e_downtown_golden_18h0 reads as a grey field with a handful of warm blocks. LOOK_TARGET row 8 puts CS2 facades at hue 41 degrees, S 0.31, Y 0.177 — ours are still too grey and too bright. There is also a visible texture bug: the white house at the right of e_suburb_evening_18h0 carries a large black blotch that reads as a broken grime decal or shadow-acne patch.",
+      "suggestion": "Push the residential and commercial palette warm (hue 30-55, S 0.20-0.40) and drop mean lit-wall luminance to ~0.18. Chase the blotch on the res-low white variant — it is either a dirt-mask UV wrap error or a self-shadow bias problem on that mesh."
+    }
+  ],
+  "strengths": [
+    "Zero console errors and zero failed modules across 16 renders at four times of day, two weather states and eight camera presets.",
+    "Building variety is genuinely fixed: e_downtown_golden_18h0 shows spires, cylinders, setbacks, podium bases and varied footprints where p3 showed one cloned slab ~40 times.",
+    "Facades now carry real albedo — brick, stucco, precast, tiled roofs, cobble sidewalks with visible grain (see the crop of f_lowstreet_golden).",
+    "Traffic density is transformed: 12-20 readable vehicles per street frame, buses, distinct silhouettes, headlights and taillights at night.",
+    "The night and rain stack is the strongest part of the build — streetlight pools, lit windows, dusk sky gradient with stars and pink cloud, rain streaks and a coherent mood.",
+    "Aerial perspective is working: the far shore and mountains desaturate and lift towards sky colour in every wide frame.",
+    "Water has real wave normals and depth variation instead of p3's flat cyan noise field.",
+    "Camera presets now carry their own low-sun hour and side-light solving — the composition half of the p3 loss is fixed."
+  ],
+  "screenshots": [
+    "shots/press/p4/d_street_level_20.png",
+    "shots/press/p4/f_lowstreet_golden.png",
+    "shots/press/p4/e_suburb_evening_18h0.png",
+    "shots/press/p4/d_downtown_night_20.png",
+    "shots/press/p4/e_downtown_golden_18h0.png",
+    "shots/press/p4/g_closeup_17h9.png",
+    "shots/press/p4/g_park_17h9.png",
+    "shots/press/p4/f_skyline_dawn.png",
+    "shots/press/p4/f_lowstreet_rain.png",
+    "shots/press/p4/a_waterfront_dusk_17h5.png"
+  ],
+  "culled": [
+    "a_waterfront_dusk_17h5 — port cranes and container ship are untextured primitive boxes; flat water, hard shoreline seam.",
+    "a_street_level_17h5 — two huge blobby lime canopies in the middle foreground.",
+    "e_city_18h0 — shot into the sun; downtown reads as black silhouettes over green lawn.",
+    "d_junction_20 / g_bay_17h9 — 35-45% of the frame is a dead black building slab.",
+    "g_closeup_17h9 — best density in the kit, culled only for the white kerb hairline running the full frame.",
+    "g_park_17h9 — best raking shadows in the kit, culled for the bare green rectangle in the core.",
+    "f_lowstreet_rain — best reference-matching framing, culled for the sand-coloured carriageway and the hairline artifact."
+  ],
+  "perf": {
+    "note": "Six agents share this dev server, so fps is unreliable; judged on draw calls and triangles.",
+    "drawCalls": "1855-2433 across all 16 frames",
+    "triangles": "8.3M-11.2M; night downtown is the heaviest (11.2M / 2433 calls)",
+    "verdict": "Stable and in budget. Draw calls barely move between day and night, so the night lighting is not costing batches; triangle count is high but flat across presets, which points at LOD reach rather than at any one asset."
+  },
+  "notes": "Press kit: shots/press/p4/, 16 frames, 1280x720, seed 7, quality ultra. HUD hidden via .fc-hud.is-hidden on the d/e/f/g batches — the reference beauty frames are UI-free and our toolbar sits exactly where foreground interest belongs. Two custom low cameras (f_*) were built from the street_level preset with the target dropped 3.2 m and pitch flattened to 0.045, which is the closest we get to the reference eye height. Highest-leverage single fixes for p5, in order: asphalt albedo + wet reflection (roads), the kerb hairline (roads), one-floor window emission with bounce (buildings), cloud horizon fade (environment)."
+}

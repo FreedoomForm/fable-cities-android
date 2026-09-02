@@ -1,0 +1,12 @@
+{
+  "id": "trashbag",
+  "name": "Trashbag",
+  "type": "models",
+  "authors": {
+    "Benny Weimer": "All"
+  },
+  "license": "CC0",
+  "source": "https://polyhaven.com/a/trashbag",
+  "res": "1k",
+  "fmt": "gltf"
+}

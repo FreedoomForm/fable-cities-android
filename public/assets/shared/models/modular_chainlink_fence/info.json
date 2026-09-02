@@ -1,0 +1,13 @@
+{
+  "id": "modular_chainlink_fence",
+  "name": "Modular Chainlink Fence",
+  "type": "models",
+  "authors": {
+    "James Ray Cock": "All",
+    "Amal Kumar": "Fence Wire Material"
+  },
+  "license": "CC0",
+  "source": "https://polyhaven.com/a/modular_chainlink_fence",
+  "res": "1k",
+  "fmt": "gltf"
+}

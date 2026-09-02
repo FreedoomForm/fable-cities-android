@@ -1,0 +1,79 @@
+{
+  "score": 8.0,
+  "pass": false,
+  "summary": "Real progress. The r2 majors are largely closed: the terrain cut-slope scars are gone (hero right half is continuous grass), highway asphalt now matches local/avenue (all ~100-120 sRGB neutral in sun, verified top-down; the dark blue readings in roads_detail are a cloud shadow, not the material), and the highway->avenue pad is a genuine lofted ribbon with lane lines that curve through it instead of a blank fan. Scale is exact: at 8.33 px/m the local measures 7.6 m carriageway + 2x2.3 m sidewalk = 12 m, cars 4.8 m. Junction plan geometry (corner radii, zebras, stop bars upstream of the zebra, clean cul-de-sac bulbs, sett paving with real joints, wear patches, wheel tracks, dashed yellow centre) is close to CS2. What still fails: the transition pad carries a dotted black stitch seam and two barriers that end in blunt stubs beside a bare untextured vertical retaining wall; half the luminaires in the roads_night preset cast no light pool at all; the avenue median is grey paving rather than planting; local roads have no arrows and no edge lines (spec asks for both); the path is near-black high-frequency noise; and the bright smooth verge band still haloes every road. Contract complete (all 8 §5 functions on world.roads.api), zero console errors, all modules ok, 1401 draw calls peak.",
+  "issues": [
+    {
+      "severity": "major",
+      "description": "Highway->avenue transition pad has three visible artifacts: (a) a dotted/dashed black stitch seam running diagonally across the pad where the lofted ribbon meets the ramp, (b) both crash barriers stop dead in blunt cut-off stubs floating in mid-air (no wedge nose, contrary to the report), (c) the embankment is a bare, untextured light-grey vertical wall ~2 m tall with a hard toe line onto grass, and the sidewalk overhangs it in a visible step. Lane dashes also dissolve to nothing mid-pad instead of resolving into gore/chevron markings.",
+      "evidence": "shots/critic/roads/p3r1b_roads_transition_13.png — seam and barrier stubs x920-1010 y440-500 and x760-840 y400-430; retaining wall x1060-1110 y370-490; sidewalk step x1050-1160 y480-500. 2.5x crop of that region confirms the dotted seam.",
+      "suggestion": "Weld the pad ribbon to the ramp with shared vertices (or overlap 0.3 m and offset polygonOffset) so no seam is possible; cap every barrier run with a tapered 2-3 m end nose mesh; replace the vertical embankment face with a 1:2 battered slope skinned in the terrain's own rock/grass albedo+normal, or an actual textured retaining wall with coping and weep detail; and paint a solid white gore/chevron on the pad instead of fading the dashes out."
+    },
+    {
+      "severity": "major",
+      "description": "In the module's own roads_night preset (78 m) half the street lamps cast no light pool. The two nearest luminaires emit a bright head glow but leave the road under them exactly as dark as road 35 m from any lamp — measured lamp head lum 203, ground 3 m directly below lum 42, ground 35 m away lum 37. The frame is lit almost entirely by car headlights. The night hero at 420 m does show correct beaded pools (pool lum 114 vs gap 33), so the pool decal is dropping out at close range (the new '>180 m distance falloff' looks inverted or the near decals are culled).",
+      "evidence": "shots/critic/roads/p3r1_roads_night_21.png — lamp at (403,352) with dark road at (400,400)-(410,430); lamp at (570,190) same. Compare shots/critic/roads/p3r1_roads_hero_21.png where pools read correctly.",
+      "suggestion": "Check the sign/direction of the distance term on the pool decal — it should attenuate with INCREASING camera distance, never with proximity — and add a real point/spot light (or a cheap projected cookie) per luminaire within ~120 m of the camera so the asphalt under every lamp lifts to roughly lum 90-120 with a warm 2700 K tint and a specular streak, as in reference/cs2_08.jpg."
+    },
+    {
+      "severity": "major",
+      "description": "The avenue median is a flat grey paved strip the same tone as the sidewalk (109,105,106 vs 108,103,103), not a planted median. Street trees stand directly in bare grey paving with no planting bed, grass, tree pit or grate. The spec and the type definition both call for a tree median; CS2's avenue median is unmistakably a green strip.",
+      "evidence": "shots/critic/roads/p3r1b_roads_avenue_13.png, centre strip along x60-360 y300-480 (6x crop confirms: kerb, grey surface, two trees, no green).",
+      "suggestion": "Give the median a grass/planting material (reuse the terrain grass albedo+normal so it matches the verge), keep the 14 cm kerb, and add a low mulch/soil disc under each tree; optionally alternate grassed sections with paved crossing gaps at driveways."
+    },
+    {
+      "severity": "minor",
+      "description": "Local roads carry only a dashed yellow centre line: no solid white edge lines and no lane arrows on any junction approach. The spec asks for dashed centre, solid edges and arrows; the avenue has one arrow but also no outer edge lines. CS2's equivalent road (reference/cs2_04.jpg) shows a white edge line at the kerb and a painted turn arrow on every approach.",
+      "evidence": "shots/critic/roads/p3r1_top_local.png — all four approaches to the junction at (640,350); 3.8x crop of x560-900 y290-480 shows stop bar and zebra but no arrow and no edge line.",
+      "suggestion": "Add a 10 cm solid white edge line 0.3 m inboard of each kerb on local and avenue, and stamp a straight/left-right arrow decal 12-18 m upstream of each stop bar per lane, derived from the laneGraph turn set."
+    },
+    {
+      "severity": "minor",
+      "description": "The verge skirt halo is reduced but not gone: a road-shaped band of grass roughly 8-10 m wide hugging every kerb is smoother and ~1.6x brighter than the terrain grass beyond it (near-road lum ~86-89 vs 53-65 at 20-30 m out), most obvious as a bright U wrapping the cul-de-sac bulb.",
+      "evidence": "shots/critic/roads/p3r1_top_local.png cul-de-sac x0-340 y470-660 (samples at (60,600),(110,610),(150,620) vs (230,600),(300,560)); also shots/critic/roads/p3r1b_roads_avenue_13.png x0-400 y430-560.",
+      "suggestion": "Stop painting a skirt albedo at all — let the conformed terrain show through and only write height; if a skirt mesh is needed for the kerb backing, sample the terrain splat/normal at the same UV rate as terrain so its detail frequency matches, and break the outer edge with noise instead of a constant-width band."
+    },
+    {
+      "severity": "minor",
+      "description": "The path surface reads as harsh high-frequency black-and-white static rather than setts, and is far too dark against sunlit grass (near-black under full sun), so at 26 m it looks like noise, not stone. The granite edging is a thin synthetic pale-blue line with no thickness.",
+      "evidence": "shots/critic/roads/p3r1b_roads_path_13.png — surface x430-1280 y280-560; edging x400-1000 y300-500.",
+      "suggestion": "Raise the path albedo to a warm mid grey (~0.35 linear, R>=B), cut the sett contrast by roughly half and increase the sett size so the pattern resolves at 25-30 m, and give the edging a real 8-10 cm extruded kerb with a top face and a shadow line instead of a painted stripe."
+    },
+    {
+      "severity": "minor",
+      "description": "The highway median and outer barriers render as a paper-thin dark line with no thickness, no lit top face, no posts and no cast shadow, so the motorway reads as a flat painted stripe down the middle rather than a Jersey barrier or guard rail.",
+      "evidence": "shots/critic/roads/p3r1b_roads_highway_13.png — median line the full length of the ribbon, e.g. x300-900 y280-480; also shots/critic/roads/p3r1b_roads_transition_13.png x0-700 y330-420.",
+      "suggestion": "Extrude the barrier to a real 0.8-1.0 m profile with a sloped Jersey face, a light top chamfer and an AO-darkened base, and instance a post every 2 m on the guard-rail variant so it casts a broken shadow onto the shoulder."
+    },
+    {
+      "severity": "minor",
+      "description": "Peak triangle count touches 8.12 M in roads_night_21, 1.5% over the 8 M scene ceiling in ARCHITECTURE §3. Draw calls are comfortable (1401 peak vs 2500/3000).",
+      "evidence": "shots/critic/roads/p3r1.log.json — roads_night_21 calls 1401 tris 8118640; roads_detail_21 tris 7557632.",
+      "suggestion": "Roads is a minority contributor, but shedding the junction fan and sidewalk tessellation beyond ~150 m (a 2-ring LOD on segment ribbons) would buy back several hundred thousand triangles and give the other modules headroom."
+    }
+  ],
+  "strengths": [
+    "Scale is exact and verifiable: at 8.33 px/m in the top-down, the local road measures 7.6 m carriageway + 2 x 2.3 m sidewalk = 12 m, and cars measure 4.8 m x 2.0 m.",
+    "Terrain conform is fixed — the raw dirt/rock cut slopes that dominated the r2 hero are gone; roads now sit in continuous grass with no scorched banks.",
+    "Asphalt tint is unified across all three road types at ~100-120 sRGB neutral in sunlight, with visible aggregate, repair patches and wheel-track darkening.",
+    "Junction plan geometry is close to CS2: correct corner radii, zebra crossings on all approaches, stop bars correctly placed upstream of the zebra, clean cul-de-sac bulbs with no wheel-track seam.",
+    "Sidewalk paving reads as real setts with joints and per-slab tonal variation, and the kerb now reads as a three-tone shadow line at 62 m.",
+    "The highway->avenue transition is now a lofted carriageway with lane lines that curve continuously through it, a large improvement on the r2 blank fan.",
+    "Contract is complete — build/remove/types/snap/nearest/sampleEdge/segmentsInRadius/laneGraph all present on world.roads.api — with zero console errors and every module reporting ok."
+  ],
+  "screenshots": [
+    "shots/critic/roads/p3r1_roads_hero_13.png",
+    "shots/critic/roads/p3r1_roads_detail_13.png",
+    "shots/critic/roads/p3r1_roads_hero_21.png",
+    "shots/critic/roads/p3r1_roads_night_21.png",
+    "shots/critic/roads/p3r1b_roads_transition_13.png",
+    "shots/critic/roads/p3r1b_roads_highway_13.png",
+    "shots/critic/roads/p3r1b_roads_avenue_13.png",
+    "shots/critic/roads/p3r1b_roads_path_13.png",
+    "shots/critic/roads/p3r1_top_local.png",
+    "shots/critic/roads/p3r1_crop_junction.png",
+    "shots/critic/roads/p3r1_crop_kerb.png",
+    "shots/critic/roads/p3r1_crop_avenue.png"
+  ],
+  "perf": { "drawCalls": 1401, "triangles": 8118640, "consoleErrors": 0 }
+}

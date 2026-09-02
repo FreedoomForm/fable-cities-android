@@ -1,0 +1,70 @@
+{
+  "score": 6.5,
+  "pass": false,
+  "summary": "Real progress on segments: baked aggregate now survives to ~40 m, wheel-path darkening and the lighter mid-lane band read correctly, turn arrows and solid edge lines are in, the avenue median is planted, the median centre strip tapers to a nose, and close-range lamp pools exist. The dashed stitch seam is confirmed NOT roads: it vanishes under ?focus=terrain,environment,roads — claim verified, drop it from the roads list. But the two surfaces the roads_detail and roads_transition cameras centre on still fail the judges' first defect. The junction fan is a flat untextured colour field (Y std 0.0164 vs 0.0668 on the abutting segment, 4x flatter) because the entire wear branch in RoadMaterials.js is gated on !isFan; the tonal step where the flat fan meets the grainy segment is visible at 62 m. The transition pad still ships untextured grey embankment walls and blunt outer-guardrail stubs, its gore hatching reads as curved skid streaks rather than chevrons, and its repair patches are hard-edged flat rectangles. Asphalt luminance is 0.104 against LOOK_TARGET's 0.058 — unchanged, 1.8x over. Night pools are now present but 3.3x too hot (Y 0.34 vs cs2_08's 0.10), blowing to flat cream and erasing all aggregate inside the pool. Path setts swapped black-and-white static for a blocky grey chequerboard. Zero console errors, roads ok, 1332 calls / 7.6M tris worst case — in budget.",
+  "issues": [
+    {
+      "severity": "blocker",
+      "description": "Junction pad (the fan) is a flat untextured colour field — the #1 defect every judge named, on the surface the roads_detail camera centres. shots/critic/roads/p4focus.png, centre region x560-700 y300-380: no aggregate contrast, no wheel-path wear, no gutter grime, no worn paint, no stop-bar approach wear. Measured luminance std 0.0164 vs 0.0668 on the segment asphalt 100 px away (4x flatter), and the pad reads a visibly lighter, bluer grey than the segments it abuts, so the pad/segment boundary is a tonal seam.",
+      "evidence": "src/modules/roads/RoadMaterials.js:270 `if (!isFan && abs(lat) < 500.0)` gates the whole wear block — wheel tracks, mid-lane dust, kerb-foot AO and gutter grime — off the junction fan entirely.",
+      "suggestion": "Run the fan through the same wear pass in radial/tangential space: derive per-approach lane axes from the fan's (dx,dz), lay wheel tracks along each approach and sweep them through the turning paths, add a dark polished centre where all approaches overlap, plus stop bars, tyre-scuff arcs on the turn radii and oil staining at the stop line. Match the fan's base albedo and macro octaves to the segment shader so the pad boundary carries no tonal step."
+    },
+    {
+      "severity": "blocker",
+      "description": "Transition pad: the untextured grey embankment walls and the blunt guardrail stubs the brief named are NOT fixed. shots/critic/roads/p4f2_roads_transition_16h2.png — flat featureless grey vertical slab faces at x1020-1120 y470-530 and x1000-1160 y600-660 where the pad drops to the avenue; the outer W-beam guardrail is chopped off in a flat vertical face at x1030 y350 and x1090 y690, floating over asphalt with no end treatment. Only the centre median got its taper.",
+      "evidence": "Compare cs2_05: every vertical face in the reference carries material and an AO contact line at its foot.",
+      "suggestion": "Texture the embankment faces (concrete retaining wall with form-tie marks, a coping band at the top, streak staining and a dark AO line at the foot), and give every guardrail run a proper terminal — a flared or buried-in-backslope end over 4-6 m, not a cut face."
+    },
+    {
+      "severity": "major",
+      "description": "Night light pools are present at close range (fix landed) but 3.3x over-driven and read as flat cream ellipses. shots/critic/roads/p4night.png, pools at x300-520 y430-560 and x680-900 y150-320: measured pool-core Y 0.340 against cs2_08's lit-road Y 0.102. Inside the pool the asphalt aggregate, wheel-path wear and lane paint are all clipped to a single tone, so the best-lit asphalt in the frame is the flattest.",
+      "evidence": "shots/critic/roads/p4night.png vs reference/cs2_08.jpg",
+      "suggestion": "Cut pool intensity ~3x to land the core near Y 0.10-0.13, and let the aggregate detail normal and roughness variation stay in the shading response at night so the pool reveals texture rather than erasing it. Add a warm-to-cool falloff across the pool edge instead of a single tone."
+    },
+    {
+      "severity": "major",
+      "description": "Asphalt is still 1.8x brighter than LOOK_TARGET row 10. Measured 0.1036 on the highway carriageway (shots/critic/roads/p4f2_roads_transition_16h2.png x60-420 y330-400) against the 0.058 target — the same delta the target table recorded before this pass. The sidewalk paving compounds it at Y 0.098-0.118 and the path setts at Y 0.136, making the pedestrian surfaces the brightest thing in every road frame, which is exactly the 'buildings on a golf course' read in ground-plane form.",
+      "evidence": "docs/LOOK_TARGET.md row 10; measurements above",
+      "suggestion": "Drop asphalt base albedo ~1.7x and pull sidewalk/sett albedo down with it so paving sits at or just above the carriageway, not 1.4x above it. Verify with the same measured boxes rather than by eye."
+    },
+    {
+      "severity": "major",
+      "description": "Gore markings and repair patches read as artefacts, not paint. shots/critic/roads/p4f2_roads_transition_16h2.png x870-1000 y480-560 and x830-1020 y340-400: the gore is a fan of thin curved converging streaks that looks like skid marks, and it bleeds over the kerb onto the sidewalk at x845-880 y520-545. Repair patches at x855-925 y455-485 and x920-980 y440-490 are hard-edged flat rectangles aligned to lane geometry with no visible bitumen seam at this range.",
+      "evidence": "shots/critic/roads/p4f2_roads_transition_16h2.png",
+      "suggestion": "Replace the fan with straight parallel chevrons at a fixed 45 deg to the gore axis, clipped strictly to the carriageway mask so nothing crosses the kerb. Give repair patches irregular polygon outlines, a darker bitumen-sealed rim 8-12 cm wide, and a different aggregate scale from the surrounding surface."
+    },
+    {
+      "severity": "minor",
+      "description": "Path setts traded black-and-white static for a grey chequerboard. shots/critic/roads/p4f2_roads_path_16h2.png x480-880 y230-450: stones are 2-3 px wide with near-random high-contrast value alternation and no mortar joints, so the path shimmers as a blocky pattern rather than reading as setts.",
+      "evidence": "shots/critic/roads/p4f2_roads_path_16h2.png",
+      "suggestion": "Cut per-stone value variance ~3x, add a consistently darker recessed joint line between stones with its own AO, and give the sett pattern a running-bond or fan course rather than an unstructured grid."
+    },
+    {
+      "severity": "minor",
+      "description": "No contact AO where vertical props meet road or sidewalk. shots/critic/roads/p4focus.png: the lamp posts at x670-700 y300-360 and x760 y150-220 pass through the paving with no darkening at the base, and the same at every signal and sign pole. The judges named 'firm contact shadows under every vehicle and prop' and 'AO tucked under kerbs'.",
+      "evidence": "reference/cs2_05.jpg shows firm contact darkening under every vehicle and the pedestrian",
+      "suggestion": "Add a small baked AO disc (0.6-0.8 m radius) into the road/sidewalk shader at each prop anchor, or a screen-space contact term, so poles and signs sit in the surface instead of on it."
+    },
+    {
+      "severity": "minor",
+      "description": "Avenue median planting is a flat dark-green colour field. shots/critic/roads/p4f2_roads_transition_16h2.png x1000-1200 y620-700: the strip is a single untextured green with no grass mottling, no soil, and the tree pits/grates the brief asked for do not resolve. It is greener and flatter than the terrain grass it is meant to match.",
+      "evidence": "shots/critic/roads/p4f2_roads_transition_16h2.png",
+      "suggestion": "Reuse the terrain grass detail texture on the median with its own AO reveal at both kerbs, and make the tree pits read as dished bare soil rings or cast grates at 62 m, not just at 20 m."
+    }
+  ],
+  "screenshots": [
+    "shots/critic/roads/p4focus.png",
+    "shots/critic/roads/p4f2_roads_transition_16h2.png",
+    "shots/critic/roads/p4f2_roads_path_16h2.png",
+    "shots/critic/roads/p4night.png",
+    "shots/critic/roads/p4_roads_detail_17h5.png",
+    "shots/critic/roads/p4_roads_hero_17h5.png"
+  ],
+  "systemicProgress": {
+    "materials": "PARTLY FIXED. Segment asphalt now shows real aggregate grain and two-band wheel-path darkening that survives to ~40 m — the biggest single improvement this pass, and it is genuine. But three road surfaces are still flat untextured colour fields: the junction fan (std 0.0164 vs 0.0668 on the abutting segment, wear branch gated on !isFan), the transition-pad embankment walls, and the avenue median planting. Asphalt luminance is unchanged at 0.104 vs the 0.058 target. Path setts and sidewalk paving carry pattern but no wear, no joint dirt, and sit brighter than the carriageway.",
+    "lighting": "PARTLY FIXED. Hour 16.2 default gives a genuinely low sun with long soft lamp-post and tree shadows across the verge — this is right and reads three-dimensionally. Kerb-foot AO and gutter grime exist on segments. Missing: contact AO at every pole/sign base (they float on the paving), AO under the guardrail against the embankment, and any AO on the junction fan. Night pools now reach close range (fixed) but at 3.3x reference intensity they clip to flat cream and destroy the material response they should be revealing.",
+    "density": "NOT THIS MODULE'S BIGGEST GAP, BUT UNMOVED AT NIGHT. Daytime traffic on the highway approach is genuinely dense in p4b_roads_transition. At 21:03 the same network shows three vehicles and zero headlight cones or taillight trails — the judges' exact night complaint, unaddressed in road-visible terms.",
+    "variety": "ADEQUATE FOR ROADS. Highway, avenue, local street, path and the transition all read as distinct types with correct lane counts, kerb radii and markings. Lane paint is the weak point: every line, arrow and crosswalk is the same crisp pure white with hard edges, where cs2_05 shows greyed, scuffed, unevenly worn paint. The worn-paint noise mask exists in the shader but does not survive to 60 m.",
+    "colour": "NOT FIXED. Asphalt 0.1036 vs LOOK_TARGET row 10's 0.058 (1.8x, the same delta the table recorded before this pass). Sidewalk 0.098-0.118 and path setts 0.136 are brighter still, so paving is the brightest ground in every frame. Chroma is fine (0.056-0.068 saturation, close to reference); the fault is lightness, exactly as the target doc predicts — do not desaturate, darken."
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "id": "Bricks051",
+  "res": "1K",
+  "fmt": "JPG",
+  "license": "CC0",
+  "source": "https://ambientcg.com/view?id=Bricks051",
+  "files": [
+    "Bricks051.png",
+    "Bricks051_1K-JPG.blend",
+    "Bricks051_1K-JPG.mtlx",
+    "Bricks051_1K-JPG.tres",
+    "Bricks051_1K-JPG.usdc",
+    "Bricks051_1K-JPG_Color.jpg",
+    "Bricks051_1K-JPG_Displacement.jpg",
+    "Bricks051_1K-JPG_NormalDX.jpg",
+    "Bricks051_1K-JPG_NormalGL.jpg",
+    "Bricks051_1K-JPG_Roughness.jpg"
+  ]
+}

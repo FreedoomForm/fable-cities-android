@@ -1,0 +1,73 @@
+{
+  "module": "simulation",
+  "round": 1,
+  "score": 6.5,
+  "pass": false,
+  "summary": "Contract complete, deterministic, cheap, zero errors — the simulation *model* is solid. The *presentation* is not CS2-class: the showcase advertises 2,082 residents over a city with zero visible buildings (world.buildings.list is empty, economy runs on an invisible synthetic list), service sites are textured boxes on floating asphalt pads that never connect to a road, Kenney cartoon vehicles clash with the PBR world, night windows are uniformly blown-out, and the 'all' info view is an illegible red/green wash with eight overlapping rings. Good indie with obvious gaps; not a pass.",
+  "perf": { "fps": 253, "drawCalls": 1338, "triangles": 5419760, "consoleErrors": 0 },
+  "screenshots": [
+    "shots/critic/simulation/r1_simulation_hero_13.png",
+    "shots/critic/simulation/r1_simulation_detail_13.png",
+    "shots/critic/simulation/r1_simulation_night_21.png",
+    "shots/critic/simulation/r1_simulation_hero_21.png",
+    "shots/critic/simulation/r1b_simulation_infoview_13.png",
+    "shots/critic/simulation/r1b_simulation_school_13.png"
+  ],
+  "strengths": [
+    "Contract complete: simulation.api setSpeed/setTax/tick/stats (+getSpeed/getTax/fastForward/setInfoView); world.time, world.economy, world.services{api,list,types,version} populated; services.api place/remove/coverageAt/stats present.",
+    "Deterministic: two independent page loads at seed 7 + tick(1440) return byte-identical stats (pop 2104, money 450,178, coverage floats to 15 digits). No Math.random in the module.",
+    "Cheap: tick(1440 game minutes) costs 1.6-2.1 ms; whole-scene CPU ~4 ms/frame; 1.06-1.34k draw calls, 3.3-5.4 M tris, zero console errors and warnings across 8 shots.",
+    "Model behaves: residential tax 10%->15% moved net from -3,352 to +1,412/month; R demand 0.75 with a jobs surplus and C/I/O low; milestones fire with reward notifications; calendar correct (12 Jun 2026 = Friday); HUD clock honours --time.",
+    "Service buildings carry lettered signs, roof HVAC, court markings, additive light pools and stack smoke at night."
+  ],
+  "issues": [
+    {
+      "severity": "major",
+      "description": "Showcase city has zero visible buildings while the HUD claims 2,082-2,104 residents / 877 households. world.buildings.list is empty (buildings module is a 1 ms stub) so the economy runs on an invisible synthetic list; at night the city is black except street lamps where CS2 shows thousands of window lights.",
+      "evidence": "shots/critic/simulation/r1_simulation_hero_13.png (entire grid: 17 roads, 8 services, empty green blocks); shots/critic/simulation/r1_simulation_hero_21.png (no residential lights anywhere)",
+      "suggestion": "Until buildings.api delivers real stock, render the stand-in records the economy already uses as one InstancedMesh of massing blocks (height from type/level, emissive pane grid at night, registerMaterial + LAYER_REFLECTED) so population, households and jobs are visibly grounded; drop it automatically when world.buildings.list is non-empty. Flag to integrator."
+    },
+    {
+      "severity": "major",
+      "description": "Service sites never connect to the road network: the fire-house apron is a bare black rectangle with a grass strip between it and the street (no driveway, kerb cut or bay lines); the school car park is locked inside the block with no access. Aprons have no kerbs, markings or wear, and a small orange car clips the fire-house rear corner.",
+      "evidence": "shots/critic/simulation/r1_simulation_detail_13.png apron x380-800 y460-560 vs road at y~600, car at x850 y320; shots/critic/simulation/r1b_simulation_school_13.png lot x420-930 y340-500",
+      "suggestion": "Extend each apron with a driveway polygon to roads.api.nearest(...).point using sampleEdge for the drop-kerb; add kerb strip, painted bays, oil/tyre decals; orient vehicles toward the exit and keep them inside the pad footprint."
+    },
+    {
+      "severity": "major",
+      "description": "Service buildings read as textured boxes against cs2_04: flat tiled brick with no roughness/normal variation, single-colour slab roofs without parapet coping, window bands as flat uniform-tint decals with no reveal depth, police station a blue-white box. Kenney cartoon vehicles (bulbous cabs, oversize wheels, saturated orange) break scale and material language.",
+      "evidence": "shots/critic/simulation/r1_simulation_detail_13.png trucks x380-600 y380-480, roof x450-830 y240-330; shots/critic/simulation/r1b_simulation_school_13.png van x470-540 y400-440; shots/critic/simulation/r1_simulation_hero_13.png police x450-530 y250-300",
+      "suggestion": "Add parapet coping, roof membrane/gravel normal, gutters and downpipe streaks, ~0.15 m recessed window frames, base grime gradient and per-building albedo jitter; swap or retint/rescale vehicles to realistic proportions (car 4.5x1.8x1.5 m, fire engine 8.5x2.5x3.5 m, desaturated fleet red/white); add bollards, bins, flagpole, bike racks."
+    },
+    {
+      "severity": "major",
+      "description": "Night: every pane on the power plant and police station is lit identically, blown to white-yellow, no per-pane on/off variation or colour-temperature spread; smoke is an unlit grey blob.",
+      "evidence": "shots/critic/simulation/r1_simulation_night_21.png facade x430-760 y270-350, plume x500-580 y120-220",
+      "suggestion": "Per-pane hash: 60-75% lit, three emissive temperatures (2700K/4000K/6500K), intensity lowered so bloom carries the glow; stagger switch-on 18-21 h from world.env.nightFactor; give the plume a warm rim from the floodlights."
+    },
+    {
+      "severity": "major",
+      "description": "Info view 'all' is an illegible wash: eight overlapping white rings, a blurred red/green mask that follows the zoning rectangle, no per-service mode, no building tinting, no legend — nothing like CS2's crisp single-service heat map (cs2_03/cs2_07).",
+      "evidence": "shots/critic/simulation/r1b_simulation_infoview_13.png full frame",
+      "suggestion": "Default to one service at a time with a signed-distance coverage ramp, tint lots/stand-ins by coverage value, draw a single thin ring for the selected type, emit an 'infoview:changed' event with legend data for the ui module."
+    },
+    {
+      "severity": "minor",
+      "description": "Terrain flatten discs and lawn pads read as scars from the hero camera: a lighter circular disc around the clinic and a light square pad under the fire house.",
+      "evidence": "shots/critic/simulation/r1_simulation_hero_13.png x700-860 y400-520 and x500-620 y480-580",
+      "suggestion": "Match the lawn tint to the terrain splat (or paint into the splat instead of a separate mesh), noise the falloff edge, plant hedges/trees along the embankment."
+    },
+    {
+      "severity": "minor",
+      "description": "Contract deviation: ARCHITECTURE §4 specifies economy flows per game week (period === 'week'); the module now emits per month. UI adapts via periodOf() and docs/requests/simulation.md asks for a §4 change, but the contract is out of sync until the integrator accepts it.",
+      "evidence": "ARCHITECTURE.md §4 economy row; src/modules/simulation/economy.js line 95",
+      "suggestion": "Integrator updates §4 or module reverts; keep economy.period authoritative either way."
+    },
+    {
+      "severity": "minor",
+      "description": "Budget notification 'May 2026: -22,411' sits beside a HUD reading -3,352 (then +1,412) per month with no delta context; 'Businesses need workers' fires because the synthetic city carries 2,925 jobs for 1,305 workers (55% unfilled), so the R/C/I balance never converges.",
+      "evidence": "shots/critic/simulation/r1_simulation_hero_13.png notification stack; eval stats jobs 2925 / workers 1305",
+      "suggestion": "Size stand-in job stock to ~1.1x workers at full occupancy; add a 'vs previous month' delta to the budget notification."
+    }
+  ]
+}

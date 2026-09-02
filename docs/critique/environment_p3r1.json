@@ -1,0 +1,67 @@
+{
+  "score": 7.6,
+  "pass": false,
+  "summary": "Real progress: the fog-probe mismatch is genuinely fixed (pool now reflects the grey fog sky), world.env.skyColor is non-black at every hour I sampled, night windows are randomised warm/cool, night at 22h with the moon glitter path is the best frame the module has produced, time jumps land in one frame, weather drives sky/fog/sun/uWetness correctly, zero console errors, 1756-2305 draw calls and 4.4-6.0M tris. But the three things that decide a CS2 comparison still fail. (1) There is effectively no aerial perspective: a distant mountain at noon measures (13,19,29) against a (115,147,173) sky - 13% of sky luminance, where CS2 cs2_09 puts the same ridge at 86%. (2) Golden hour is still not gorgeous: ambientIntensity RISES from 0.82 at 10.8 deg sun altitude to 1.17 at 4.9 deg (noon is 1.20), so the key never takes over - sunlit tower facades render cool grey-white under a pink sky and the ground collapses to khaki (63,58,27). (3) Cloud bases are still one dead-flat horizontal plane, and at night the deck degenerates into literal sharp-cornered rectangles. Milky Way still absent, moon is a clipped white circle with no phase.",
+  "strengths": [
+    "Contract complete and verified live: setSun/setHemisphere/setFog/setFogHeight/setEnvironment/setExposure/setSunModulation/addMaterialHook all called; globalUniforms carries uSunModulation, uSunModulationXf, uFogHeight, uWetness, uTime; env.api exposes 20 methods including setWeather/sampleSky/cloudShadowAt.",
+    "world.env.skyColor verified non-black at 0/4/6/7/8/12/13/17/18/18.6/19/20/21/22/23 h - the self-reported blocker is genuinely fixed.",
+    "Fog-weather reflection probe fixed: pool reflection (91,102,121) is the same neutral blue-grey hue as the fog sky (161,168,181); the r2 saturated-blue-pool artifact is gone.",
+    "Night 22h (p3r1m.png) is beautiful: deep blue-violet sky, warm residual glow, silhouetted clouds, moon glitter path on the water, and randomised warm/cool lit windows - the r2 uniform-lattice minor is fixed.",
+    "Instant reaction to time jumps: setTime(13)->setTime(2) gives sunAltitude -22.3, nightFactor 1, exposure 2.21 on the very next frame, identical to the settled value 30 frames later.",
+    "Weather settles to correct physical values: rain cover 0.96 / rain 1.0 / uWetness 0.675 / sunIntensity 0.28; fog fogDensity 0.0023 (21x clear); snow snowCover 1.0. Zero console errors across 6 renders and 3 instrumented sessions.",
+    "Perf comfortably in budget at 1280x720: 1756-2305 draw calls, 4.39-6.01M triangles."
+  ],
+  "issues": [
+    {
+      "severity": "major",
+      "description": "No aerial perspective on distant terrain. Distant mountains render as near-black silhouettes at every daylight hour, which is the single biggest thing separating these frames from a CS2 screenshot. Mechanism is verifiable in code: fogDensity is 1.05e-4 at noon (only ~2.5% extinction at 1.5 km) AND engine.setFogHeight(waterY-4, fogH~150) zeroes the fog above ~150 m - exactly the altitude band the mountains occupy, so peaks get no haze at all.",
+      "evidence": "shots/critic/environment/p3r1_environment_hero_13.png, mountain dark face at (1200-1250, 150-175) measures (13.4, 18.6, 28.5) and even its SNOW at (1210-1250, 120-140) measures (73.8, 93.7, 111.8), against a zenith sky of (115.3, 146.7, 173.2) - 13% of sky luminance. reference/cs2_09.jpg ridge at (200-700, 620-720) is (102.2, 91.8, 68.1) against sky (119.2, 113.8, 101.5) = 86%. Same failure at golden hour: p3r1gh.png mountain (1150-1280, 140-230) is black with white snow. src/modules/environment/index.js:404-408.",
+      "suggestion": "Two changes. (a) Raise clear-sky fogDensity ~3-5x (target ~4e-4) so a 1.5 km ridge loses 40-60% of its contrast, and drive it from a Rayleigh+Mie extinction fit rather than a flat constant. (b) Stop the height-fog profile from cutting off at 150 m: use an exponential density falloff with a scale height of ~1200 m (real atmospheric scale height) so terrain at 300-800 m still accumulates haze, and keep the 150 m term only as an extra low-lying mist layer added on top. Verify: at 13:00 the far mountain face must land within 40-60% of the sky luminance directly above it and pick up the sky hue (b > r), not (13,19,29)."
+    },
+    {
+      "severity": "major",
+      "description": "Golden hour is still key-starved and khaki - the r2 MAJOR is not fixed. Root cause is a measurable non-monotonic bug: hemisphere/ambient intensity INCREASES as the sun sets. Sweep at 1 May: alt 10.8 deg -> amb 0.82, alt 7.8 -> 0.86, alt 4.9 -> 1.17, alt 2.0 -> 1.10, alt -0.9 -> 0.76. Noon ambient is 1.20, so at 4.9 deg sun altitude the sky is still delivering 97% of its noon illuminance, which is physically ~8x too much. Result: sun:ambient drops to 2.2:1 at 18:36 (it is 3.0:1 at 16:00), the warm key never dominates, sunlit tower facades render cool grey-white under a pink sky, and grass desaturates to brown. hemiGround also stays a bright neutral 0.37-0.59 grey all through the sweep, which is what washes the green out.",
+      "evidence": "shots/critic/environment/p3r1gh.png (18:39): grass (600-900, 540-620) = (62.9, 57.5, 27.4) - r > g, i.e. brown not green; plaza next to the wall shadow (200-280, 420-462) = (112.0, 94.5, 111.7), r == b, neutral mauve not warm; the wall SHADOW at (105-168, 410-460) = (112.8, 92.7, 94.6) is WARMER than the lit plaza, the inverse of the r2 acceptance test. Tower facades at (500-980, 0-480 of the zoom of region 640-1280 x 55-295) are near-white grey. lightingState() sweep quoted above.",
+      "suggestion": "Make ambientIntensity monotonically decreasing in sun altitude below ~15 deg - a smoothstep from full at 15 deg to ~0.12 of noon at 0 deg, applied to hemiIntensity AND to the sky term, with no golden-hour boost term added back on top (that boost is what creates the 0.86 -> 1.17 jump). Then let the key carry the frame: keep sunIntensity ~2.5-3.0 at 5 deg so sun:ambient is at least 8:1. Also tint hemiGround by the actual ground albedo (multiply by a saturated grass green) instead of holding it at a 0.5 neutral grey. Verify on the sweep: amb must be strictly decreasing 16h->19.2h, grass must keep g > r at 18.6h, and a sunlit plaza paver must measure r at least 1.5x b."
+    },
+    {
+      "severity": "major",
+      "description": "Cloud bases are still a single dead-flat horizontal plane, and the night deck breaks into hard-edged rectangles. The r2 'pancakes' MAJOR is only half addressed - daytime silhouettes are lumpier than r2, but every cumulus in a row is chopped by the same perfectly straight base line, and the low stratus band is a row of horizontal streaks. At night the artifact is worse: individual clouds are literal axis-aligned boxes with square corners and vertical sides, which reads as raymarch tile / temporal-reprojection blocking from the half-res cloud buffer.",
+      "evidence": "shots/critic/environment/p3r1_environment_hero_13.png: crop (0,55)-(640,295) at 2x - the left cluster's underside is a straight horizontal line at y~115, matched by a second flat deck at y~200; the band at (0-300, 155-205) is thin horizontal streaks. shots/critic/environment/p3r1m.png: crop (780,55)-(1280,275) brightened 2.2x shows rectangular cloud blocks at roughly (860-950, 170-220), (980-1030, 175-220), (1090-1130, 185-220) and a sharp-cornered box at (780-835, 170-225) in original coordinates. Compare reference/cs2_09.jpg where every cumulus has an irregular wavy base lit warm from below and a distinctly darker underside than its top.",
+      "suggestion": "The per-column base jitter is not reaching the render. Verify it in isolation (setCloudDebug) - if the weather octave feeding baseHeight is being sampled at the same UV as coverage it will decorrelate to nothing. Offset the base-height octave by a large fixed vector and give it +/-250 m of amplitude at ~800 m feature size. Separately, add real vertical lighting: the density gradient along -sunDir should darken bases to ~0.35 of top radiance, and multiscatter should tint the base from the horizon sky sample. For the night boxes, the sharp corners are a reprojection/tile issue - clamp the history to a 3x3 neighbourhood min/max in the reprojection instead of raising historyWeight, and dither the raymarch start offset per pixel (blue noise) so step boundaries do not align to tile edges."
+    },
+    {
+      "severity": "minor",
+      "description": "Milky Way is still not readable and stars are sparse and the wrong colour - the r2 minor is not fixed. At 22:03, with the moon low and the sky at (46,56,83), a 2.2x brightened crop shows roughly ten pinpricks, all of them orange/red, and no Milky Way band anywhere.",
+      "evidence": "shots/critic/environment/p3r1m.png sky region (1000-1270, 55-200); brightened 2.2x the visible stars sit at approximately (1105,88), (1112,120), (1160,105), (1195,80), (1245,140) and are all warm-hued. Compare reference/cs2_10.jpg night waterfront where the star field is dense and neutral/blue-white.",
+      "suggestion": "Star density is too low and the colour ramp is skewed - draw the B-V temperature distribution correctly (most naked-eye stars are white/blue-white; only ~15% should read warm) and raise the count by ~5x for magnitudes 4-6. For the Milky Way, render the band as an additive low-frequency dust-lane texture with intensity scaled by (1 - moonIllumination * max(0, moonUp)) * cloudTransmittance, and check it is not being multiplied by the same near-zero factor as the sky-scattering term."
+    },
+    {
+      "severity": "minor",
+      "description": "The moon disc is a flat, clipped pure-white circle with no phase terminator, no limb darkening and no surface detail, even though env.moonPhase and env.moonIllumination are computed and published.",
+      "evidence": "shots/critic/environment/p3r1m.png, moon at (890-930, 75-110), mean (122.9, 107.5, 119.3) with a hard circular edge; the 2.2x brightened crop shows it clipping to pure white with a stair-stepped rim.",
+      "suggestion": "Shade the disc: multiply by a Lambert-ish limb term, apply the phase terminator from env.moonPhase (the same geometry already drives moonIllumination), and add a low-contrast maria texture. Cap the disc radiance so it lands at ~0.85 white rather than clipping, and give it a small ~2 deg Mie halo so it sits in the sky rather than on top of it."
+    },
+    {
+      "severity": "minor",
+      "description": "Cloud shadows exist but are not readable on the ground in normal framing. cloudShadowFraction() reports 0.174 and an A/B render with setCloudShadows(true/false) changes 13.2% of pixels, but in the hero frame the plaza and grass are visually uniform under a sky with clear cloud cover.",
+      "evidence": "shots/critic/environment/p3r1_environment_hero_13.png lower half (0-1280, 330-720) shows no darker patches; A/B diff of the aerial preset gives mean per-pixel delta 2.3/255 over the whole frame.",
+      "suggestion": "Raise the shadow contrast so a fully covered patch darkens the direct term by 55-70% (currently the sampled minimum is 0.2 of the modulation range but the applied strength is too low), and widen the cloud-shadow map footprint so patches are a few hundred metres across at ground scale rather than sub-lot. Verify a patch of plaza under a visible cloud measures 25-40% darker than an adjacent lit patch in the same frame."
+    },
+    {
+      "severity": "minor",
+      "description": "Wetness does not reset on an instant weather change. After setWeather('clear', { instant: true }) from snow, engine.globalUniforms.uWetness stays at 0.738 for 45+ frames while env.rain has already gone to 0, so the ground stays soaked under a clear sky in any screenshot taken right after a weather jump.",
+      "evidence": "Instrumented session: sequence rain -> fog -> snow -> clear with { instant: true } and waitStable(45) between each yields wet values 0.675, 0.741, 0.740, 0.738 - the last one is 'clear' with rain 0 and fogDensity 0.00011.",
+      "suggestion": "In setWeather(w, instant) also snap the wetness and snow accumulators to the target preset's steady-state values, not just the sky/fog/sun parameters. Keep the slow physical drying for normal transitions."
+    }
+  ],
+  "perf": { "drawCalls": 2305, "triangles": 6007949, "consoleErrors": 0 },
+  "screenshots": [
+    "shots/critic/environment/p3r1_environment_hero_13.png",
+    "shots/critic/environment/p3r1_environment_detail_13.png",
+    "shots/critic/environment/p3r1gh.png",
+    "shots/critic/environment/p3r1n.png",
+    "shots/critic/environment/p3r1m.png",
+    "shots/critic/environment/p3r1fog.png"
+  ]
+}

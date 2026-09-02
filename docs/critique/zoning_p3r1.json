@@ -1,0 +1,74 @@
+{
+  "module": "zoning",
+  "round": "p3r1",
+  "score": 8.0,
+  "pass": false,
+  "summary": "Huge leap from 6.5. Both blockers are genuinely fixed: at 21:03 the tiles are dimmer than the street lamps (near-white pixels 0.01% of frame) and terrain no longer punches through at any angle including a 34 m street-level view. The multiply fill works - grass texture, dirt, tree shadows and the sun terminator read straight through (29.3% of the hero frame is overlay-affected). Contract complete, zones:changed carries {version,reason,lots,changed}, 273 lots all 2x2..4x4, all with valid frontage + roadSegmentId, 0 lot centres inside a road, all six types, coverage 0.848 verified live. 2 overlay meshes / 106k tris; worst frame 1263 calls / 6.9M tris; zero console errors or warnings. What still separates it from CS2: pure dst*=src can only darken, so a district reads as a cloud shadow and the dark-blue zone reads as water; and the road-side white band is a fat outward glow that spills onto asphalt and unzoned grass, which cs2_01 never does.",
+  "strengths": [
+    "Fill genuinely modulates the lit ground: grass texture, dirt scars, tree shadows and terrain shading survive the tint (crop of hero_13 x820-1280 y180-470)",
+    "Night is correct now - zoning is dimmer than street lighting; near-white pixels 0.01% at 21:03 vs 1.22% at 13:03",
+    "No terrain punch-through at any angle, including the 34 m low-pitch close-up (p3r1_close.png)",
+    "Lot engine verified live: 273 lots, sizes {2x2:100,3x2:45,2x4:56,3x4:40,4x4:11,...}, badSize 0, badFront 0, noSeg 0, inRoad 0, all six types, coverage 0.848",
+    "Cells are true road-oriented trapezoids on the curved loop; overlay hides cleanly on setOverlayVisible(false)",
+    "Line hierarchy inverted as asked - cell seams are dark hue-tinted hairlines, white reserved for frontage/hover/brush",
+    "Hover lot and brush footprint are now unmistakable as cursors (detail_13 x420-950 y430-620)",
+    "Perf is a non-issue: 2 draw calls, 106k tris for the whole overlay"
+  ],
+  "issues": [
+    {
+      "severity": "major",
+      "description": "Pure multiply blending can only darken, so every zoned district reads as a cloud shadow lying on the land, and the dark-blue res-high blocks read as ponds - dangerous on a map with a real river 200 m away. Measured over the hero frame (zoning ON vs OFF): median luma ratio 0.86, p05 0.66, 65.3% of overlay pixels darkened vs only 14.2% brightened. In reference/cs2_01.jpg the purple office overlay sits at or ABOVE the luma of the roof it covers - it is a chromatic lift, not a shadow.",
+      "evidence": "shots/critic/zoning/p3r1_zoning_hero_13.png vs p3r1_off.png, navy res-high strips at x480-880 y250-470 (crop): zoned L=0.310 vs bare L=0.385, ratio 0.81. ZoneOverlay.js FILL pass uses dst *= src.rgb with no additive term.",
+      "suggestion": "Keep the multiply for texture preservation but add a small source-over/additive chroma term on top so the tint is luma-neutral-to-lifting: pre-normalise each palette colour to luma 1.0 (tint /= luma(tint)) before the multiply, then add tint*0.10*(1-uNight) in a second additive term. Target a zoned/bare luma ratio of 0.98-1.15 for every type. Fix res-high specifically - it is the darkest and the one confusable with water."
+    },
+    {
+      "severity": "major",
+      "description": "The bright road-side edge is a fat soft glow that spills OUTSIDE the zone footprint - onto the sidewalk, the asphalt and the unzoned grass beyond. It is ~16 px wide at the zoning_detail camera (~2.3 m in world) at luma 0.74, saturation 0.06, and at hero range it turns the whole district into a web of glowing white grout rather than colour fields. cs2_01.jpg has no halo at all: the overlay edge is hard and stops exactly at the tile boundary.",
+      "evidence": "shots/critic/zoning/p3r1_zoning_detail_13.png scanline y=230, x=958..974 luma 0.69->0.74->0.62 then straight back to saturated green; visible spilling over the kerb in hero_13 x820-1280 y180-470 (office/teal blocks, top edge) and around the navy plates at x480-880 y250-470. Grey/white UI pixels are 9.0% of all overlay-affected area.",
+      "suggestion": "Clamp the frontage bar strictly inside the cell footprint (no outward feather) and halve its width to ~1.0-1.2 m; drop its luma to ~0.85 of the current value and let the colour of the zone tint it slightly rather than pure grey. Replace the soft outer feather on non-road edges with a 1-2 px hard edge as in CS2. Reserve the outward glow, if any, for the brush cursor only."
+    },
+    {
+      "severity": "minor",
+      "description": "345 of 2265 painted cells (15%) still never become part of a lot, so the player is shown buildable colour on land no building can occupy. Down hugely from 51%, but the leftovers cluster into visible 1-2 cell fringes.",
+      "evidence": "Live zones.api.stats() at ?showcase=zoning&seed=7: {cells:2949, blocked:1238, conflicts:1409, lots:273, lotCells:1920, zonedCells:2265, coverage:0.848, unlotByK:[47,45,185,68]}. unlotByK[2]=185 is the biggest bucket.",
+      "suggestion": "Either let 1xN strips form legal 2x2 lots by borrowing a cell from the next depth row, or stop painting cells that survive to the end with no lot - repaint them as the pale unzoned grid so the overlay never promises land it cannot build on."
+    },
+    {
+      "severity": "minor",
+      "description": "Block silhouettes are still ragged: outer edges staircase in and out by one cell and interior notches appear mid-block, so districts do not read as the clean rectangles-with-square-junction-notches CS2 produces.",
+      "evidence": "shots/critic/zoning/p3r1_zoning_hero_13.png x150-590 y430-700 (res-low fields: notch at the right edge of the block near x420 y500, isolated single cells near x230 y470) and x480-880 y250-470 (navy strips of uneven length). conflicts=1409 cells dropped by the junction independent-set pass.",
+      "suggestion": "After the conflict pass, run a morphological close (dilate-then-erode by 1 cell within the same zone type, never crossing a road) so single-cell notches fill and single-cell spurs vanish; keep the deliberate square notch at junction corners."
+    },
+    {
+      "severity": "minor",
+      "description": "The hover/brush cursor is not hidden by setOverlayVisible(false) - a white dashed lot outline is left floating on bare grass with no overlay behind it.",
+      "evidence": "shots/critic/zoning/p3r1_off.png, dashed white quad at approx x620-690 y352-378, the only zoning pixel left in an otherwise clean frame.",
+      "suggestion": "In refreshVisible()/setOverlayVisible(false), also clear the hover id and brush rect (or gate the LINE pass cursor uniforms on overlay.visible)."
+    }
+  ],
+  "previousRoundStatus": {
+    "fixed": [
+      "BLOCKER overlay brighter at night - FIXED, verified in p3r1_zoning_hero_21.png / p3r1_zoning_night_21.png",
+      "BLOCKER terrain punch-through - FIXED, verified in p3r1_zoning_detail_13.png and the 34 m p3r1_close.png",
+      "MAJOR opaque vinyl fill - FIXED, ground albedo/texture/shadows read through",
+      "MAJOR inverted line hierarchy - FIXED for the seams (now dark hairlines); the white frontage band is now too wide instead (see issue 2)",
+      "MAJOR 51% of painted cells never lotted - LARGELY FIXED, coverage 0.486 -> 0.848 verified live (15% residual, see issue 3)",
+      "MINOR res-low isoluminant with grass - FIXED, mint separates clearly at all ranges",
+      "MINOR hover/brush not readable as UI - FIXED, both unmistakable"
+    ],
+    "notFixed": [
+      "MINOR ragged swiss-cheese block boundaries - only partially improved, still visible (see issue 4)"
+    ]
+  },
+  "perf": { "drawCalls": 1263, "triangles": 6929007, "consoleErrors": 0, "overlayMeshes": 2, "overlayTriangles": 106164 },
+  "screenshots": [
+    "shots/critic/zoning/p3r1_zoning_hero_13.png",
+    "shots/critic/zoning/p3r1_zoning_hero_21.png",
+    "shots/critic/zoning/p3r1_zoning_detail_13.png",
+    "shots/critic/zoning/p3r1_zoning_detail_21.png",
+    "shots/critic/zoning/p3r1_zoning_night_13.png",
+    "shots/critic/zoning/p3r1_zoning_night_21.png",
+    "shots/critic/zoning/p3r1_close.png",
+    "shots/critic/zoning/p3r1_off.png"
+  ]
+}

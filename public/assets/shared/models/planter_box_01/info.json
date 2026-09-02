@@ -1,0 +1,12 @@
+{
+  "id": "planter_box_01",
+  "name": "Planter Box 01",
+  "type": "models",
+  "authors": {
+    "James Ray Cock": "All"
+  },
+  "license": "CC0",
+  "source": "https://polyhaven.com/a/planter_box_01",
+  "res": "1k",
+  "fmt": "gltf"
+}

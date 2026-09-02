@@ -1,0 +1,74 @@
+{
+  "score": 6.8,
+  "pass": false,
+  "summary": "Effects fix-round 1 is a real step up from r2 (6.5) but still indie-grade, not CS2. Verified: 0 console errors in all 7 shots, all modules ok, contract complete (world.effects.api: addSource/removeSource/clearSources/addGroundPlate/refresh/refreshMaterials/grading/setLUT/setEnabled/stats + rain/snow/wetness/snowCover), grading via engine.post.insertBeforeOutput (index.js:126), particles on LAYER_NO_AO (index.js:105), depth-driven soft particles + 13-tap sun-occlusion probe, reacts to env/time, effects CPU 0.008-0.020 ms live (under 1 ms), 899-1077 draw calls / 2.8-4.0 M tris / 58-280 fps @720p. Fixed for real: wet asphalt no longer reads as open water, noon grade has whites/blacks (live uContrast 1.37, vignette 0.19), sun glare is restrained and occluded, night plumes darker than sky, aviation lights on stacks, sunset frame (r1sun.png) is the best image so far. Not fixed / regressed: rain is now INVISIBLE at 720p (1-px hairline + luma fade + alpha<=0.35 means zero readable streaks even in a full-res crop), smoke plumes are still structureless grey-brown smears painted over sky and mountains, snow is a flat milky white-out with no falling flakes readable and dark specks in the sky, and wet pavements show white specular speckle noise. Score 6.8, fail.",
+  "perf": { "fps": 58, "drawCalls": 1077, "triangles": 4011477, "consoleErrors": 0 },
+  "strengths": [
+    "Sunset/golden-hour frame (shots/critic/effects/r1sun.png): warm filmic grade, restrained sun glare with correct occlusion behind the stack, no ghost chain, believable rim light on brick.",
+    "Wet-look no longer reads as water: damp asphalt keeps texture, kerbs/markings read through, puddle mask is low-frequency and mirrors the sky (r1rain_effects_puddles_13.png x370-460,y320-360).",
+    "Noon grade finally has real whites and blacks with saturated grass and pale-blue sky instead of the old milky band (r1_effects_hero_13.png).",
+    "Night (r1_effects_hero_21.png): plumes correctly darker than the sky, red aviation lights on stacks, streetlight bloom halos, blue-grey filmic night grade with lifted toe.",
+    "Engineering: 0 errors, CPU 0.01-0.02 ms/frame measured live, sceneDepth true, 60 wet materials patched, 2538 smoke particles / 46 emitters, 600 splash instances near camera, wetness dries slowly (wetness=1 held after rain)."
+  ],
+  "issues": [
+    {
+      "severity": "major",
+      "description": "Rain streaks are invisible. In both rain shots (shots/critic/effects/r1rain_effects_street_13.png, r1rain_effects_puddles_13.png) and a 1:1 crop (crop_rain.png) not a single streak is readable against sky, dark asphalt, brick or the dark tanks; splash rings (600 instances live) are also not readable. Over-correction of the r1 'fat rods' critique: Precipitation.js clamps width to 1 px (`wid = max(uSize.x, px)`), dims alpha to 0.35 for sub-pixel drops and then uLumaFade hides drops against bright backgrounds. CS2 rain is clearly visible as translucent streaks against facades and roads.",
+      "evidence": "r1rain_effects_street_13.png whole frame; crop_rain.png (x380-1020,y60-420 at 1:1); api.stats() rain=1, wetness=1, splashes=600",
+      "suggestion": "Streak width 1.5-2.5 px for the near layer (dist < 25 m), length 0.6-1.2 m of motion blur, alpha 0.45-0.7 with colour = mix(dark, sky-lit) so drops are brighter than dark backgrounds and slightly darker than sky (two-tone), luma fade only against near-white sky, plus a dense near-camera sheet (2-3k drops within 15 m). Make impact rings 15-25 cm, 6-10 visible within 10 m of camera inside puddles, with a 1-frame white crown sprite."
+    },
+    {
+      "severity": "major",
+      "description": "Industrial smoke still has no volumetric structure. Plumes are large, featureless grey-brown smears with visible soft-quad edges, drifting as flat horizontal fog patches painted over sky and mountains, no dense core at the stack mouth, no billowing puff hierarchy, no visible terminator or forward-scatter rim on backlit plumes. In snow they read as charcoal smudges.",
+      "evidence": "r1_effects_hero_13.png x600-880,y130-200 and x0-200,y220-300; r1_effects_detail_13.png x150-350,y60-200 and x600-800,y90-160; r1snow.png x430-620,y190-290 and x780-1000,y130-240; r1sun.png x480-640,y130-200 (backlit plumes are flat dark smears)",
+      "suggestion": "Use a flipbook/turbulent sprite atlas (8x8 tiling of noise-based puffs with baked 6-direction lighting or a normal atlas) and shade per-sprite with the sun direction so puffs get a real lit/shadow side; spawn 3x more, 3x smaller particles at the stack mouth (diameter = stack diameter) that grow with age; add a bright silhouette rim term (pow(1-dot(n,v),3)*sunColor) for backlit plumes; reduce lifetime/drift so plumes stay attached to stacks instead of stretching into a horizontal band."
+    },
+    {
+      "severity": "major",
+      "description": "Snow is a flat white-out. Ground, roofs, yards and roads merge into one featureless white sheet with near-zero tonal variation; roads are not readable ('partly cleared' claim is only faint kerb lines), no drifts/edge accumulation, no blue shadow tint, sky is flat white-grey and the whole frame is milky low-contrast. Falling flakes are not readable at all from the mid-aerial hero preset, while small dark specks appear in the sky (dark-shaded flakes or artefact).",
+      "evidence": "r1snow.png whole frame; roads x300-1280,y400-720; dark specks x790-960,y90-125; crop_snow.png (x640-1280,y60-420 at 1:1)",
+      "suggestion": "Keep road centre lanes at 20-35 % cover with dark tyre tracks and grey slush at kerbs; add ambient-occlusion-driven blue tint (shadowTint 0.85,0.9,1.1) in snow shadows and micro-normal noise with 2-3 % sparkle; give snow its own grade (contrast 1.3, black level up, no global desat) so the sky stays blue-grey and buildings hold contrast like cs2_06.jpg; flakes must be lit >= sky luminance (never darker) and stay visible on aerials at 2-3 px with motion stretch."
+    },
+    {
+      "severity": "major",
+      "description": "Wet pavements and concrete show high-frequency white specular speckle (salt-and-pepper sparkle) in rain, especially at mid distance on sidewalk tiles and yards; reads as shader aliasing, not wet stone.",
+      "evidence": "r1rain_effects_street_13.png x950-1280,y200-330 and x0-100,y300-350; r1rain_effects_puddles_13.png x0-110,y290-330, x1000-1150,y280-320 and x500-700,y190-210; crop_rain.png x470-640,y150-200",
+      "suggestion": "Fade the wet normal-map detail and puddle-rim contribution with distance (LOD by screen-space derivative), raise the roughness floor to >= 0.45 beyond 30 m, and check whether the sidewalk normal map is being read at full mip under low roughness (bias mip by +1 when wet). Verify with a 1:1 crop at effects_street: no isolated pure-white pixels on pavements."
+    },
+    {
+      "severity": "minor",
+      "description": "Auto white-point (uAuto gain 1.28, target 0.85) pushes the large concrete yards and white halls to texture-less near-white at noon; the frame reads hot and slightly hazy compared to cs2_04.jpg where bright surfaces keep texture.",
+      "evidence": "r1_effects_hero_13.png yards x640-1000,y300-360 and x300-600,y560-640; r1_effects_detail_13.png hall x470-720,y280-330",
+      "suggestion": "Clamp auto gain to <= 1.12 at noon, move white target to ~0.80 and steepen the shoulder so p99 lands at ~0.92 with texture preserved; keep the mid-tone contrast."
+    },
+    {
+      "severity": "minor",
+      "description": "Construction dust remains unreadable; no visible dust or grit near the crane/steel-frame sites in any preset.",
+      "evidence": "r1_effects_hero_13.png x400-700,y180-300 (cranes); r1rain_effects_puddles_13.png x600-1000,y80-200 (site)",
+      "suggestion": "Emit tan, sun-lit ground-hugging puffs (2-4 m, 0.15 alpha) at the site footprint edges and the crane hook, plus occasional larger billows; make it wind-driven and disable it in rain."
+    },
+    {
+      "severity": "minor",
+      "description": "Night streetlight glare halos are identical bright discs with no falloff variation, and the grade leaves the horizon a uniform dark navy band; the scene needs warmer, varied light temperature and a subtle horizon glow from the city.",
+      "evidence": "r1_effects_hero_21.png lamps x100-1200,y200-620; horizon x0-1280,y60-120",
+      "suggestion": "Vary glare intensity per lamp (0.7-1.2) and give sodium/LED mixes (2700K vs 4500K), add a faint bloom-driven horizon glow tied to nightFactor."
+    },
+    {
+      "severity": "minor",
+      "description": "Not this module, noted: the sky/cloud layer shows horizontal stair-step banding at sunset (environment module), and showcase windows are uniform pure-white rectangles at night (showcase). Both hurt the effects frames.",
+      "evidence": "r1sun.png clouds x200-700,y60-130; r1_effects_hero_21.png windows",
+      "suggestion": "Report to environment/showcase owners; effects should still add per-window warm tint variation in its own showcase."
+    }
+  ],
+  "screenshots": [
+    "shots/critic/effects/r1_effects_hero_13.png",
+    "shots/critic/effects/r1_effects_detail_13.png",
+    "shots/critic/effects/r1_effects_hero_21.png",
+    "shots/critic/effects/r1rain_effects_street_13.png",
+    "shots/critic/effects/r1rain_effects_puddles_13.png",
+    "shots/critic/effects/r1snow.png",
+    "shots/critic/effects/r1sun.png",
+    "shots/critic/effects/crop_rain.png",
+    "shots/critic/effects/crop_snow.png"
+  ]
+}

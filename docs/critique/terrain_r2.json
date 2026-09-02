@@ -1,0 +1,66 @@
+{
+  "score": 7.5,
+  "pass": false,
+  "summary": "Round 2 is a real step up: the river is now a deep desaturated blue with fresnel and reads darker than the land at noon (lum 72 vs 80), night water no longer glows, forests are clumped with riparian strips, and the mountain vista has ridged relief, gullies and snow. Contract is complete (getHeight/getNormal/isWater/raycast, flattenRect, conformPath, conformDisc, clearVegetationRect/Circle, biome; services:changed + lots + building:added clear vegetation), zero console errors/warnings, perf comfortably in budget (440-873 calls, 1.8-3.7 M tris, 156-450 fps). It fails the CS2 bar at close and mid range: trees are low-poly lollipops/cardboard conifers with stick trunks, the ground below 150 m is a blurry mottled paint with no legible grass/rock micro-detail, hollows carry dark smudge 'dirt' blotches, the water edge is a hard line against a flat uniform tan band with no wet gradient, lone trees still pepper the coastal meadow, and at 21:03 west-facing land shows orange specular smears. Good indie, not yet AAA.",
+  "strengths": [
+    "Day water: deep blue-green absorption, fresnel to sky, fine animated normals and sparse whitecaps - reads like CS2 water at hero distance (r2_terrain_hero_13.png).",
+    "Night water fixed: no longer self-lit, subtle ripple visible against dark land (r2_terrain_hero_21.png).",
+    "Mountain preset has convincing large-scale morphology: ridged peaks, snow, gullies, forested valley (r2b_terrain_mountain_13.png).",
+    "Forests now form clumped stands with ragged edges and riparian strips; river sand confined largely to inner bends.",
+    "Contract complete and defensive; init 2.3 s; perf far under budget; zero console errors/warnings."
+  ],
+  "issues": [
+    {
+      "severity": "major",
+      "description": "Tree assets read as low-poly lollipops: conifers are stacked flat triangles with hard teal flat shading, deciduous crowns are 2-3 faceted blobs on thin stick trunks; trunk-to-crown ratio and canopy uniformity (same height, same green) read as indie/stylised, not CS2 photoreal.",
+      "evidence": "shots/critic/terrain/r2b_terrain_forest_13.png (spruce at x1150-1250,y100-330; small conifer x290-340,y250-330); shots/critic/terrain/r2_terrain_detail_13.png (top-left oak crown facets; treeline top x400-1280,y60-140 all same height).",
+      "suggestion": "Replace procedural lobes with real CC0 tree meshes (Poly Haven / Quaternius / ambientCG tree sets) or at minimum 6-8 leaf-card clusters per crown with alpha-tested leaf atlas and normal maps, subsurface-ish translucency, 20-30% height/width jitter and 3 species-hue palettes; conifers need >=8 branch card tiers with drooping silhouette, not planar triangles."
+    },
+    {
+      "severity": "major",
+      "description": "Ground lacks micro-detail below ~150 m: grass/dirt appears as blurry soft mottling with no visible blade texture or detail normal response; macro/cavity shading produces large dark brown-grey smudges in hollows and on hill flanks that read as dirt stains rather than geology; sunlit hill flanks show mesh faceting.",
+      "evidence": "shots/critic/terrain/r2b_terrain_forest_13.png (smudges x200-330,y180-290 and x1000-1100,y280-360; faceting x800-1000,y200-300); shots/critic/terrain/r2_terrain_detail_13.png ground x0-450,y150-650; shots/critic/terrain/r2b_terrain_mountain_13.png foreground x600-800,y560-640.",
+      "suggestion": "Add a 0.5-1 m detail normal + albedo layer (Grass004/Ground048 normals) fading in under 120 m, raise near-chunk tessellation or add displacement, halve cavity-shading strength and tint it toward damp green rather than brown, and turn the fall-line streaks into narrow high-frequency scree/dirt with the rock normal instead of soft blurred bands."
+    },
+    {
+      "severity": "major",
+      "description": "Shoreline still not soft: at 48 m the water meets a uniform flat tan band with a hard inner grass edge and a crisp waterline; no wet-darkening gradient, no visible depth fade of the water to the bed, no texture in the sand. Coast strip is a uniform cream ribbon with hard edges.",
+      "evidence": "shots/critic/terrain/r2_terrain_detail_13.png (bank x180-800,y150-700); shots/critic/terrain/r2b_terrain_coast_13.png (strip along x0-1280,y230-560).",
+      "suggestion": "Use the signed shore-distance texture to drive a 2-4 m wet band (albedo x0.55, roughness 0.25) that peaks at the waterline, blend Ground054 sand with grass via noise-broken threshold (not a distance ramp), and give the water a depth-based alpha fade over the first ~1.5 m so the edge is soft; add pebble/silt normal detail to the bed and bank."
+    },
+    {
+      "severity": "major",
+      "description": "Night terrain shows orange-pink specular smears on west-facing slopes and glints between trees at 21:03 (top-left of hero), while the rest of the land is a flat murky green-grey with no moonlit modelling.",
+      "evidence": "shots/critic/terrain/r2_terrain_hero_21.png (x0-200,y60-380); brightened crop shots/critic/terrain/r2_night_crop_tl_x2.2.png.",
+      "suggestion": "Clamp terrain specular at grazing angles for vegetated ground (roughness >=0.85 on grass/dry layers, kill specular when sun elevation < 2 deg), and verify with the environment owner whether the sun is still above horizon at 21:03; make terrain respond to moon light with a cool blue-grey diffuse so slopes read at night."
+    },
+    {
+      "severity": "minor",
+      "description": "Lone trees are still scattered uniformly across the coastal meadow, contradicting the 'near-zero lone trees' claim; trees at 300 m look like stick-and-ball icons.",
+      "evidence": "shots/critic/terrain/r2b_terrain_coast_13.png (x100-1280,y400-650).",
+      "suggestion": "Apply the clump threshold (>=0.5) to the coastal biome too and group remaining singles into 3-6 tree copses or hedgerows."
+    },
+    {
+      "severity": "minor",
+      "description": "Mountain rock is a near-black uniform charcoal with vertical striation stretching on steep faces; snow caps have hard bright edges with no wind-blown gradient or exposed rock through snow.",
+      "evidence": "shots/critic/terrain/r2b_terrain_mountain_13.png (x750-1000,y180-320 faces; peaks y70-160).",
+      "suggestion": "Lighten rock albedo to mid-grey/ochre, blend two rock sets by altitude, use height-and-slope noise for snow with a 30-50 m transition and rock poking through on >50 deg faces."
+    },
+    {
+      "severity": "minor",
+      "description": "zones:changed clears vegetation under every zoned lot, not only lots with buildings (spec: 'under lots with buildings'); empty zoned land loses its trees.",
+      "evidence": "src/modules/terrain/index.js lines 280-288.",
+      "suggestion": "Gate clearing on lot.buildingId != null (building:added already covers the rest)."
+    }
+  ],
+  "screenshots": [
+    "shots/critic/terrain/r2_terrain_hero_13.png",
+    "shots/critic/terrain/r2_terrain_detail_13.png",
+    "shots/critic/terrain/r2_terrain_hero_21.png",
+    "shots/critic/terrain/r2b_terrain_mountain_13.png",
+    "shots/critic/terrain/r2b_terrain_coast_13.png",
+    "shots/critic/terrain/r2b_terrain_forest_13.png",
+    "shots/critic/terrain/r2_night_crop_tl_x2.2.png"
+  ],
+  "perf": { "fps": 156, "drawCalls": 873, "triangles": 3690593, "consoleErrors": 0 }
+}

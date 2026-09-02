@@ -1,0 +1,124 @@
+{
+  "module": "buildings",
+  "round": "p3r1",
+  "score": 7.5,
+  "pass": false,
+  "summary": "Real progress over round 1 (6.5): the orange floating fence, lawn pads, bare roofs, illegible signage and monotone palette are genuinely fixed, and the night hero is the module's best image - warm randomised window lights, a lit crane, a BANK sign, believable downtown massing. Contract is complete (spawn/remove/fastForward/setLots/autoZone/stats/setInfoView, 545-entry world.buildings.list with every required field, building:added/removed/levelup/completed) and there are zero console errors. But the headline blocker is only half fixed: windows now have a white frame and sill yet still read as decals - no reveal shadow, no sill shadow, and the glass is an opaque flat grey card on every res-low house, every com-low shopfront and the sunlit faces of mid-rise. res-low is still one box plus one hip roof with one or two tiny windows; 73% of houses get no garage or driveway. Office/res-high/com-high have no ground floor at all - no entrance, no lobby, no canopy. Industrial warehouses are untextured white boxes with no dock doors. Draw calls 1578-2108 are in budget; scene triangles peak at 11.8M (over the 8M bar) but buildings contribute only ~250k of ~1.8M pre-pass geometry, so that breach is terrain's, not this module's.",
+  "strengths": [
+    "Night city reads AAA: per-window randomised warm emissive with sensible occupancy variation, lit construction crane, aviation beacons, legible BANK sign (p3r1_buildings_night_21.png)",
+    "Fence blocker fully fixed - hedges/picket/low wall varied per lot, desaturated, terrain-following, front edges often open (p3r1_reslow_close.png)",
+    "Lot lawn pads gone; the garden is now terrain grass with no two-tone seam or stepped lip",
+    "Rooftop clutter now reads at hero altitude: AC units, tanks, antennas, parapets, solar on flat roofs (p3r1_buildings_hero_13.png, p3r1_comlow.png)",
+    "Shop signage and awnings fixed - legible MODA/BAKERY/BANK lettering, awnings with valance and arms (p3r1_comlow.png)",
+    "Downtown massing and silhouette variety at hero distance is convincing: setbacks, stepped towers, mixed heights, curtain-wall vs masonry",
+    "res-low door package landed: leaf, handle, architrave, canopy, step, paver path, brick chimney, downpipe (crop of p3r1_reslow_close.png)",
+    "Contract complete and clean: 545 buildings, 302 res-low across levels 1-5, 6 construction sites, zero console errors in 11 shots"
+  ],
+  "issues": [
+    {
+      "severity": "blocker",
+      "description": "Window glass is an opaque flat grey card, not glass. Round-1 major #4 changed failure mode but was not fixed. On the res-low house the single front window is a uniform blue-grey rectangle with no reflection, no interior, no mullion. On com-low the entire shopfront band is flat grey - no interior, no product display, no warm interior light. On the near-frontal office facade the panes are a matte grey vertical gradient with no sky reflection and no fresnel rim, and the blind panes are brighter than the wall so they read as holes punched to the skybox.",
+      "evidence": "shots/critic/buildings/p3r1_reslow_close.png (foreground house, window at ~x205-290 y455-500); shots/critic/buildings/p3r1_comlow.png (whole shopfront band x170-500 y480-570 and x1090-1280 y440-500); shots/critic/buildings/p3r1_office_close.png (right building x1130-1255 y95-470)",
+      "suggestion": "Give glass a real two-layer look everywhere, not only on the com-high curtain wall: (a) sample the env/sky cubemap weighted by a Schlick fresnel against the facade normal, floor ~0.15 at normal incidence rising to ~0.7 at grazing; (b) put the interior tint under it at <=0.25 luminance with a vertical falloff so the head of the opening is darker than the cill; (c) shopfront glass gets roughness ~0.05 plus a lit interior plane (shelving band + warm ambient) visible day and night; (d) cap blind luminance below the adjacent wall value and give blinds a faint horizontal slat frequency."
+    },
+    {
+      "severity": "blocker",
+      "description": "Window openings still read as decals rather than recesses. There is no dark reveal band at the head, no shaded jamb, and the protruding cast-stone sill throws no shadow on the wall beneath it - the sill is a clean pure-white bar sitting on an unshadowed wall. The claimed 0.07-0.20 m box-parallax reveal is not readable at 40-70 m, which is the zoom a CS2 player actually plays at.",
+      "evidence": "shots/critic/buildings/p3r1_office_close.png (right-hand building, three stacked windows x1130-1255 y95-470 - crop shows frame, sill, zero shadow); shots/critic/buildings/p3r1_reslow_close.png (house window)",
+      "suggestion": "The parallax march is producing depth but nothing is darkening it. Multiply the reveal fragments by an occlusion term derived from the marched depth (t/maxDepth) AND by max(0, dot(revealNormal, -sunDir)) so the sun-facing jamb stays lit while the opposite jamb and the head go to ~0.35 of wall luminance. Then add a 0.10-0.15 m soft drop shadow band under each sill in the same patch, and desaturate/dirty the sill from pure white to ~0.78 warm grey."
+    },
+    {
+      "severity": "blocker",
+      "description": "res-low silhouette is far below cs2_04. Every house is one rectangular mass plus one hip or gable roof. Typical front elevation carries one small window and one door on an otherwise blank wall; the white house mid-frame shows four ~1 m windows strung along a 12 m blank wall. Only 106/302 res-low buildings even qualify for a garage (level>=2 AND lot>=17 m) and the 78% chance drops that to ~27%, so roughly three quarters of the suburb has no garage and no driveway - contradicting the report's claim that res-low 'always carries garage + garage door, driveway'.",
+      "evidence": "shots/critic/buildings/p3r1_reslow_close.png (all ~8 visible houses - none has a garage or driveway); src/modules/buildings/generators.js:229 `const hasGarage = L >= 2 && w >= 17 && rng.chance(0.78)`; reference/cs2_04.jpg (cross-gables, dormers, porch columns, garage + wide driveway apron on every lot)",
+      "suggestion": "Raise garage/carport coverage to ~85% of res-low by dropping the width gate to 14 m and adding a carport (posts + flat roof) for narrow lots, and always emit a driveway apron 3.5 m wide from the road edge. Then add one secondary mass per house at level>=2: a front cross-gable wing, a projecting bay, or a porch with two columns and a railing - CS2 houses are never a single extruded box. Raise window area: group 2-3 openings into a single wider unit on the street elevation and lift sill-to-head to ~1.4 m."
+    },
+    {
+      "severity": "major",
+      "description": "No ground-floor differentiation on office, res-high or com-high. The five-storey office block repeats an identical window row on every floor down to grade: no entrance door, no lobby glazing, no canopy, no plinth or base course, no address signage. A CS2 office is instantly readable by its street level; this one is a wallpaper extrusion that meets the pavement with nothing.",
+      "evidence": "shots/critic/buildings/p3r1_office_close.png (centre building base, x430-930 y490-580); also the building at right x1080-1280 and the block behind at x60-330",
+      "suggestion": "Reserve a taller ground bay (4.0-4.5 m vs 3.0 m upstairs) in the facade shader for office/com-high/res-high, and emit a static entrance pack on the road-facing elevation: recessed double-glazed lobby, 0.6 m projecting canopy with underside shadow, two steps, a low plinth course 0.9 m tall in a darker stone, and a small sign panel. Reuse the existing doorCentre alignment machinery from res-low."
+    },
+    {
+      "severity": "major",
+      "description": "Industrial warehouse masses are untextured white boxes. The hero warehouse in the industry close-up is a plain plaster cube with one strip of clerestory windows and literally nothing else: no roller/dock doors, no dock apron or bumpers, no wall panel joints or ribbing, no downpipes, no weathering, no company signage, no corner trim. The tall stack next to it is a featureless white cylinder with no bands, ladder or cap. This is the most 'programmer art' object in the module.",
+      "evidence": "shots/critic/buildings/p3r1_ind_close.png (centre white mass x525-1085 y275-620; white stack x600-650 y60-300); shots/critic/buildings/p3r1_ind.png (many identical white boxes)",
+      "suggestion": "Add a dock elevation to every ind building: 2-4 roller doors (recessed 0.25 m, ribbed panel, 3.6 x 4.2 m) with a raised concrete dock 1.2 m high, rubber bumpers, a steel canopy and a hatched apron. Break the wall with vertical panel joints every 3 m and a 1 m tinted base band, add a downpipe per 12 m, and give the stack painted safety bands plus a caged ladder. Tint the white palette toward warm greys/beiges - pure white reads as unlit primitive."
+    },
+    {
+      "severity": "major",
+      "description": "Parallax edge artifact: the vertical jamb of window openings is visibly wavy and serrated at grazing view angles, stepping in and out by 2-4 px along its height. It looks like a shader bug, not a building.",
+      "evidence": "shots/critic/buildings/p3r1_office_close.png, right-hand building, top window left edge at ~x1130-1145 y95-190 (visible unmagnified)",
+      "suggestion": "The box-parallax march is quantising against the opening rect at glancing incidence. Increase the step count (or use the analytic box intersection instead of marching), clamp the parallax offset so it can never exceed half the opening's UV half-width, and fade the parallax term to zero as abs(dot(viewDir, faceNormal)) drops below ~0.25 so grazing faces fall back to a flat but clean opening."
+    },
+    {
+      "severity": "major",
+      "description": "res-low roofs are still matte untextured colour fields (round-1 major #3 only partly fixed). At 12 m from the roof plane there is no shingle or tile grain, no ridge cap on the hip, no gutter run along the eave, and no visible per-row value break. The fascia is a pure-white band that is too bright, too thick and too clean, so the eave reads as a plastic trim strip rather than a shadow line.",
+      "evidence": "shots/critic/buildings/p3r1_reslow_close.png (foreground house roof x180-700 y270-500, and the white fascia band at y440-500); reference/cs2_04.jpg (shingle grain and gutter visible on every house)",
+      "suggestion": "Map the existing shared shingle/tile PBR albedo+normal onto the res-low roof planes with ~0.35 m tile pitch and per-building tint jitter (the material names shingle/tiles_a/tiles_b already exist in the pools). Add a half-round gutter cylinder along the eave, drop fascia albedo to ~0.72 and thin it to 0.18 m, and extend the overhang so the wall gets a genuine 0.3-0.4 m cast shadow at noon."
+    },
+    {
+      "severity": "major",
+      "description": "Smoke plumes are emitted almost everywhere. In the industry view roughly twenty buildings, including small sheds and low warehouses, all vent visible white smoke; in the day hero a dozen plumes rise from the com-high/office core, so downtown apartment and office towers appear to be smokestacks. It reads as fog-machine noise over the whole city.",
+      "evidence": "shots/critic/buildings/p3r1_ind.png (~20 plumes); shots/critic/buildings/p3r1_buildings_hero_13.png (plumes over the tower cluster x520-900 y70-200)",
+      "suggestion": "Buildings own the stacks/vents fields on the record, so gate them there: emit smoke only for ind level>=3 with a real chimney mass (target ~20-25% of ind), never for office/com-high/res-high, and use a thin warm-grey vapour for com/res rooftop flues at most. Vary plume height and opacity with building level so the district reads as a few heavy plants rather than a uniform field."
+    },
+    {
+      "severity": "minor",
+      "description": "Rooftop AC units and water tanks are near-black featureless primitives - a plain box with a lighter lid, or a smooth black cylinder with no bands, legs, ladder, fan grille or ducting. Their value is far below anything else on the roof, so at street level they read as holes.",
+      "evidence": "shots/critic/buildings/p3r1_comlow.png (black cylinders at x480-540 y315-410 and x215-270 y225-290; AC boxes across all four roofs)",
+      "suggestion": "Raise their albedo to galvanised grey ~0.55, add a two-bar fan grille inset on the AC top face, four short legs on a housekeeping pad, and give tanks horizontal hoop bands plus a side ladder. One extra part each - they are already instanced."
+    },
+    {
+      "severity": "minor",
+      "description": "A saturated violet band runs above the left shopfront, unlike any other trim colour in the frame; it reads as a UI or z-fight artifact rather than a fascia.",
+      "evidence": "shots/critic/buildings/p3r1_comlow.png (x170-500 y440-472)",
+      "suggestion": "Clamp com-low fascia/awning hue saturation to <=0.35 and pull the violet entry out of the palette, or reserve it for a sign panel rather than a full-width band."
+    },
+    {
+      "severity": "minor",
+      "description": "19 of 127 building instanced meshes do not have engine.LAYER_REFLECTED (layer 3) enabled, so those pools are missing from planar water reflections. The spec asks for it on building meshes.",
+      "evidence": "runtime probe over __game.scene: 127 instanced/batched meshes under buildings/*, 108 with layers.isEnabled(3); src/modules/buildings/renderer.js:46 enables it on one path only",
+      "suggestion": "Move the layers.enable(layerReflected) call into the single place where every pool mesh is created, and skip it deliberately only for LAYER_NO_AO transparent pools - then assert pools==reflected in api.stats()."
+    },
+    {
+      "severity": "minor",
+      "description": "Scene triangles reach 11.8M in the detail view (8.7-9.0M at night), over the 8M bar; draw calls 1578-2108 are inside budget. Attribution matters: a per-group traversal shows buildings contribute only ~250k of ~1.8M pre-pass triangles (terrain-chunks 891k, roads 311k, traffic 125k), multiplied by 4 shadow cascades + GTAO + reflection + main.",
+      "evidence": "shots/critic/buildings/p3r1.log.json (detail_21: 2108 calls / 11814212 tris); runtime per-group triangle probe",
+      "suggestion": "Not primarily this module's breach, but it can still help: buildings/detail/box/paint (41k) and buildings/detail/blob/hedge (29k) are the two largest detail pools - drop hedge blobs to a 2-quad cross past ~120 m and halve the paint pool's detail radius. Flag the terrain triangle count to the integrator."
+    }
+  ],
+  "perf": { "drawCalls": 2108, "triangles": 11814212, "consoleErrors": 0 },
+  "previousRoundStatus": {
+    "fixed": [
+      "blocker: saturated orange floating fence - fully fixed (varied hedge/picket/low wall, desaturated, terrain-following, front edge open)",
+      "major: lot ground pads with hard edges and two-tone lawn - fully fixed, pads gone",
+      "major: bare flat roofs on mid-rise/office - fixed, AC/tanks/antennas/parapets/solar now read at hero altitude",
+      "minor: illegible signage and zero-thickness awnings - fixed, MODA/BAKERY/BANK legible, awnings have valance and arms",
+      "minor: monotone palette - improved, brick/siding/plaster/cream/teal now present",
+      "minor: res-high balcony black speckle - fixed, balconies read clean at hero distance"
+    ],
+    "partiallyFixed": [
+      "blocker: flat painted windows - frames and sills added and parallax exists, but no reveal shadow, no sill shadow, and a wavy jamb artifact; still reads as a decal",
+      "blocker: res-low missing door/driveway/garage - door/porch/path/chimney fixed, but ~73% of houses still have no garage and no driveway",
+      "major: flat untextured roofs - eave/fascia and downpipe added, but no shingle grain, ridge cap or gutter on res-low",
+      "major: perf - draw calls now in budget, triangles still over (mostly terrain, not buildings)"
+    ],
+    "notFixed": [
+      "major: daytime window glass - still an opaque flat grey card on res-low, com-low shopfronts and near-frontal mid-rise; no sky reflection, no fresnel"
+    ]
+  },
+  "screenshots": [
+    "shots/critic/buildings/p3r1_buildings_hero_13.png",
+    "shots/critic/buildings/p3r1_buildings_hero_21.png",
+    "shots/critic/buildings/p3r1_buildings_detail_13.png",
+    "shots/critic/buildings/p3r1_buildings_detail_21.png",
+    "shots/critic/buildings/p3r1_buildings_night_13.png",
+    "shots/critic/buildings/p3r1_buildings_night_21.png",
+    "shots/critic/buildings/p3r1_reslow_close.png",
+    "shots/critic/buildings/p3r1_office_close.png",
+    "shots/critic/buildings/p3r1_comlow.png",
+    "shots/critic/buildings/p3r1_ind.png",
+    "shots/critic/buildings/p3r1_ind_close.png"
+  ]
+}

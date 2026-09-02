@@ -1,0 +1,92 @@
+{
+  "score": 7.0,
+  "pass": false,
+  "summary": "Mechanically the best-built module I have reviewed: every spec'd tool exists and works on the real click path (verified myself - road build +3 segments / -C10,800, bulldoze -1 segment, RMB cancel commits nothing, Esc, entity:selected carries entity, zoning overlay auto-shows only while the zone tool is active, cursor styles per tool, 1-4/Esc correctly deferred to the HUD), zero console errors, tools:ok, ~2 draw calls. But held against reference/cs2_01.jpg it is good indie, not CS2. Three things fail the spec on the picture: the 'CS2-style outline highlight' is a milky fog box that bleaches the selected building to white instead of a silhouette rim; chip text is mush at anything past the nearest chip and chips collide; and the service coverage radius is a hairline circle the same hue and width as the river. Zone cells read as glowing rounded lozenges with 25% gutters, the service hologram is a featureless frosted slab, the road ghost is a flat colour wash with none of the lane/curb detail CS2 previews, and the invalid ghost shatters into disconnected slivers over rolling terrain. Round 1: no prior open issues existed (12-line placeholder), so nothing to mark fixed. Scale is honest - I measured a forced 100 m avenue ghost at 4.67 px/m against a known camera: 467 px long, 104 px wide = 22.3 m for a 24 m type. Fix the highlight, the chip raster and the coverage ring and this is an 8.5.",
+  "screenshots": [
+    "shots/critic/tools/p3r1_tools_hero_13.png",
+    "shots/critic/tools/p3r1_tools_detail_13.png",
+    "shots/critic/tools/p3r1_tools_night_21.png",
+    "shots/critic/tools/p3r1b_tools_top_13.png",
+    "shots/critic/tools/p3r1b_tools_zone_13.png",
+    "shots/critic/tools/p3r1_scale.png",
+    "shots/critic/tools/p3r1_zonescale.png",
+    "shots/critic/tools/p3r1_sel_crit1_13.png",
+    "shots/critic/tools/p3r1_sel_crit2_13.png",
+    "shots/critic/tools/p3r1_svc2_crit1_13.png"
+  ],
+  "perf": {
+    "drawCalls": 2095,
+    "triangles": 8579374,
+    "consoleErrors": 0
+  },
+  "strengths": [
+    "Every spec'd tool is real, not staged: I drove the live click path myself via debugPointer/debugClick and got +3 road segments for -C10,800, a bulldoze that removed 1 segment, an RMB that committed nothing, and entity:selected {kind:'building', entity} with a matching id.",
+    "debugPreview/debugPointer/debugClick let a critic force every ghost state programmatically, exactly as the spec asked - this is the first module I could audit without guessing.",
+    "Validity feedback is honest and specific, not decorative: 'too steep' on a graded route and 'Blocked - overlaps a building' when a police station lands on a lot (p3r1_sel_crit1_13.png, chip at 580,325).",
+    "The night pass (p3r1_tools_night_21.png) is the strongest image: bright cores bloom, the green zone field, blue ghost, red hatched bulldoze cage and service hologram all read at a glance without washing out the city.",
+    "Zoning correctly calls zones.api.setOverlayVisible(true) on enter and false on exit - verified the overlay group toggles with tool activation, not left permanently on.",
+    "Cost is real money: economy debits and refunds through the same path the HUD reads, and cell counts/areas are self-consistent (36 cells = 0.23 ha, 60 cells = 0.38 ha)."
+  ],
+  "issues": [
+    {
+      "severity": "blocker",
+      "description": "The select highlight is a milky pale-blue fog volume that swallows the building instead of the CS2-style outline the spec names. In shots/critic/tools/p3r1_sel_crit2_13.png the selected tower (image region x 350-720, y 60-460) is bleached to near-white: facade, windows, material and colour are all gone, and the box extends past the footprint over the street. Same failure in p3r1_tools_hero_13.png at (300-420, 300-400) and p3r1_tools_night_21.png at (380-490, 290-360). CS2 never obscures what you selected.",
+      "evidence": "shots/critic/tools/p3r1_sel_crit2_13.png centre; compare reference/cs2_01.jpg where the selected/ghosted geometry keeps full material.",
+      "suggestion": "Drop the volumetric wash to <=0.06 alpha or remove it entirely. Replace it with a real silhouette: render the picked mesh to a mask, edge-detect it, and draw a 2 px screen-space-constant rim in the accent colour (or an inverted-hull pass on a cloned geometry scaled along normals). Add a ground footprint ring at the OBB and keep the corner brackets - those already read well."
+    },
+    {
+      "severity": "blocker",
+      "description": "Chip label text is under-sampled to mush on every chip except the one nearest the camera, so the read-outs are illegible exactly where a player needs them. In p3r1_tools_hero_13.png the chip at (290-400, 290-315) 'Lv 2 Commercial tower / 32 residents' is unreadable smear; in p3r1b_tools_top_13.png the chip at (965-1055, 222-245) '158 m too steep / Two-lane road - curved' is unreadable and it collides with the '121 deg' chip at (980-1070, 253-283). Two chips overlapping is a bug CS2 never shows.",
+      "evidence": "shots/critic/tools/p3r1_tools_hero_13.png (290,290)-(400,315); shots/critic/tools/p3r1b_tools_top_13.png (960,220)-(1070,285) - two chips drawn on top of each other.",
+      "suggestion": "Rasterise each chip at its actual on-screen pixel size times devicePixelRatio instead of scaling one fixed atlas cell down, or switch the labels to an SDF font so they stay crisp at any scale. Clamp the minimum drawn font to ~11 px and fade the chip out below that rather than shrinking it. Add a screen-space separation pass: project all chip anchors, then push overlapping boxes apart vertically with a leader line back to the anchor."
+    },
+    {
+      "severity": "blocker",
+      "description": "The service coverage radius is effectively not communicated. In shots/critic/tools/p3r1_svc2_crit1_13.png the 400 m ring is a 1-2 px hairline arcing through (180,430) to (1280,700) with no interior wash - it is the same hue and the same width as the river at (1000-1200, 130-260) and reads as terrain, not as tool feedback. At the showcase's own hero and detail framings it is not visible at all, so the 'coverage radius' half of the spec'd service tool is missing from the picture.",
+      "evidence": "shots/critic/tools/p3r1_svc2_crit1_13.png, ring at lower-left/bottom vs river top-right - indistinguishable.",
+      "suggestion": "Draw the ring at ~3 px screen-space-constant width in the service type's own colour (police indigo, fire red), add a 6-10% radial interior wash that falls off to zero at the rim so the disc reads as an area, put a short radial tick with an 'R = 400 m' label on the ring, and pulse the rim once on placement. Make sure the ring is drawn even when the placement is invalid, tinted to the bad tone."
+    },
+    {
+      "severity": "major",
+      "description": "Zone cells read as glowing rounded lozenges rather than a survey grid. In shots/critic/tools/p3r1_zonescale.png region (490-760, 240-480) each 8 m cell is drawn with a corner radius near 2 m, a gutter of ~2 m (25% of pitch), an almost transparent interior and a wide outer bloom halo, so the field reads as scattered green pads on grass. CS2 (reference/cs2_01.jpg, purple block at x 1350-1900) draws a flat, saturated, hard-edged fill with hairline gutters that reads as a plan.",
+      "evidence": "shots/critic/tools/p3r1_zonescale.png (490,240)-(760,480); shots/critic/tools/p3r1b_tools_zone_13.png (560-880, 270-500).",
+      "suggestion": "Corner radius <= 0.6 m, gutter <= 0.5 m, interior alpha ~0.40-0.50 in the zone colour, and cut the outer glow to a 1-2 px inner rim. Draw the outer boundary of the painted region as one continuous bright stroke instead of glowing every cell edge."
+    },
+    {
+      "severity": "major",
+      "description": "The service ghost is a featureless frosted slab, not a building. In shots/critic/tools/p3r1_tools_hero_13.png region (860-1010, 520-640) the police station hologram is a flat white/green translucent sheet: the vertical walls are invisible, there is no roof plane, no massing, no sense of the 9.5 m height, so the player cannot judge what will land there. CS2 ghosts the real asset mesh.",
+      "evidence": "shots/critic/tools/p3r1_tools_hero_13.png (860,520)-(1010,640); same object tiny and unreadable in p3r1_svc2_crit1_13.png at (620,355)-(680,385).",
+      "suggestion": "Ghost the actual service mesh from services.api at 0.35 alpha with a fresnel rim, or at minimum extrude the w x d x height box with clearly drawn vertical corner edges, a separate roof plane at a different value, and horizontal scan lines every ~2 m so the volume reads. Keep the footprint quad but darken it relative to the walls."
+    },
+    {
+      "severity": "major",
+      "description": "The road ghost carriageway is a flat colour wash with none of the road preview CS2 gives. shots/critic/tools/p3r1_scale.png (420-890, 300-420) is a forced 100 m avenue: a plain salmon slab laid over the existing street with no lane dividers, no curb lines, no stop line, no direction arrows at the real 3.5 m lane pitch. The blue variant in p3r1_tools_hero_13.png (530-800, 315-430) adds only a thin dashed centre line and an odd mustard spine down the middle. The guide lines are thin faint cyan and the node handles are 2 px circles, where cs2_01.jpg uses bold opaque white bars and large filled white discs.",
+      "evidence": "shots/critic/tools/p3r1_scale.png (420,300)-(890,420) vs reference/cs2_01.jpg (480,0)-(1450,400).",
+      "suggestion": "Inside the ghost quad, draw lane dividers at width/lanes spacing, a solid centre line for 4+ lanes, curb strips at the outer 1.5 m, and a stop line plus turn arrows at the end node. Recolour the mustard spine to the accent hue or remove it. Make guide lines opaque white at ~3 px screen-constant and node handles filled discs of ~10 px with a dark contrast ring."
+    },
+    {
+      "severity": "major",
+      "description": "The invalid road ghost shatters into disconnected patches over rolling terrain. In shots/critic/tools/p3r1b_tools_top_13.png region (960-1090, 170-290) the salmon ribbon is chopped into separate slivers with visible gaps and wildly varying width; the same break-up appears in p3r1_tools_hero_13.png at (1050-1180, 325-365) and in the night shot at (790-1060, 285-320) where fragments even float over tree canopies. A road preview that is not one continuous ribbon undermines the whole tool.",
+      "evidence": "shots/critic/tools/p3r1b_tools_top_13.png (960,170)-(1090,290).",
+      "suggestion": "Raise the terrain-conform sample density along the ghost polyline (sample at <= 2 m, not per control point) and make GHOST_LIFT slope-aware - lift by max(0.15, 0.6 * local gradient * sampleStep) so the quad never dips below the heightfield on a rise. Verify by forcing debugPreview('road', ...) across the steepest ridge in the showcase."
+    },
+    {
+      "severity": "minor",
+      "description": "A stray detached salmon wedge with a dashed white edge floats on a hillside in shots/critic/tools/p3r1_sel_crit2_13.png at (60-190, 435-505). At that moment only a 'service' preview (blocked, sited ~200 m away in the city) and a 'select' preview were staged after debugPreview(null), so this fill geometry is not attributable to anything on screen - it looks like stale or degenerate fill-buffer geometry.",
+      "evidence": "shots/critic/tools/p3r1_sel_crit2_13.png (60,435)-(190,505).",
+      "suggestion": "Reproduce with debugPreview(null) then a single blocked service stage, and confirm the FillLayer vertex cursor is reset every frame for tools that were unstaged. If it is the blocked service footprint seen at a grazing angle, clip it to the footprint OBB so it cannot smear across distant terrain."
+    },
+    {
+      "severity": "minor",
+      "description": "The showcase stages 7 chips at once (api.stats().chips = 7) and they crowd the hero frame - p3r1_tools_hero_13.png has five overlapping the ghost geometry they label. CS2 shows 2-4 compact single-value pills. The chips are also 2-3x the size of CS2's: a bold headline plus a subtitle line each, where cs2_01.jpg uses '39 m', '14 deg', '-7.7 %', 'C616'.",
+      "evidence": "shots/critic/tools/p3r1_tools_hero_13.png - chips at (530,315), (660,335), (600,405), (1070,325), (865,490); api.stats().chips = 7.",
+      "suggestion": "Split each chip into a primary pill (the one value that matters: length, cost, angle) plus an optional expanded card only for the chip nearest the cursor. Cull chips below a screen-size threshold and cap simultaneous chips at 4."
+    },
+    {
+      "severity": "minor",
+      "description": "Not this module's geometry, but recording it: the street-level view in shots/critic/tools/p3r1_svc2_crit2_13.png reports 8,579,374 triangles, over the 8 M budget. Draw calls peak at 2,095 (within 2,500). The tools overlay itself is negligible - api.stats() shows 2,776 vector verts and 8,638 fill verts across roughly 2 extra draw calls.",
+      "evidence": "shots/critic/tools/p3r1_svc2.log.json - crit2 entry: tris 8579374, calls 2091.",
+      "suggestion": "No action for tools. Flag to the integrator that vegetation/buildings at street level exceed the triangle budget in the demo city."
+    }
+  ]
+}

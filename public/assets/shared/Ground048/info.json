@@ -1,0 +1,20 @@
+{
+  "id": "Ground048",
+  "res": "1K",
+  "fmt": "JPG",
+  "license": "CC0",
+  "source": "https://ambientcg.com/view?id=Ground048",
+  "files": [
+    "Ground048.png",
+    "Ground048_1K-JPG.blend",
+    "Ground048_1K-JPG.mtlx",
+    "Ground048_1K-JPG.tres",
+    "Ground048_1K-JPG.usdc",
+    "Ground048_1K-JPG_AmbientOcclusion.jpg",
+    "Ground048_1K-JPG_Color.jpg",
+    "Ground048_1K-JPG_Displacement.jpg",
+    "Ground048_1K-JPG_NormalDX.jpg",
+    "Ground048_1K-JPG_NormalGL.jpg",
+    "Ground048_1K-JPG_Roughness.jpg"
+  ]
+}

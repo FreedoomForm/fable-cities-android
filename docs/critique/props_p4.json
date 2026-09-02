@@ -1,0 +1,76 @@
+{
+  "score": 7.0,
+  "pass": false,
+  "summary": "Real progress by day, a regression by night. Ground cover is genuinely fixed: PropGround lays four clumped species with per-instance tint, so a suburb lawn is now a spread of greens with beds, hedges, front paths and fences (crops/c_yard.png). Contact decals are real and visible under cars and trees in daylight. Props' own cost is fine: hiding the props group drops 2121->1776 calls and 10.24M->9.85M tris, so props = 345 calls / 0.39M tris; 0 console errors, module ok, 12 PointLights unchanged. But three things fail the bar. (1) The new night light pools are additive MeshBasic discs, three per luminaire at opacity 0.34, stacking across neighbouring lamps: the carriageway, kerb, sidewalk and shopfront all wash out to one cream field at Y 0.35-0.37 where CS2's lit night asphalt (cs2_08) measures 0.059 -- 6x over, and 3x brighter than CS2's SUNLIT daytime asphalt. Every contact shadow under a parked car is erased by it. This is worse than the p3 state of having no pools. (2) Vegetation has been over-corrected from 4.8x too bright into 2-7x too dark: against cs2_04, a directly comparable low-sun frame, CS2 lawn Y 0.039 / C 0.069 and canopy 0.047-0.056; ours lawn 0.014 / C 0.026 and crowns 0.008-0.032. At night crowns are bimodal -- some pure black cutouts, some full daylight green in the same frame. (3) Ground-cover cards land on paved driveways. Street furniture on commercial frontage and street trees downtown are still roughly a third of reference, and every tree is the same broadleaf blob.",
+  "issues": [
+    {
+      "severity": "blocker",
+      "description": "Night light pools blow the whole street to near-white and destroy grounding. In shots/critic/props/crops/c_night_lamps.png the road, kerb, sidewalk and shopfront are one continuous cream wash with no per-lamp structure, no falloff across the kerb and hard polygon edges (see also crops/c_pool_edge.png, the straight cut at crop x0-350/y560-780). Measured pavement Y=0.348 in p4_props_night_21.png (x430-540,y560-610) and Y=0.374 in p4_props_detail_21.png (x500-700,y470-560), p90 0.53-0.71; CS2 cs2_08 lit night asphalt is Y=0.059, p90 0.149. Every parked car in the pool has lost its contact decal because the additive pass runs after the multiply contact pass.",
+      "evidence": "PropScatter.js:274-300 lays 3 overlapping discs per luminaire plus one on the footway; PropAssets.js:348 makes them MeshBasicMaterial + AdditiveBlending at opacity 0.34 (PropAssets.js:540). 3 discs x 0.34 plus overlap from adjacent lamps = 4-6 stacked additive layers.",
+      "suggestion": "One disc per luminaire, opacity ~0.10, and stop the stacking: either draw all pools into a single offscreen accumulation with THREE.CustomBlending + MaxEquation, or merge each street's pools into one geometry so overlaps do not sum. Give makeLightPoolTexture a true smooth radial falloff reaching alpha 0 at the rim. Target lit-pavement Y 0.05-0.08. Render the contact decals after the pools, or fold the contact term into the pool alpha, so grounding survives. Mask the pool by surface so it does not cross the kerb at full strength."
+    },
+    {
+      "severity": "blocker",
+      "description": "Vegetation over-corrected from too bright to near-black. Measured on p4_props_detail_17h5.png at 17.5h against cs2_04 (a low-sun autumn suburb frame): sunlit lawn (900,495-1170,545) Y=0.014 C=0.026 vs CS2 lawn Y=0.039 C=0.069; sunlit tree crown (780,180-900,300) Y=0.008 vs CS2 canopy 0.047-0.056 and hedge 0.053. That is 2.8x too dark on lawn at 40% of reference chroma and up to 7x too dark on crowns, so foliage reads as dark mud rather than the lush graded canopy in cs2_04. LOOK_TARGET row 4 asks for Y 0.056; we have shot straight past it.",
+      "evidence": "PropGeometry/PropAssets foliage albedo was cut ~2x on top of the environment's new low-sun exposure, compounding.",
+      "suggestion": "Raise foliage and lawn albedo ~2.5x so sunlit canopy lands at Y 0.05 and mown lawn at Y 0.038-0.042, and raise lawn chroma to C 0.055-0.070 (currently 0.026). Verify against cs2_04, not against the old noon frames."
+    },
+    {
+      "severity": "major",
+      "description": "Foliage night lighting is bimodal: in p4_props_night_21.png the crowns at x560-700,y100-200 and x580-660,y380-460 render full daylight green while the crowns at x380-460,y330-390 and x820-900,y620-700 are pure black cutouts with crunchy alpha-test edges, at comparable distance in the same frame (visible side by side in crops/c_pool_edge.png, black tree at crop 170-420/220-380 next to a bright green one at 700-1000/440-620). A tree standing inside a light pool stays black.",
+      "evidence": "Looks like different LOD tiers carry different materials (lit crown mesh vs unlit card), and neither responds to the pool/point lights.",
+      "suggestion": "Give every foliage LOD the same lit material and the same night ambient floor, and let crowns take the streetlight PointLights so a tree under a lamp is warm-lit on its street side."
+    },
+    {
+      "severity": "major",
+      "description": "Ground-cover cards are scattered onto paved surfaces. In p4_props_detail_17h5.png two bright shrub clumps sit mid-apron on grey paving at (1050,540)-(1110,590) and (1140,610)-(1200,655) with no bed, no soil and no contact decal -- see crops/c_grass_pave.png, crop regions (555-770,400-600) and (800-1060,600-800). They are also the loudest chroma in the frame at C=0.060 and C=0.072 against a lawn at C=0.026 and a LOOK_TARGET vegetation target of C=0.053.",
+      "evidence": "PropGround.js:155-168 (yard scatter) tests only roads.api.isOnRoad before clumping; it does not test the lot paving, driveway aprons or the front-path slab decals that PropScatter.lotDressing() lays.",
+      "suggestion": "Add a paved-surface test to PropGround.clump(): reject any sample covered by a lot slab, driveway apron or front path, the same way onRoad is tested at PropGround.js:107/167. Also clamp the per-instance tint so no tuft exceeds C 0.055."
+    },
+    {
+      "severity": "major",
+      "description": "Street furniture on commercial frontage is still around a third of reference, and downtown has no street trees at all. In p4b_props_street_16h2.png the left retail sidewalk (x230-620, y280-620, roughly 40 m of frontage) carries two tree blobs and one dark box and nothing else -- no bin, bench, bollard, sign, hydrant, A-board, planter or shelter; the right sidewalk (x830-1000, y230-620) is the same. In p4_props_hero_17h5.png the sidewalk under the mid-rise (x820-1250, y590-660) is bare cobble end to end. In p4c.png the entire downtown grid (x150-800, y100-620) has no street trees while the suburb at x1000-1250 does. cs2_04 puts a lamp, hedge run, bin pair or bollard every 3-6 m along every frontage.",
+      "evidence": "Furniture cadence was tripled but from a very low base; downtown road types appear to get no tree-pit pass.",
+      "suggestion": "Raise the 'k' channel cadence on commercial local/avenue frontage to one item per 4-6 m, and add tree pits with grates to the downtown grid, not just the avenue median and the suburb. Props costs only 345 draw calls today, so there is headroom."
+    },
+    {
+      "severity": "major",
+      "description": "Tree variety is one species. Every crown in p4_props_hero_17h5.png (median row x520-800), p4_props_detail_17h5.png, p4b_props_street_16h2.png and p4c.png is the same rounded broadleaf blob at jittered scale -- no conifer, no columnar/poplar, no small ornamental, no autumn hue. cs2_04 shows at least six distinguishable species (spruce, dark conifer, birch, gold maple, russet broadleaf, clipped hedge) at clearly different heights and hues. This is systemic defect 4 unaddressed on the props side.",
+      "evidence": "Only leafTint varies per instance; the crown archetype does not.",
+      "suggestion": "Add two or three crown archetypes (conifer cone, narrow columnar, low ornamental) sharing the existing instanced pipeline, and widen the per-instance hue jitter from green through olive to gold so a street reads as a mixed planting."
+    },
+    {
+      "severity": "minor",
+      "description": "Prop ground decals (slab, bed, front path, driveway apron) are cold blue-violet, not warm paving. Measured on p4_props_detail_17h5.png at (930,580)-(1030,620): sRGB (69,66,90) -- blue 21 above red, C=0.039. CS2 cs2_04 driveway paving at (900,700)-(1100,800) is sRGB (72,63,53) -- red 19 above blue, C=0.027. The luminance is right, the hue is inverted. There is also a hard rectangular seam where a lighter slab decal abuts darker paving (crops/c_grass_pave.png, crop 170-560/440-560).",
+      "evidence": "Slab and bed decal base colours take almost no warm key and read as pure sky fill.",
+      "suggestion": "Warm the slab/bed/path decal base colour toward hue 40-50 deg at S 0.06-0.10 so the cool sky fill only shows in shadow, and feather the decal alpha edge so the slab boundary is not a straight cut."
+    },
+    {
+      "severity": "minor",
+      "description": "Traffic signals still show no lit aspect at night, carried over unfixed from the p3 critique. In shots/critic/props/crops/c_night_lamps.png the mast-arm head at crop (85-480, 300-500) is a black silhouette on a fully lit street.",
+      "evidence": "Signal head aspect materials are not registered in PropAssets.nightMaterials alongside lamp_glow (PropAssets.js:286-287).",
+      "suggestion": "Register the red/amber/green aspect materials as nightMaterials with a cycling emissive, and give each head a small additive halo so a signal reads at 60 m."
+    }
+  ],
+  "screenshots": [
+    "shots/critic/props/p4_props_hero_17h5.png",
+    "shots/critic/props/p4_props_detail_17h5.png",
+    "shots/critic/props/p4_props_night_21.png",
+    "shots/critic/props/p4_props_detail_21.png",
+    "shots/critic/props/p4b_props_street_16h2.png",
+    "shots/critic/props/p4c.png",
+    "shots/critic/props/crops/c_pool_edge.png",
+    "shots/critic/props/crops/c_night_lamps.png",
+    "shots/critic/props/crops/c_cars_day.png",
+    "shots/critic/props/crops/c_yard.png",
+    "shots/critic/props/crops/c_grass_pave.png",
+    "shots/critic/props/crops/c_hero_walk.png"
+  ],
+  "systemicProgress": {
+    "materials": "PARTLY FIXED. Ground cover is no longer a flat colour field: crops/c_yard.png shows real alpha-card tufts, meadow, wildflower beds, clipped hedges, a cobbled front path and a picket fence, with genuine per-instance tint spread. Bark, cobble and hedge carry texture at 15 m. NOT FIXED: at 40 m the lawn resolves to a smeary anisotropic blur with no blade or clump silhouette (crops/c_grass_pave.png, crop 100-950/270-450); the slab/bed/apron decals are flat untextured cold blue-grey fields with a hard rectangular seam; the utility cabinet in p4_props_hero_17h5.png at x860,y505-545 is an untextured tan box; parked-car bodies are single flat paint fields with no shut lines, handles, mirrors or wheel-arch definition and the claimed windscreen glass reads as one undifferentiated black dome (crops/c_cars_day.png). Asphalt is not props-owned.",
+    "lighting": "DAY FIXED, NIGHT BROKEN. The hero preset now defaults to a low sun and shadows in p4_props_hero_17h5.png and p4_props_detail_17h5.png are long and soft-edged; the contact-occlusion decals are real and visible as soft ellipses under every parked car, tree, hedge and bin (crops/c_cars_day.png), and AO tucks under hedges and porch steps. At night that collapses: the additive light pools erase every contact decal they touch (crops/c_night_lamps.png), foliage is bimodal (pure black cutouts beside full-daylight-green crowns in the same frame), a tree standing inside a pool stays black, and traffic signals never light. Sky-fill in shadow is present but reads too cold on paving (measured blue-dominant, reference is warm).",
+    "density": "PARTLY FIXED. Ground cover is genuinely dense and clumped -- ~32k tuft placements, patch-driven, with beds, hedges, paths, bins, sheds and parked cars in the suburb yards; the suburb frames now hold up. NOT FIXED on paved frontage: p4b_props_street_16h2.png has ~40 m of downtown retail sidewalk carrying two trees and one box, p4_props_hero_17h5.png has a bare cobble walk under the mid-rise from x820-1250, and in p4c.png the whole downtown grid has zero street trees while the suburb has them. Still roughly a third of cs2_04 cadence.",
+    "variety": "PARTLY FIXED. Four undergrowth species plus per-instance albedo tint is a real improvement over one flat green, and the parked-car set is four bodies across a colour palette. NOT FIXED: one tree archetype everywhere -- every crown in all five frames is the same rounded broadleaf blob, where cs2_04 shows at least six species at different heights and hues. Street furniture is also drawn from a narrow set with no regional cadence difference between retail, residential and industrial frontage.",
+    "colour": "OVER-CORRECTED. Measured against cs2_04, the closest reference in sun angle and subject: CS2 lawn Y 0.039 / C 0.069, hedge 0.053 / 0.060, canopy 0.047-0.056; ours lawn 0.014 / C 0.026, tree crown 0.008-0.032. Vegetation has gone from LOOK_TARGET's 4.8x too bright to 2-7x too dark at 40% of reference chroma, which is the same failure in the other direction. The only over-saturated things left are the stray tufts on paving at C 0.060-0.072 against the 0.053 target. Night is the worst offender: pool pavement at Y 0.35-0.37 versus cs2_08's 0.059, i.e. brighter at 21:00 than CS2's asphalt at noon."
+  }
+}

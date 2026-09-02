@@ -1,0 +1,26 @@
+{
+  "score": 8.0,
+  "pass": false,
+  "summary": "Clean, coherent dark-glass HUD that meets the feature spec end to end: top bar (name+milestone, date/weekday, dial clock, speed, money+net, pop+jobs, happiness), 5-category toolbar with trays and cost chips, RCI demand, caret tooltips, toasts, road selection panel, settings drawer (time slider, weather, quality), shortcut hints, 10 keyframe animations, 3 media queries. Contract complete (all 6 §5 events wired, tool:select emitted, api exposes notify/selectTool/select/setTime/setSpeed/setWeather/pinTooltip...). 0 console errors/warnings, all modules ok, perf trivial (883-987 calls, 2.4-5M tris, 75-300 fps). It does not yet read as a CS2-class game HUD: tray items are 44px flat glyph tiles instead of illustrative asset previews, the panels have a generic web-dashboard identity (indistinguishable from an admin template), the right column is a permanent wall of four 300px toasts at 720p, the selection subtitle leaks engine ids (Segment s54 . nodes n30 -> n31), and the HUD covers ~40% of a 720p frame with tray+tooltip open. Good indie, not yet AAA-with-nits.",
+  "issues": [
+    {"severity":"major","description":"Tray item thumbnails are flat 44px monochrome glyph tiles (grey square + one bar) rather than CS2's illustrative isometric asset previews; the Roads tray reads as a settings menu, not a build catalogue.","evidence":"shots/critic/ui/r1_ui_hero_13.png x430-850 y478-625; catalog.js icon:'road'|'avenue'|'highway'|'path'","suggestion":"Replace the 44px icon tiles with 88x56 illustrative SVG (or offscreen-rendered mesh) thumbnails per item: asphalt with dashed centre line for local, planted median for avenue, barriers+6 lanes for highway, paving for path; same for service buildings and zone types. Keep the small glyph only in the category bar."},
+    {"severity":"major","description":"Right column is a permanent stack of four ~300px toasts (incl. a meta 'Showcase: staged data' card) that covers 25% of the viewport at 720p and never collapses; CS2 keeps notifications as compact chirps/icons.","evidence":"r1_ui_hero_13.png x970-1270 y75-490 (identical in all four shots)","suggestion":"Cap visible toasts at 2-3, auto-dismiss after 6-8 s into a top-bar bell with a count badge, shrink toast width to ~280px with 2-line clamp; move showcase disclaimers to console.info, not the HUD."},
+    {"severity":"minor","description":"Selection panel subtitle exposes internal ids ('Segment s54 . nodes n30 -> n31') and the kind label is engine jargon ('ROAD SEGMENT'); CS2 shows street name/district.","evidence":"r1_ui_hero_13.png x25-320 y95-135; infopanel.js:164","suggestion":"Show a player-facing subtitle (generated street name + district, e.g. 'Harbour Avenue . Old Town') and gate ids behind ?debug."},
+    {"severity":"minor","description":"HUD scale is heavy for 720p: top bar 54px + toolbar 70px + open tray 150px + tooltip = ~40% of frame height; CS2 stays ~25%.","evidence":"r1_ui_detail_13.png full frame","suggestion":"Add a --fc-scale token driven by viewport height (0.85 at <=768px, 1.0 at >=900px) applied to panel padding, tile size and font sizes; tighten tray padding from ~16 to 10px."},
+    {"severity":"minor","description":"Showcase pins the cost tooltip on 'Pedestrian Path' while the active tool is 'Four-Lane Avenue', so the hero shot shows a tooltip disconnected from the highlighted item; cost line also duplicates the tile's cost chip.","evidence":"r1_ui_hero_13.png tooltip x670-915 y318-465 vs highlighted tile x540-640","suggestion":"Pin the showcase tooltip on the active (avenue) tile and add one extra data row CS2 shows (capacity/vehicles per hour, upkeep) so the tooltip earns its space."},
+    {"severity":"minor","description":"Visual identity is generic 'web admin dashboard' (uniform 12px radii, identical panel chrome everywhere, flat accent colours) with no game-specific signature; icons are thin outline glyphs with weak contrast at 22px (Services, Info Views).","evidence":"r1_ui_hero_21.png bottom bar x443-835 y640-710","suggestion":"Give the category bar a distinct treatment (taller tabs, CS2-style blue active plate with top notch), use filled 2-tone icons at 24-26px, and add a subtle inner highlight/edge light on glass panels so they read as game UI rather than Tailwind cards."}
+  ],
+  "strengths": [
+    "Complete feature coverage of the spec with zero console errors/warnings and a complete §5 contract (events + tool:select + rich api).",
+    "Typography and information hierarchy are crisp: tabular numerals, small-caps labels, consistent unit styling; the dial clock and weekday are correct for the date.",
+    "Panels are pointer-transparent by default (.fc-hud pointer-events:none) so the canvas is never blocked; tooltip has a proper caret; reduced-motion query respected.",
+    "Zone colour chips, RCI demand bars, info-view legend and settings drawer (time slider, weather, quality) exist and are driven by world/economy data rather than fabricated values."
+  ],
+  "screenshots": [
+    "shots/critic/ui/r1_ui_hero_13.png",
+    "shots/critic/ui/r1_ui_detail_13.png",
+    "shots/critic/ui/r1_ui_hero_21.png",
+    "shots/critic/ui/r1_ui_detail_21.png"
+  ],
+  "perf": {"fps": 75.7, "drawCalls": 987, "triangles": 4994195, "consoleErrors": 0}
+}

@@ -1,0 +1,112 @@
+{
+  "module": "whole_game",
+  "round": "p3",
+  "role": "lead art director — final whole-game review vs Cities: Skylines II",
+  "score": 7.4,
+  "pass": false,
+  "summary": "A coherent, atmospheric, error-free city builder that clears 'good indie' comfortably and touches AAA in two shots (night downtown, the skyline poster). All 13 modules boot OK, zero console errors, zero warnings across 10 renders. Terrain reads as real landscape (snow-capped ranges, aerial haze, believable coastline), roads carry markings/crosswalks/curbs/sidewalks/street lighting, the day-night cycle is genuinely convincing, and the HUD is the single most CS2-faithful part of the build. What keeps it off the AAA mark is material and density, not features: every façade is flat untextured colour with painted-on window bands, the downtown tower stock is one silhouette repeated ~40 times, dense city blocks sit on bright green lawn instead of paving, roads are near-empty of traffic in a 16,188-citizen city, and the rain preset — the one CS2 look that lives or dies on wet asphalt — has no reflection, puddle or splash response at all. Fix materials, block ground-cover and traffic density and this lands at 8.5.",
+  "issues": [
+    {
+      "module": "buildings",
+      "severity": "blocker",
+      "description": "Façades are flat single-colour surfaces with painted-on window bands — no albedo texture, no roughness variation, no normal/micro-detail. Worse, the downtown tower stock is effectively one asset: in p3_downtown_13 roughly 40 towers share the same blue-glass-and-concrete-band slab, the same rectangular footprint and the same flat top with a thin antenna. CS2 (cs2_02, cs2_08) has setbacks, crowns, mechanical penthouses, balconies, mixed brick/panel/glass materials and per-building colour drift. This is the biggest single distance to the §9 'photographic PBR with visible micro-detail, never flat colours, never plastic-looking' bar.",
+      "evidence": "shots/final/p3_downtown_13.png — the whole frame; compare the tower crowns and façade material variety in reference/cs2_02.jpg centre-left downtown. Also p3_skyline_13.png, where the aerial makes the repetition unmissable.",
+      "suggestion": "Ship 3-4 tower archetypes (stepped, podium+tower, cross-plan, slab) with randomised crowns and rooftop mechanical clutter; add a tiling façade albedo+roughness atlas so glass, concrete panel and brick read differently at distance; drift hue/value per instance."
+    },
+    {
+      "module": "zoning",
+      "severity": "major",
+      "description": "Dense downtown and mid-rise blocks sit on bright saturated green lawn. Between the towers in p3_downtown_13 and across the whole aerial in p3_skyline_13, the dominant ground colour is grass, so the city reads as 'buildings dropped on a golf course'. CS2's dense blocks are ~90% hard surface — paving, parking lots, service alleys, plazas — with green confined to deliberate parks (cs2_02, cs2_08).",
+      "evidence": "shots/final/p3_downtown_13.png mid-frame between the tower cluster; shots/final/p3_skyline_13.png where green outweighs grey across the built area.",
+      "suggestion": "Fill lot remainder by density class: high-density lots get paving/parking/service-yard ground material, low-density keeps lawn. Even a flat asphalt-grey lot fill with a parking-stripe decal would move the aerial read further than any building change."
+    },
+    {
+      "module": "traffic",
+      "severity": "major",
+      "description": "Roads are near-empty at every hour. p3_downtown_13 (noon, 16,188 citizens) shows under ten vehicles across an entire downtown; p3_downtown_21 and p3_skyline_21 show no headlight or taillight streaks at all, and pedestrians are a handful of specks. CS2's downtown at noon is bumper-to-bumper (cs2_01) and its night streets are defined by red/white light trails (cs2_08).",
+      "evidence": "shots/final/p3_downtown_13.png arterials; shots/final/p3_downtown_21.png and p3_skyline_21.png, where lit roads carry no vehicle lights.",
+      "suggestion": "Scale agent count with population and road capacity, target visible occupancy on arterials; add emissive headlight/taillight sprites so the night aerial gets its light ribbons."
+    },
+    {
+      "module": "effects",
+      "severity": "major",
+      "description": "The rain preset has no surface response. p3_rain.png draws convincing streaks and a moody sky, but the asphalt is matte and pixel-identical to dry — no reflections, no puddles, no splash ripples, no darkened wet albedo. Wet mirror-asphalt reflecting neon and headlights is the entire subject of CS2's rain screenshot. Night bloom is also under-tuned: the window and street lights in p3_downtown_21 are bright but produce almost no glow.",
+      "evidence": "shots/final/p3_rain.png road surfaces vs reference/cs2_08.jpg foreground asphalt.",
+      "suggestion": "Drive a global wetness uniform from the weather state: darken road albedo ~35%, drop roughness hard, add a screen-space or planar reflection on flat road surfaces plus a scrolling ripple normal. Raise bloom threshold response on emissive window/streetlight materials."
+    },
+    {
+      "module": "environment",
+      "severity": "major",
+      "description": "Water is a flat colour field with only broad specular — no wave normal detail at any distance, and no shoreline interaction. The beach in p3_waterfront_13 meets the sea at a hard uniform line with no surf foam, no wet-sand darkening band and no swash. CS2's water (cs2_02, cs2_09) has visible wave normals, depth-graded colour and a foam line along every shore.",
+      "evidence": "shots/final/p3_waterfront_13.png waterline along the beach; shots/final/p3_skyline_13.png open water in the lower third.",
+      "suggestion": "Add an animated wave normal map with distance-faded tiling, depth-based colour ramp, and a foam band driven by shore distance from the terrain height field."
+    },
+    {
+      "module": "props",
+      "severity": "major",
+      "description": "Ground cover and lot dressing are sparse. Grass is one flat green with no undergrowth, clutter or colour variation; suburb yards are empty of fences, sheds, bins, garden furniture or planting; and large blank green fields sit inside the built area (right half of p3_suburb_13, foreground of p3_waterfront_13). CS2 suburbs (cs2_04) fill every yard with hedges, driveways, solar roofs and garden clutter.",
+      "evidence": "shots/final/p3_suburb_13.png right half — an empty field abutting finished housing; p3_skyline_13.png where undressed green dominates the mid-ground.",
+      "suggestion": "Add a grass-clump/detail-mesh scatter with per-patch colour jitter, and a small lot-dressing prop set (fence, bin, shed, planter, garden furniture) placed by lot type."
+    },
+    {
+      "module": "buildings",
+      "severity": "minor",
+      "description": "No large-scale infrastructure or civic landmarks anywhere. The aerial has no highway, no interchange, no rail, no port, no airport, and no service building with a distinctive silhouette — everything is generic res/com/office boxes at three heights. CS2 aerials read as cities largely because of these landmarks (cs2_02 has an airport, bridges, cargo ships and a stadium in one frame).",
+      "evidence": "shots/final/p3_skyline_13.png — uniform building field, no infrastructure anchor anywhere in the composition.",
+      "suggestion": "Even two or three hand-placed landmarks (an elevated highway with an interchange, a stadium or a port crane row) would give the aerial the silhouette hierarchy it is missing."
+    },
+    {
+      "module": "buildings",
+      "severity": "minor",
+      "description": "Night windows read as a high-contrast checkerboard. Lit cells are large, uniformly bright and near-white, at a roughly constant lit/unlit ratio across every building, so the aerial in p3_skyline_21 looks like a QR code rather than a city. CS2 night windows are finer-grained, vary in warmth and intensity per floor, and thin out with distance and building type.",
+      "evidence": "shots/final/p3_skyline_21.png building masses; less severe but visible in p3_downtown_21.png.",
+      "suggestion": "Halve window cell size on distant LODs, jitter per-window intensity and colour temperature (warm residential vs cooler office), and vary the lit fraction by building type and hour."
+    },
+    {
+      "module": "core",
+      "severity": "minor",
+      "description": "Triangle budget is heavy for a web target: 11.2M-14.0M triangles per frame at 1280x720 across all eight presets, peaking at 14,010,377 on downtown at night. Draw calls are healthy (2,325-2,709) so batching is clearly working — the cost is geometric density, most likely vegetation and terrain. This will not port well to mid-range integrated GPUs.",
+      "evidence": "shots/final/p3.log.json — tris 11176201 (skyline 13) to 14010377 (downtown 21); calls 2325-2709; errors 0, warnings 0.",
+      "suggestion": "Add aggressive distance LODs / impostors for trees and cap terrain tessellation beyond the mid-ground; target under 6M triangles without a visible quality change at these camera distances."
+    },
+    {
+      "module": "ui",
+      "severity": "minor",
+      "description": "The HUD is the strongest part of the build and needs almost nothing. Two nits only: the zoning tray thumbnails are flat vector illustrations rather than rendered shots of the actual building stock, so they do not tell the player what will grow, and the tray shows no cost or upkeep figure per zone type.",
+      "evidence": "shots/final/p3_ui.png — the Zoning flyout with six tiles; the active-tool chip 'Low Density Residential / Zoning / Free / Esc cancel' is correct and well placed.",
+      "suggestion": "Swap the six zone tiles for small pre-rendered thumbnails of representative buildings and put the per-cell cost on the tile, as CS2 does."
+    }
+  ],
+  "strengths": [
+    "Zero console errors and zero warnings across ten renders; all 13 modules report ok in p3.log.json.",
+    "The HUD is genuinely CS2-class: city name + milestone badge, date/time/speed cluster, money/population/happiness readouts, numbered tool dock, RCIO demand bars, illustrated zoning tray and a correct active-tool chip. It survives a blind comparison better than the 3D does.",
+    "Day-night cycle is convincing end to end — p3_downtown_21 with warm per-floor window lights and street-lamp pools is the most CS2-like frame in the set.",
+    "Terrain and atmosphere carry the skyline shot: snow-capped ranges, real aerial haze, a believable coastline and a proper sky gradient.",
+    "Road craft is solid — lane markings, crosswalks, curbs, sidewalks, roundabout geometry and street lighting all read correctly at street distance (p3_suburb_13, p3_waterfront_21).",
+    "Suburb composition is structurally close to CS2's own suburb reference: hipped and gabled roofs, hedged lots, driveways, verge trees and parked cars.",
+    "Draw calls stay in a tight 2,325-2,709 band across wildly different views — instancing and batching are working."
+  ],
+  "screenshots": [
+    "shots/final/p3_skyline_13.png",
+    "shots/final/p3_downtown_21.png",
+    "shots/final/p3_waterfront_13.png",
+    "shots/final/p3_suburb_13.png",
+    "shots/final/p3_waterfront_21.png",
+    "shots/final/p3_suburb_21.png",
+    "shots/final/p3_skyline_21.png",
+    "shots/final/p3_downtown_13.png",
+    "shots/final/p3_rain.png",
+    "shots/final/p3_ui.png"
+  ],
+  "perf": {
+    "drawCalls": 2709,
+    "triangles": 14010377,
+    "consoleErrors": 0,
+    "drawCallRange": "2325-2709",
+    "triangleRange": "11176201-14010377",
+    "warnings": 0,
+    "gpu": "ANGLE (Apple, ANGLE Metal Renderer: Apple M5 Pro)",
+    "note": "fps is unreliable — up to 6 agents share this dev server. Judged on draw calls, triangles and image quality."
+  },
+  "notes": "Method: read ARCHITECTURE.md §9 and reference/README.md; compared against reference/cs2_02.jpg (daytime high aerial) and reference/cs2_08.jpg (night downtown street in rain). Presets confirmed present in src/demo/DemoCity.js (downtown, suburb, waterfront, skyline, night_downtown). Ten renders at 1280x720 from seed=7, all read. Interactivity smoke via __game.setTool('zone',{type:'res-low'}) succeeded — the Zoning tray opens, the dock highlights the active slot and the active-tool chip appears correctly. Ranked fix order for the biggest visual return: (1) building façade materials and silhouette variety, (2) hard-surface lot fill in dense blocks, (3) traffic density, (4) wet-road response in rain."
+}

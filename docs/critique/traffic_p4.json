@@ -1,0 +1,86 @@
+{
+  "score": 6.0,
+  "pass": false,
+  "summary": "Density and night lighting are genuinely fixed: the avenue carries continuous multi-lane flow with real signal queues, and every car throws headlight pools. But the fleet still fails the #1 systemic defect. Measured on p4_traffic_detail_17h5.png at 15 m, the rear glass renders RGB(18,63,110) against roof paint RGB(21,56,91) - the greenhouse is body-coloured, brighter than the paint, not the tinted GLASS 0x151b22 the code declares. Paint is flat matte with no clearcoat highlight, no albedo/roughness texture, no wear. Wheels are invisible at 15 m. Lamps are hard-edged painted rectangles. Vehicles beyond 50 m are LOD1 with castShadow=false, so in the hero frame (17:33, sun ~20 deg, poles throwing long shadows) not one car casts a shadow. Night ground pools blow the asphalt to Y=0.610 - 10x the CS2 daytime asphalt target of 0.058. Zero console errors; 1836 calls, 8.09M tris (detail marginally over the 8M line).",
+  "issues": [
+    {
+      "severity": "blocker",
+      "description": "Vehicle glass renders as body colour, not tinted glass. p4_traffic_detail_17h5.png, blue sedan at x640-740 y400-430: backlight RGB(18,63,110) vs roof paint RGB(21,56,91) - same hue, brighter. Every car in the queue shows a paint-coloured greenhouse. reference/cs2_05.jpg has near-black tinted glass with a sharp sky specular band on every car.",
+      "evidence": "shots/critic/traffic/p4_traffic_detail_17h5.png; VehicleModels.js:26 GLASS 0x151b22 declared but not reaching the fragment",
+      "suggestion": "The per-vertex GLASS mask is being interpolated away or overwritten by aPaint on the backlight/side glass. Classify glass in the fragment shader from a dedicated packed vertex attribute (not an interpolated float threshold), and verify the rear window samples below RGB(30,34,40) in shade. Add a fresnel sky-reflection term so the windscreen catches a bright band."
+    },
+    {
+      "severity": "blocker",
+      "description": "No vehicle casts a sun shadow at hero distance. Renderer.js:245 sets lod=1 beyond NEAR_LOD=50 m and Renderer.js:125/144 set castShadow only on lod 0. In p4_traffic_hero_17h5.png the streetlight poles and trees throw long shadows across the avenue while every car - the whole visible fleet - throws none.",
+      "evidence": "shots/critic/traffic/p4_traffic_hero_17h5.png, avenue x420-760 y280-620; Renderer.js:14 NEAR_LOD=50",
+      "suggestion": "Push shadow casting out to the shadow-cascade far plane (~180 m) using the lod1 body, or add a cheap shadow-only proxy box per vehicle. The judges named 'firm contact shadows under every vehicle' and 'long soft shadows' together - the contact decal alone does not satisfy either at 100 m."
+    },
+    {
+      "severity": "blocker",
+      "description": "Night headlight ground pools blow out the road. p4_traffic_night_21.png, intersection x300-520 y600-640 measures Y=0.610, RGB(207,198,188) - 10x the CS2 asphalt target (0.058, LOOK_TARGET row 10) and 2.3x CS2 daytime sky. Pools are neutral white, have hard straight polygon edges, and merge into one sheet that erases lane markings and every contact shadow.",
+      "evidence": "shots/critic/traffic/p4_traffic_night_21.png bottom third; docs/LOOK_TARGET.md rows 1 and 10",
+      "suggestion": "Cut beam intensity ~6x so the pool core lands near Y 0.08-0.15, warm it to ~4000K, and replace the hard quad with a radial+cone falloff that reaches zero inside the geometry so no straight edge is visible."
+    },
+    {
+      "severity": "major",
+      "description": "Car paint is a flat untextured colour field - the defect every judge named first. No clearcoat specular streak, no reflected sky, no metallic flake, no dirt or road film. p4_traffic_detail_17h5.png at any car: a broad diffuse gradient across a chamfered slab. reference/cs2_05.jpg cars carry a hard specular highlight along the shoulder line and roof.",
+      "evidence": "shots/critic/traffic/p4_traffic_detail_17h5.png, cream car x760-960 y400-570",
+      "suggestion": "Add clearcoat 0.85 / clearcoatRoughness 0.06 with a real env contribution, a low-amplitude metallic-flake normal, and a per-instance dirt mask darkening the lower body and behind the wheels. Use a PBR set from public/assets/shared per MANIFEST.md rather than a constant albedo."
+    },
+    {
+      "severity": "major",
+      "description": "Wheels do not read. At 15 m in p4_traffic_detail_17h5.png no wheel, tyre or wheel arch is visible on any car - bodies sit on a closed skirt. The claimed rim/spoke/caliper detail (436 tris) is not observable at any distance shown.",
+      "evidence": "shots/critic/traffic/p4_traffic_detail_17h5.png, blue sedan x595-760 y380-500",
+      "suggestion": "Raise ride height and cut real wheel arches into the body so tyre and rim are silhouetted against the road, and add an AO gradient inside each arch. Tyre must read matte black against the paint."
+    },
+    {
+      "severity": "major",
+      "description": "Contact shadows are too weak to see in shade. Renderer.js:279 scales aDark by (0.62+0.30*sunUp), and the whole detail frame sits in building shadow, so the multiply lands on already-dark asphalt and vanishes - cars read as pasted on, exactly the judges' complaint. Faintly visible only on sunlit road in p4_traffic_hero_17h5.png.",
+      "evidence": "shots/critic/traffic/p4_traffic_detail_17h5.png entire carriageway; Renderer.js:279",
+      "suggestion": "Do not fade the contact term with sun elevation - occlusion is ambient, not direct. Keep a firm dark core (k>=0.75) under the sills at all times and shrink the soft skirt from 2.10x to ~1.4x body width so it reads as a footprint rather than a haze."
+    },
+    {
+      "severity": "major",
+      "description": "Silhouette variety does not read. Six specs exist but in p4_traffic_detail_17h5.png ten of eleven cars are the same two-box slab: rectangular cabin on rectangular body, chamfered corners, no bonnet rake, no tumblehome. Only the bus and box truck differ. reference/cs2_05.jpg shows MPV, hatch, city car, van, motorcycle and saloon in one frame.",
+      "evidence": "shots/critic/traffic/p4_traffic_detail_17h5.png x560-1000 y200-560",
+      "suggestion": "Differentiate roof height, beltline, overhang ratio and greenhouse taper per spec by at least 25%, and add two more archetypes (compact hatch, pickup) plus a motorcycle."
+    },
+    {
+      "severity": "minor",
+      "description": "Paint palette reads as a 1950s pastel toy set - powder blue, mint, salmon, olive, cream. CS2's fleet is dominated by neutral silver/white/grey/black with a minority of fully saturated reds and blues.",
+      "evidence": "shots/critic/traffic/p4_traffic_detail_17h5.png queue; Renderer.js:205 paintOf",
+      "suggestion": "Return to ~65% neutral, and make the chromatic 35% properly saturated rather than pastel - raise chroma and drop lightness on the coloured entries."
+    },
+    {
+      "severity": "minor",
+      "description": "Tail lamps and number plates are flat painted rectangles with hard aliased edges and no lens, recess or housing. Lamp colour RGB(113,35,42) is correctly deep red now, but the shape reads as a decal.",
+      "evidence": "shots/critic/traffic/p4_traffic_detail_17h5.png, x600-620 y466-476",
+      "suggestion": "Recess the cluster 2-3 cm, add a chrome bezel and a faceted lens normal so the lamp catches a highlight when unlit."
+    },
+    {
+      "severity": "minor",
+      "description": "Pedestrian density is too low for a downtown avenue. p4_traffic_night_21.png sidewalks x330-700 y300-520 carry three or four figures across a full block; the left-hand pavement is empty.",
+      "evidence": "shots/critic/traffic/p4_traffic_night_21.png",
+      "suggestion": "Raise sidewalk pedestrian density 3-4x near commercial frontage and cluster them at crossings and bus stops rather than spreading evenly."
+    },
+    {
+      "severity": "minor",
+      "description": "Triangle count for the detail preset is 8.086M and 8.064M, marginally over the 8M budget line. Draw calls are healthy at 1740-1836.",
+      "evidence": "shots/critic/traffic/p4.log.json",
+      "suggestion": "Drop NEAR_LOD wheel instancing from 50 m to ~35 m, or halve the near-LOD wheel tri count from 436."
+    }
+  ],
+  "screenshots": [
+    "shots/critic/traffic/p4_traffic_hero_17h5.png",
+    "shots/critic/traffic/p4_traffic_detail_17h5.png",
+    "shots/critic/traffic/p4_traffic_night_21.png",
+    "shots/critic/traffic/p4.log.json"
+  ],
+  "systemicProgress": {
+    "materials": "NOT FIXED - the worst remaining area. Vehicle glass renders body-coloured RGB(18,63,110) vs paint RGB(21,56,91); paint is a flat untextured colour field with no clearcoat, no albedo/roughness map, no dirt or road film; wheels invisible at 15 m; lamps and plates are painted rectangles. No vehicle surface shows grain or wear at 40 m. Only fix landed: brake-lamp albedo now RGB(113,35,42), no longer salmon.",
+    "lighting": "PARTLY FIXED - night headlights and taillights now work and read as trails, a real gain. But no vehicle casts a sun shadow beyond 50 m (castShadow tied to lod 0), so the hero frame has poles and trees throwing long shadows and cars throwing none. Contact decals exist but fade with sun elevation and are invisible on shadowed asphalt. Night ground pools are blown white (Y=0.610) with hard polygon edges and kill all grounding.",
+    "density": "FIXED - this was the headline defect and it is resolved. The avenue carries continuous four-lane flow, cross streets are populated, and signal queues are believable. Roughly 60-80 vehicles readable in the hero frame.",
+    "variety": "PARTLY FIXED - six specs and a lamp-clustered bus/truck/van exist, but ten of eleven cars in the detail frame share one two-box slab silhouette. Only large vehicles differentiate. Pedestrian density remains too low to add variety at street level.",
+    "colour": "MIXED - brake red is on target and the daytime queue is not oversaturated. But the car palette has over-rotated into pastel (powder blue, mint, salmon) where CS2 runs neutral-dominant with a saturated minority, and the night headlight pool at Y=0.610 is 10x the LOOK_TARGET asphalt figure of 0.058, wrecking the night black floor locally."
+  }
+}

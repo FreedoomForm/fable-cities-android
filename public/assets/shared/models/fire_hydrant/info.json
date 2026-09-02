@@ -1,0 +1,12 @@
+{
+  "id": "fire_hydrant",
+  "name": "Fire Hydrant",
+  "type": "models",
+  "authors": {
+    "Gonçalo Felício": "All"
+  },
+  "license": "CC0",
+  "source": "https://polyhaven.com/a/fire_hydrant",
+  "res": "1k",
+  "fmt": "gltf"
+}

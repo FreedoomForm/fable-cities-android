@@ -1,0 +1,79 @@
+{
+  "score": 6.5,
+  "pass": false,
+  "summary": "The simulation is the best part of this module and is close to AAA: A* routing, IDM car-following, signal phases and right-before-left priority all read correctly on screen, queues form and clear, lane following is smooth through curves, scale is metrically correct (sedan 4.62 m, bus 11.80 m, truck 8.60 m) and wheels contact the road. Contract complete (setDensity/spawnBurst/getVehicles/getPedestrians/stats; world.traffic.vehicles/pedestrians/congestion published). Zero console errors, moduleStatus ok, perf inside budget (peak 1755 calls / 7.66 M tris on module presets). The ART is not there. Every queued car in daylight wears flat blown-out salmon brake-light rectangles measured at exactly RGB(249,132,111) on three different vehicles - the exact bug the builder reported as fixed, still present at day exposure. Car flanks are smooth soap bars with no door shutlines, no B-pillar and only a shallow rear glass band; wheels are featureless grey discs; the bus rear is a bare slab; the fleet is ~80% white/grey. Pedestrians are flat-colour box figures with featureless heads. Against reference/cs2_05.jpg (parking lot, street level) the gap is obvious at any camera closer than 60 m. The night avenue frame is genuinely good and shows what the module could be.",
+  "issues": [
+    {
+      "severity": "blocker",
+      "description": "Brake lights blow out to flat salmon in broad daylight. Every stopped/queued car shows two opaque salmon rectangles. Sampled RGB(249,132,111) at three separate vehicles - identical value, i.e. the emissive is clipping, not shading. This is the single most eye-catching flaw in every daytime frame and it is the exact defect the builder's report claims to have fixed.",
+      "evidence": "shots/critic/traffic/micro_crit_micro_13.png - white sedan rear lamps at x 588-620,y 318-345 and x 685-722,y 333-360; also the cream car at x 1050-1090,y 275-295. shots/critic/traffic/b_crit_ped2_13.png - pink car's entire tail band x 1030-1200,y 222-252. Compare reference/cs2_05.jpg where every tail lamp is a small deep-red recessed lens.",
+      "suggestion": "src/modules/traffic/materials.js EMISSIVE_FRAG: the brake branch (k<2.5 / k<3.5) uses ex = 1.0/max(0.45,uLampExposure), which is ~1.0 in daylight, so the 0.30-0.46 display-unit brake term survives ACES and desaturates to salmon. Gate the lamp emissive on daylight as well: multiply the whole `em` by a daylight attenuation (e.g. mix(0.10, 1.0, nightFactor) fed as a second uniform alongside uLampExposure) so a daytime brake lamp adds ~0.03-0.05 and the dark-red LAMP_R albedo (0x6e0f0c) dominates. Also verify vState.y is not stuck at 1 for cars that are merely slow rather than braking."
+    },
+    {
+      "severity": "blocker",
+      "description": "Car bodies have no panel breakup: no door shutlines, no bonnet/boot cuts, no B-pillar, and the side glass is only a narrow band over the rear door - the front-door greenhouse is body-coloured. The flank is one continuous smooth surface with two grey door-handle rectangles floating on it. The 'real A/B/C pillars, glass rows' claim is not visible at street level.",
+      "evidence": "shots/critic/traffic/micro_crit_micro_13.png - white sedan at x 560-1050, y 220-460: greenhouse x 720-1010,y 225-300 is body-white except a dark band x ~830-950; flank x 700-1000,y 300-380 has zero shutlines; handles at x 690-760 and x 830-880, y 225-245. Reference reference/cs2_05.jpg: every car shows full-height dark inset DLO plus visible door/boot cuts.",
+      "suggestion": "In VehicleModels.js extend the glass row (sec.ys pinned rows) forward across the front door so the DLO spans front-to-rear with an explicit B-pillar strip, and darken glass albedo hard (near-black with high specular) so it separates from paint in daylight. Add door/bonnet/boot shutlines as thin dark-vertex-colour strips at the section boundaries (cost is only vertex colour, no extra tris)."
+    },
+    {
+      "severity": "major",
+      "description": "Wheels are flat grey discs - no spokes, no rim/tyre separation, no tread, no brake disc or caliper. Arch openings are also too tight, so the rear tyre visibly intersects the bodywork and the front tyre bulges proud of the flank.",
+      "evidence": "shots/critic/traffic/micro_crit_micro_13.png - front wheel x 820-885,y 378-428 (plain grey disc with one dark dot, sitting outside the body line); rear wheel x 1025-1075,y 345-395 partly buried. Same on the black SUV x 540-580,y 330-365.",
+      "suggestion": "Give the wheel a two-ring profile: black tyre torus with a distinctly lighter, smaller rim face carrying 5 radial spoke slots (vertex-colour dark wedges are enough at this scale), plus a dark hub. Widen the arch cut radius by ~8% over wheelR and inset the wheel ~2 cm so the tyre sits flush with, not proud of, the flank."
+    },
+    {
+      "severity": "major",
+      "description": "The bus rear is a bare grey slab: one black window rectangle, one black roof box, nothing else. No tail-lamp lenses, no bumper, no plate, no engine louvres, no reflectors. Tail lamps exist only as small emissive dots that appear at night, so the rear has no lamp geometry at all in daylight. (The bus SIDE is good - window band, door, arches - that claim holds.)",
+      "evidence": "shots/critic/traffic/p3r1_traffic_detail_13.png - bus rear fills x 760-960, y 230-660. shots/critic/traffic/night_close.png - the only rear detail is two 20 px red dots at x 895-915 and x 990-1010, y 285-300. Contrast shots/critic/traffic/b_crit_bus_13.png where the bus side x 590-1280 is genuinely decent.",
+      "suggestion": "Build the rear panel like the front: recessed tail-lamp clusters (dark red lens boxes, same LAMP_R material as cars) at both corners, a rear bumper strip, a plate recess, and a louvred engine-bay band below the window. Remove or shape the naked black roof box into a proper AC pod."
+    },
+    {
+      "severity": "major",
+      "description": "Fleet paint is near-monochrome. Across the hero, detail and micro frames roughly 80% of vehicles are white, pale grey or cream; saturated colours are rare. Paint also has no clearcoat or environment reflection - it reads as chalky matte vinyl with airbrushed smear highlights rather than automotive clearcoat.",
+      "evidence": "shots/critic/traffic/micro_crit_micro_13.png - 5 visible cars: white, white, cream, black, white. shots/critic/traffic/p3r1_traffic_hero_13.png - the whole avenue queue x 560-760,y 280-560 is white/grey. Reference reference/cs2_05.jpg has red, yellow, cyan, white, black and silver in a single 8-car lot, each with a crisp clearcoat highlight.",
+      "suggestion": "Widen the paint palette: give ~35% of the fleet saturated hues (reds, blues, greens, a few yellows) drawn from a curated automotive list rather than a desaturated random ramp. On the vehicle material raise clearcoat/metalness (metalness ~0.55, roughness ~0.22) and feed an environment map so the flanks pick up sky and building reflections instead of a flat gradient."
+    },
+    {
+      "severity": "major",
+      "description": "Pedestrians are programmer art: flat-colour box torso, cylinder legs, a featureless tan box head with a flat top, no meaningful arms, no hair, no bag or props. Two of them stand in the identical pose at the same kerb corner.",
+      "evidence": "shots/critic/traffic/b_crit_ped2_13.png - two figures at x 612-672,y 128-332 and x 694-748,y 138-318. Compare reference/cs2_05.jpg citizen at x 1340-1440,y 480-640: hair silhouette, layered jacket over a shirt, distinct arms mid-swing, soft contact shadow.",
+      "suggestion": "In PedestrianModel.js add a tapered head with a hair cap (second colour band), shoulders that narrow to a neck, and actual arm cylinders driven by the existing vertex walk cycle so the swing is visible. Vary height (1.55-1.90 m), skin and 3 clothing bands per agent, and give a fraction a bag or a coat colour block. Also stagger walk-cycle phase per instance so two adjacent peds never share a pose."
+    },
+    {
+      "severity": "minor",
+      "description": "Bus and car glass is opaque black at night with no interior illumination, so lit vehicles read as dark holes. The shader has a k=4 'bus ceiling' emissive branch but nothing shows through the windows.",
+      "evidence": "shots/critic/traffic/night_close.png - bus window band x 890-1030,y 230-280 is pure black at 21:33. Reference reference/cs2_08.jpg night street shows lit vehicle interiors.",
+      "suggestion": "Make the glass material partially transmissive at night and put a low-poly lit ceiling plane inside the bus/car cabin driven by the existing k=4 branch, so the window band glows warm from within."
+    },
+    {
+      "severity": "minor",
+      "description": "The showcase runs with population 0 and jobs 0, so the population/jobs term in targetCounts() is never exercised - traffic volume comes purely from lane-km and the rush curve. The spec requirement 'spawn tied to population/jobs' is implemented in code but unproven on screen.",
+      "evidence": "HUD reads '0 / 0 jobs' in every screenshot (top bar x 960-1050,y 18-45). src/modules/traffic/index.js:107-109 byCity = 55 + pop*0.055 + jobs*0.038 collapses to the constant 55.",
+      "suggestion": "In showcase.js call buildings.api.fastForward() (or grow the district far enough) so the demo has real residents and jobs, then let the density visibly rise between the 08:00 and 13:00 presets. That both proves the tie and makes the hero frame busier."
+    },
+    {
+      "severity": "minor",
+      "description": "Triangle headroom is thin. Module presets peak at 7.66 M of the 8 M budget, and a ground-level camera near a pedestrian pushed the frame to 9.19 M - over budget. Draw calls are comfortable (peak 1755 of 2500).",
+      "evidence": "shots/critic/traffic/p3r1.log.json traffic_detail_21 = 7,631,216 tris; shots/critic/traffic/b.log.json crit_ped2 = 9,189,556 tris.",
+      "suggestion": "Pull the LOD1 switch distance in from 80 m to ~55 m and add an LOD2 (box body, no arches, no lamps) beyond ~140 m so a low camera with a long view down an avenue does not carry full-detail shells to the horizon."
+    }
+  ],
+  "strengths": [
+    "Traffic simulation genuinely reads as a working city: A* routing, IDM car-following with visible queue build-up and release, signal phases and right-before-left priority all behave correctly on screen; nothing deadlocks or overlaps.",
+    "Smooth lane following through curves and intersections - no snapping, no corner-cutting, vehicles stay centred in lane and wheels stay in contact with the road surface.",
+    "Metric scale is correct and verifiable in code: sedan 4.62 m, hatchback 4.05 m, SUV 4.80 m, van 5.35 m, truck 8.60 m, bus 11.80 m; vehicles sit right against 3.5 m lanes and crosswalk stripes.",
+    "The night avenue frame is the module's best work - headlight pools on asphalt, red taillights receding up the street, a lit bus, working signal colours and a believable sense of depth.",
+    "The bus SIDE geometry is a real improvement: window band, door aperture, wheel arches and a two-tone livery that reads well at 15 m.",
+    "Full API contract present and clean (setDensity, spawnBurst, getVehicles, getPedestrians, setEnabled, stats), world.traffic.vehicles/pedestrians/congestion/list all published and updated; zero console errors, all modules ok."
+  ],
+  "screenshots": [
+    "shots/critic/traffic/p3r1_traffic_hero_13.png",
+    "shots/critic/traffic/p3r1_traffic_detail_13.png",
+    "shots/critic/traffic/p3r1_traffic_night_21.png",
+    "shots/critic/traffic/micro_crit_micro_13.png",
+    "shots/critic/traffic/b_crit_bus_13.png",
+    "shots/critic/traffic/b_crit_ped2_13.png",
+    "shots/critic/traffic/night_close.png"
+  ],
+  "perf": { "drawCalls": 1755, "triangles": 7661295, "consoleErrors": 0 }
+}

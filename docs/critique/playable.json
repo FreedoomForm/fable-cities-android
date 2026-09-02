@@ -1,0 +1,107 @@
+{
+  "role": "hostile first-time player / product critic",
+  "when": "2026-09-02",
+  "url": "http://127.0.0.1:5180/?menu=1",
+  "score": 5.5,
+  "pass": false,
+  "passBar": "8.5 with no blockers",
+  "summary": "The shop window is excellent and the shop is empty. The start screen reads as a game, not a form, and the demo city is a screenshot you would post. But 'New city' — the pre-selected card, and the thing the tagline promises — does not deliver a city. At the default speed nothing is built for roughly half an hour of real time; the auditor's own run needed 447 s at MAX speed to reach a population of 1. A stranger lays a road, paints zones, watches an empty hillside turn to night, and leaves. On a phone, which is where an X link is opened, the HUD is clipped off both edges and one-finger drag does not move the camera at all.",
+  "firstMinute": "0-7 s: the world loads fast and looks good — a green hillside, a river, a CS2-class HUD with the city name, a clock already running at speed 1, 350,000 in the bank and a bottom dock reading Roads 1 / Zoning 2 / Services 3 / Bulldoze 4 / Info Views 5. 7-60 s if you do nothing: nothing happens. No tutorial, no toast, no objective, no 'lay your first road'. The only instructions in the product were on the start screen, which is gone. The population reads 0, the money ticks down 550 a week, and the demand bars sit near empty. If you click Roads the tray opens and the pieces are priced and illustrated; if you then click at the middle of the screen — the obvious place — the ghost turns red and says '172 m · too steep' and the road is refused, because the opening camera is hard-pointed at (0,0) and only 64 % of the view is gentle enough to build on. Move up-slope and the second attempt works, and it looks great: markings, a car, a snapped end node. Paint zones and the marquee counts cells honestly. Then the minute is over and you are watching bare green cells beside one road, with nothing under construction, at a speed nobody told you to change.",
+  "verdict": "not shippable to a public link yet",
+  "issues": [
+    {
+      "severity": "blocker",
+      "module": "simulation/economy + buildings",
+      "description": "Nothing grows inside a first session. Defaults: speed 1, secondsPerHour 20 (1 game day = 8 real min), residential demand starts at 0.6, MEAN_FILL_HOURS 30 at demand 1, BUILD_DAYS['res-low'] 1.6. So a lot waits ~50 game hours (~17 real min) for a builder and then ~13 real min to finish: about half an hour to the first house if the player never touches the speed control, and nobody tells them to. Even at max speed the auditor measured 255 s to the first completed house and 447 s to reach population ONE, with 10 finished houses and 100 % power and water. Observed directly: road + zones painted, then 90 s of play produced 0 buildings, 0 population, and the map went dark.",
+      "evidence": "shots/critique/11-after-90s-of-growth.png; shots/playtest/report.json steps 7 and 8a2",
+      "suggestion": "For an empty city, seed each completed residential building with a household and raise the new-city move-in rate by an order of magnitude; start residential demand at 1.0; cut level-1 res construction to well under a game day; and start a new world at speed 2-3 so the first house lands inside sixty seconds."
+    },
+    {
+      "severity": "blocker",
+      "module": "ui / menu",
+      "description": "There is no onboarding once the game is running. After 60 s of idling the DOM contains no toast, hint, tutorial or objective — the 'Start here: pick the road tool, click a start and an end point' copy lives only on the start screen, which is dismissed before the player can act on it. The milestone system already knows the next goal ('Founding -> Tiny Village at 120 population') and never says so.",
+      "evidence": "shots/critique/03-newcity-arrival.png, 04-newcity-after-60s-idle.png; hostile.json idle60.screen (toasts: [])",
+      "suggestion": "On game:start in an empty world, push a persistent first-objective card: 'Draw a road (1), zone beside it (2), then run time.' Show the next milestone and its population target in the top-left chip."
+    },
+    {
+      "severity": "blocker",
+      "module": "ui / core.Input",
+      "description": "The game is unusable on a phone, which is where a link posted on X is mostly opened. At 390x844 it boots cleanly and picks quality low, and a tap does arm a tool — but the HUD is laid out at desktop scale and overflows both edges: the top bar is cut off (money, population and happiness are off-screen right), the roads tray is clipped to 'wo-Lane Road' and 'Info Vie', and the dock runs past the right edge. One-finger drag does not pan, rotate or zoom — the camera target stayed at (0,0) d=420 through a full drag — so the player cannot move off an opening view that is partly unbuildable. No 'best on desktop' notice is shown either.",
+      "evidence": "shots/critique/13-mobile-newcity.png, 14-mobile-tap-roads.png; camera before/after one-finger drag identical",
+      "suggestion": "Either add touch camera control (one finger pan, two finger pinch/rotate) and a --fc-scale/reflow pass under ~600 px, or detect coarse pointers on the start screen and say plainly that a mouse and keyboard are needed."
+    },
+    {
+      "severity": "major",
+      "module": "main.js / terrain",
+      "description": "The new-city camera is pinned to map origin (0,0) whatever the seed generates. On the default seed only 64 % of the 440 m opening view is gentle enough to build on and the centre is not: the first naive road, drawn straight across the middle of the screen, is refused with 'Cannot build here - too steep'. The first thing the game does to a stranger is say no.",
+      "evidence": "shots/critique/06-road-ghost.png (172 m, too steep); hostile.json road.attempt1",
+      "suggestion": "Score the heightmap for a flat, dry basin and frame the opening camera there, so the obvious first click succeeds."
+    },
+    {
+      "severity": "major",
+      "module": "ui / simulation.clock",
+      "description": "A new world starts unpaused at speed 1 and nothing suggests otherwise. The speed control is four unlabelled glyphs in the top bar. Combined with the growth rates above, the default speed is the difference between seeing a town and seeing nothing at all.",
+      "evidence": "hostile.json arrival.state speed=1; growth timeline all zeroes at speed 1",
+      "suggestion": "Start an empty city at speed 2, and label the speed buttons or flash a hint the first time the player zones."
+    },
+    {
+      "severity": "minor",
+      "module": "tools/zonetool + zoning",
+      "description": "One of two naive zone drags painted nothing and said nothing: the ghost read '12 cells 0.08 ha' mid-drag, then '0 cells 0.00 ha' on release, and zones.lots stayed at 0 with no notification. Three controlled retries afterwards all painted (3-4 lots each), so this is intermittent rather than systematic — but a silent no-op on a core verb is the kind of thing that ends a first session.",
+      "evidence": "shots/critique/09-zone-drag-preview.png (12 cells) vs 10-zone-painted.png (0 cells)",
+      "suggestion": "Never let a committed marquee evaluate to zero silently; if the release cell invalidates the rectangle, keep the valid cells and say why the rest were dropped."
+    },
+    {
+      "severity": "minor",
+      "module": "ui / demand",
+      "description": "The R/C/I/O demand bars in an empty city sit at 0.6/0.35/0.4/0.2 and read as near-empty at a glance, so the one on-screen signal that should shout 'zone residential now' says nothing.",
+      "evidence": "shots/critique/03-newcity-arrival.png bottom-left; economy.demand",
+      "suggestion": "Peg residential demand at full in a city with no residents."
+    },
+    {
+      "severity": "minor",
+      "module": "menu",
+      "description": "'STEP 1 OF 1' in the panel header is a form-wizard artifact on an otherwise game-like screen, and the two world choices are cards with a chevron rather than a primary button, so the commit action is slightly under-signposted. The city name typed for a new city is also carried into the demo city.",
+      "evidence": "shots/critique/01-start-1440.png; demo HUD reads 'Old Alderburgh'",
+      "suggestion": "Drop the step counter; give the highlighted card an explicit 'Start building' button; give the demo city its own name."
+    },
+    {
+      "severity": "minor",
+      "module": "tools/entitytool",
+      "description": "Inherited from the auditor and not re-verified here: bulldozing a building refunds nothing while the tooltip promises 50 %, and bulldozing the only road silently deletes every lot and building attached to it with no warning.",
+      "evidence": "auditor frictions 4 and 5",
+      "suggestion": "Match the refund to the advertised number, and warn before a bulldoze that orphans zoned lots."
+    }
+  ],
+  "agreementWithAuditor": {
+    "agree": "Every mechanic they list does work, their driver is honest, and their central measurement — 447 real seconds at max speed for a population of 1 — is the most important number anyone has produced about this build. Zero console errors and no failed modules in an empty world matches what I saw.",
+    "disagree": "Their severity is wrong. They returned 'playable-with-friction' with zero blockers while reporting that the city never populates. For a stranger on a public link that IS the blocker: the loop the start screen sells does not visibly happen in a first session. Their step 8a2 was recorded 'ok' because population reached 1; population 1 is not ok.",
+    "calledFineButIsNot": [
+      "'A stranger CAN start a new city and build' — only with a driver that scans the heightmap for a valid 140 m corridor and presses + three times. A person who clicks the middle of the screen is refused ('too steep'), and a person who leaves the speed alone waits about half an hour for one house.",
+      "They filed the (0,0) camera as a terrain nicety. It is the reason the first click fails.",
+      "Mobile was never tested at all. The HUD is clipped off both edges and the camera cannot be moved by touch — on the platform most X links are opened on."
+    ]
+  },
+  "whatIsGood": [
+    "The start screen looks like a game, not a form: live seed minimap, a controls card, a quality picker, and two clearly-described worlds.",
+    "Load times: 6.6 s to a new city, 17 s to a 19,000-person demo city.",
+    "The road ghost is CS2-class — length, cost, snap grid, red plus a plain-English reason for refusal.",
+    "The zone marquee counts cells and hectares while you drag.",
+    "The demo city is a genuinely impressive arrival frame and the strongest thing in the build.",
+    "Zero console errors and no failed modules across every path I drove; demo drawCalls 2183 (budget 2500), 8.34 M triangles (budget 8 M, marginally over)."
+  ],
+  "screenshots": [
+    "shots/critique/01-start-1440.png",
+    "shots/critique/02-start-390.png",
+    "shots/critique/03-newcity-arrival.png",
+    "shots/critique/04-newcity-after-60s-idle.png",
+    "shots/critique/06-road-ghost.png",
+    "shots/critique/07-road-built-or-not.png",
+    "shots/critique/09-zone-drag-preview.png",
+    "shots/critique/10-zone-painted.png",
+    "shots/critique/11-after-90s-of-growth.png",
+    "shots/critique/12-demo-arrival.png",
+    "shots/critique/13-mobile-newcity.png",
+    "shots/critique/14-mobile-tap-roads.png"
+  ]
+}

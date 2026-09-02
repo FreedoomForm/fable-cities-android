@@ -1,0 +1,12 @@
+{
+  "id": "potted_plant_01",
+  "name": "Potted Plant 01",
+  "type": "models",
+  "authors": {
+    "Rico Cilliers": "All"
+  },
+  "license": "CC0",
+  "source": "https://polyhaven.com/a/potted_plant_01",
+  "res": "1k",
+  "fmt": "gltf"
+}

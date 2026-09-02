@@ -1,0 +1,87 @@
+{
+  "module": "buildings",
+  "pass": "p5",
+  "score": 7.0,
+  "pass_gate": false,
+  "date": "2026-09-02",
+  "summary": "Real progress, verified: curtain-wall panes went from Y 0.0010 to a measured Y 0.048-0.14 with a genuine head-to-cill gradient (0.0694 top -> 0.0523 bottom) and a sky hue of 223 deg, clearcoat went 0 -> 8 in-module, punched windows are no longer black cards, and there are zero console errors. But the frame the blind comparison actually judges - the 400-unit hero skyline - still shows no glass at all: tower faces measure Y 0.131-0.191 against a sky at Y 0.181, so the curtain wall is exactly as bright as the sky it should be reflecting and reads as pale grey cardboard. And the detail frame contains literally no specular highlight: Ymax 0.845, 0.000% of pixels above Y 0.85, where the matching CS2 suburb frame cs2_04 hits Ymax 0.999 with 0.633% above 0.85.",
+  "matstats": {
+    "buildings": "36 materials · roughness p10 0.28 median 0.78 p90 0.88 · buckets <0.2:3  0.2-0.4:3  0.4-0.7:7  >=0.7:23 · roughnessMap 25 · normalMap 26 · clearcoat>0: 8 · metalness>0.5: 5",
+    "scene": "237 materials · roughness p10 0.30 median 0.72 p90 1.00 · buckets <0.2:18  0.2-0.4:20  0.4-0.7:55  >=0.7:144 · clearcoat>0: 40 · environmentIntensity 0.5187 · exposure 1.605 · hemisphere 0.553 · sun 2.986",
+    "per_surface_vs_target": {
+      "buildings/glass (curtain wall)": "0.05 / metal 0.00 — target 0.05 MET",
+      "buildings/glass_dark (punched)": "0.05 / metal 0.00 — target 0.10, off by 0.05 (minor)",
+      "buildings/solar": "0.10 / clearcoat 1.00 — target 0.10 MET",
+      "buildings/corrugated_roof, corrugated, metal_tank": "0.45 / 0.95 — target 0.45/0.95 MET",
+      "buildings/steel": "0.30 / 0.95 — target 0.45/0.95, slightly glossy (minor)",
+      "buildings/brick_red|brick_white|brick_yellow|plaster|plaster_rough|plaster_painted": "0.88 — target 0.88 MET",
+      "buildings/concrete, concrete_wall, concrete_cyl, pave_*": "0.80 — target 0.80 MET",
+      "buildings/tiles_a|tiles_b|shingle": "0.78 — target 0.78 MET",
+      "buildings/yard_asphalt": "0.65 — target 0.65 MET",
+      "buildings/hedge": "0.70 — target 0.70 MET",
+      "buildings/dirt": "0.95 — target 0.95 MET"
+    },
+    "scene_distribution_vs_target": "target <0.2: 35-60 (have 18) · 0.2-0.4: 40-70 (have 20) · 0.4-0.7: 60-90 (have 55) · >=0.7: 60-100 (have 144) · clearcoat >=15 (have 40 MET). The matte bucket is still 61% of the scene; buildings contributes 23 of those 144 and nearly all of them are correct per the per-surface table, so this is not primarily a buildings debt."
+  },
+  "perf": {
+    "budget": "<=2500 draw calls, <=8.0M triangles",
+    "measured": "hero 17h5: 1294 calls / 5,019,414 tris · hero 21: 1305 / 4,887,362 · detail 17h5: 1470 / 7,744,670 · detail 21: 1524 / 7,826,930 · night 17h5: 1540 / 6,315,246 · night 21: 1551 / 6,130,178",
+    "verdict": "IN BUDGET on draw calls (62% of ceiling) but triangles peak at 7.83M = 98% of the 8.0M ceiling on buildings_detail, leaving no headroom for the other five modules in a combined frame. Builder's claimed 2208 calls / 8.38M tris does not match any preset I measured.",
+    "console_errors": 0
+  },
+  "specularVerdict": "PARTIAL. I can see specular on exactly one surface family, at exactly one distance. Close-range curtain wall (buildings_night preset at 17.5) works and measures in band: hero tower shaded face Y 0.0476, second tower 0.0519 (target 0.04-0.12), a real head-to-cill gradient 0.0694 -> 0.0523 (ratio 1.33), hue 223-229 deg so it is genuinely sky-coloured, and adjacent faces differ (0.048 vs 0.140), which is fresnel doing work. Everywhere else there is none. At hero distance the same towers measure Y 0.1735 / 0.1850 / 0.1310 / 0.1912 / 0.1678 against a sky of Y 0.181 zenith and 0.205 horizon - the glass is the same luminance as the sky, so the towers have no silhouette and no glass read at all, and 4 of 5 faces are outside the 0.04-0.12 target. The detail frame at 17:30 contains zero specular by measurement: Ymax 0.845 and 0.000% of pixels above Y 0.85, versus cs2_04 (the matching CS2 suburb aerial) at Ymax 0.999 and 0.633% above 0.85. No sun glint on any metal roof, duct, tank, solar panel or window in either daytime frame despite 5 materials at metalness 0.95 and solar at roughness 0.10 clearcoat 1.00. The numbers are on target and the highlight is still not on screen - that is a failure, not a pass.",
+  "issues": [
+    {
+      "severity": "blocker",
+      "id": "curtain-wall-mip-collapse",
+      "where": "buildings_hero preset, all office towers; src/modules/buildings/facadeShader.js (SKY_PARS_GLSL / fSkyAt / fSkyFresnel), src/modules/buildings/materials.js buildings/glass",
+      "what": "The curtain wall works at 88-290 units and collapses to flat opaque grey at 400. Measured tower faces in p5_buildings_hero_17h5.png: Y 0.1735 (top) / 0.1850 (mid) / 0.1310 (bottom) on tower A, 0.1912 on tower B, 0.1678 on tower C. Sky in the same frame is Y 0.181 zenith, 0.205 horizon. Glass at the same luminance as the sky is not glass. Target is Y 0.04-0.12; 4 of 5 faces miss it high. The cause is mip averaging: pane + mullion + spandrel blend to a mid-grey once a floor band drops under ~2px, and the sky term is being computed on that already-averaged albedo instead of preserving the dark pane tint. All three towers also land on the same grey, so the claimed per-tower colour family (visible and correct at close range: hue 223 vs 225 vs 237, Y 0.048 vs 0.052 vs 0.125) is gone by hero distance.",
+      "fix": "Drive the pane/mullion mix by a distance term instead of letting the mip do it. In the facade shader compute an LOD factor from fwidth() of the pane UV; as it exceeds one pane, lerp the facade colour toward the PANE tint (not the pane/mullion mean) so the mip average lands near Y 0.07 rather than 0.18, and keep fSkyFresnel driving that averaged colour so distant towers stay dark blue with a bright grazing edge along the sun-facing corner. Re-shoot buildings_hero and require tower faces at Y 0.05-0.11 with at least a 2:1 spread between the sun-facing and shaded face of the same tower."
+    },
+    {
+      "severity": "blocker",
+      "id": "no-specular-highlight-daylight",
+      "where": "buildings_detail and buildings_hero at 17:30; buildings/solar, buildings/corrugated_roof, buildings/corrugated, buildings/metal_tank, buildings/metal_dark, buildings/steel",
+      "what": "Not one pixel of specular highlight exists in the detail frame. Ymax 0.845, 0.00% of pixels above Y 0.85, p99 0.714. The matching CS2 frame cs2_04 measures Ymax 0.999 with 0.633% above Y 0.85 and p99 0.792 — those bright pixels are solar-panel sheets, roof sheen bands, window sky-catches and metal flashing. Ours has five materials at metalness 0.95 and a solar material at roughness 0.10 / clearcoat 1.00 and none of them produces a visible glint. scene.environmentIntensity is still 0.5187, which halves every reflection the module can generate; MATERIAL_TARGET asks for it to move toward 1.0.",
+      "fix": "Two parts. (1) Raise the modules' envMapIntensity to compensate while the scene sits at 0.52: buildings' metals and glass are all at env 1.00 while props ships car_glass at 1.80 and car_trim at 1.50 and those are the only surfaces in the scene that actually glint. Push buildings/glass and glass_dark to 1.8, solar to 1.6, and the three metal_* / corrugated_* to 1.4. (2) Add an explicit sun lobe to the metal and solar branch — a GGX specular against the sun direction with the same analytic sky dome as the fallback — so a south-facing corrugated roof or a solar array at 17:30 produces a band above Y 0.85. Verify with the same measurement: buildings_detail must reach at least 0.2% of pixels above Y 0.85."
+    },
+    {
+      "severity": "major",
+      "id": "punched-windows-are-wall-coloured",
+      "where": "res-low, res-med, com-low punched windows; buildings/glass_dark",
+      "what": "The black cards are gone (real fix, credit where due) but they have been replaced by a desaturated copy of the wall. Measured on the com-low in p5_buildings_detail_17h5.png: sunlit wall Y 0.6218 hue 27.0 deg, its window pane Y 0.3995 hue 25.3 deg — the pane is the wall albedo darkened, matching hue to within 2 degrees, with no sky component at all. On the shadowed facade of the same building, wall Y 0.1715 vs pane Y 0.1625: the window is 5% darker than the wall and is effectively invisible. In cs2_04 the house windows are near-black interiors inside bright white frames with a distinct blue sky sheen on the upper pane; the value contrast against the siding is the single strongest read in the low-rise. Ours reads as milky perspex.",
+      "fix": "The fSkyAt / fSkyFresnel path that fixed the curtain wall has not reached the punched-window branch — wire it in there and stop deriving the pane colour from the wall albedo. Set roughness 0.10 per target (glass_dark is at 0.05), tint the pane toward the sky hue (200-230 deg) rather than the wall hue, and target a pane/wall luminance ratio of 0.30-0.50 on sunlit faces and 1.2-1.8 on shadowed faces (a shadowed window should be BRIGHTER than the wall because it is reflecting sky). Add a 1-2px darker sill/reveal shadow so the pane sits inside the wall rather than on it."
+    },
+    {
+      "severity": "major",
+      "id": "shadowed-facade-hue-only-half-fixed",
+      "where": "buildings/brick_red, brick_white, brick_yellow, concrete, concrete_wall; facade indirect term in facadeShader.js",
+      "what": "The claimed fix from hue 264 to 39/44 holds on some surfaces and not others. Measured shadowed facades at 17:30: yellow rendered house hue 27.9 (near the CS2 32-44 band, still under), orange brick hue 1.9, brick house hue 281.3, concrete lowrise hue 223.6. Two of four are further from 32-44 than the 252-264 the pass was supposed to eliminate. Saturations are low (0.05-0.16) so the perceptual damage is modest, but 281 deg is a purple shadow on a red-brick wall.",
+      "fix": "The albedo-hue-rotated indirect was applied to the plaster branch only. Apply the same rotation in the brick and concrete branches: take the material's own base hue and rotate the ambient/hemisphere contribution toward it rather than letting the blue hemisphere term dominate, and clamp the resulting shadow hue into 25-50 deg for warm masonry. Re-measure all four surfaces above and require every one inside 25-50."
+    },
+    {
+      "severity": "minor",
+      "id": "triangle-budget-headroom",
+      "where": "buildings_detail preset",
+      "what": "7,826,930 triangles at 1524 draw calls in a buildings-only showcase — 98% of the 8.0M whole-scene ceiling in ARCHITECTURE.md line 54, with five other modules still to fit. Draw calls are fine at 62% of the 2500 ceiling.",
+      "fix": "Add an LOD tier on the low-rise shells and the rooftop clutter (AC units, cylinders, parapets) so mid-distance buildings drop their bevels and window reveals. Target under 5.5M triangles on buildings_detail."
+    },
+    {
+      "severity": "minor",
+      "id": "night-panes-uniform",
+      "where": "buildings_night at 21:00",
+      "what": "The best frame in the set — deep blue panes, warm lit windows, a legible mullion grid, real per-tower variation, and it would hold up against cs2_10. But every unlit pane on a given tower is the same flat navy: no reflection of the lit neighbour opposite, no variation in tint, and the lit windows are flat rectangles with no interior falloff. Frame p99 is only 0.397 and 0.02% of pixels exceed Y 0.7 — a downtown of glass at night should have more sparkle.",
+      "fix": "Add a cheap per-pane hash offset to the unlit tint (+/- 8% luminance, +/- 6 deg hue) and let the analytic sky dome pick up the city glow term at night rather than going to pure ambient. Give the lit panes a vertical gradient so the ceiling is brighter than the cill."
+    }
+  ],
+  "screenshots": [
+    "shots/critic/buildings/p5_buildings_hero_17h5.png",
+    "shots/critic/buildings/p5_buildings_detail_17h5.png",
+    "shots/critic/buildings/p5_buildings_night_17h5.png",
+    "shots/critic/buildings/p5_buildings_night_21.png"
+  ],
+  "reference_used": [
+    "reference/cs2_02.jpg",
+    "reference/cs2_04.jpg"
+  ]
+}

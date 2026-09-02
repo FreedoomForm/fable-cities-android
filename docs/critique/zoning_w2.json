@@ -1,0 +1,69 @@
+{
+  "score": 6.5,
+  "pass": false,
+  "summary": "The grid/lot engine is genuinely good and the §5 contract is complete: cells are road-oriented (real trapezoids on the curved loop), never overlap the carriageway (0/238 lot centres inside a road footprint), never exceed 4 cells depth, every lot is 2x2..4x4 with a valid frontage, all six types present, zones:changed carries version/reason/changed, zero console errors, 797-1027 draw calls / 2.5-3.8M tris / 82+ fps. The LOOK is not AAA. The fill replaces the ground instead of tinting it, so sun, shadow and grass detail die under the paint; the near-white inter-cell gutters read as bathroom tile; the terrain punches through the fill on any undulating ground; and at night the shader deliberately brightens the overlay (col *= 1.0 + 0.30*uNight), turning the district into glowing pastel stickers over a black landscape - the exact opposite of CS2, where the purple office tint in reference/cs2_01.jpg multiplies over the facade and every window, panel and shadow survives. Half the painted cells (1386 of 2851) also never become a lot, so the overlay advertises buildable land that will never grow.",
+  "strengths": [
+    "Cells are truly oriented to the road and trapezoidal along curves - the suburban loop grid in w2_zoning_hero_13.png (upper left) is CS2-correct, not an axis-aligned world grid",
+    "Verified geometry contract: 238 lots, sizes only 2x2/2x3/2x4/3x2/3x3/3x4/4x2, max depth 4 cells, 0 lots with a centre inside a road footprint, 0 lots beyond 4 cells + half road width, 0 lots missing frontage",
+    "Full §5 API present and correct (paint, paintRect, lotsFor, setOverlayVisible) plus useful extras; zones:changed payload includes version, reason and the changed cell list",
+    "One merged terrain-conforming mesh, negligible cost (~29k tris); perf comfortably inside budget and no console errors from this module",
+    "Zone hues are distinct and immediately readable at district range; the deliberately unzoned block reads as bare grid"
+  ],
+  "issues": [
+    {
+      "severity": "blocker",
+      "description": "The overlay gets BRIGHTER at night instead of dimming with the scene. In shots/critic/zoning/w2_zoning_hero_21.png the entire frame is a black landscape with luminous pastel plates floating on it - the zoning tiles are the brightest surface in a 21:03 night shot, brighter than the street lamps. CS2 tints the ground and keeps the world's own lighting (reference/cs2_01.jpg, purple office block).",
+      "evidence": "src/modules/zoning/ZoneOverlay.js:201  `col *= 1.0 + 0.30 * uNight;` - nightFactor is used only to LIFT brightness; nothing else in the shader reads scene lighting.",
+      "suggestion": "Invert the response: multiply the composited colour by roughly mix(1.0, 0.35, uNight) and drop alpha ~20% at night, or better, sample engine.globalUniforms / a cheap sun-dot term so the tint follows the ground's shading. Keep the frontage bar and grid lines at near-full strength so readability survives while the fill goes dark."
+    },
+    {
+      "severity": "blocker",
+      "description": "Terrain punches through the overlay on undulating ground. In shots/critic/zoning/w2_zoning_detail_13.png the blue com-high tiles at bottom-centre (approx x 480-680, y 420-560) have irregular green/dirt blobs erupting in the middle of otherwise solid tiles, and the blue block on the slope at top-right (approx x 600-780, y 60-260) is shredded into streaks of bleed-through. It reads as a broken decal, not a conforming overlay.",
+      "evidence": "src/modules/zoning/ZoneOverlay.js:286-301 - only 3x3 vertices per 8 m cell (4 m sample spacing) and a lift of just 0.13 m (+0.16 m at the kerb). Any sub-4 m terrain bump taller than 13 cm pokes through; polygonOffset -2/-4 cannot fix real geometric interpenetration.",
+      "suggestion": "Raise to 5x5 vertices per cell (2 m spacing) and increase the base lift to ~0.35 m, or sample the terrain max over the cell footprint and lift each vertex to that. Cheapest robust fix: render the overlay with depthTest false into a second pass ordered after opaque terrain, or bake it as a decal projected in the terrain material."
+    },
+    {
+      "severity": "major",
+      "description": "The fill reads as opaque vinyl, not a tint. In shots/critic/zoning/w2_zoning_hero_13.png the whole suburban loop (upper left) and the res-high block at centre are flat sheets of colour with essentially no grass texture, no terrain variation and no sun/shadow gradient, while the unzoned grass right next to them is richly shaded. The overlay is compositing source-over onto its own colour rather than modulating the ground.",
+      "evidence": "ZoneOverlay.js is a pure unlit ShaderMaterial with NormalBlending; the fill layer plus the 0.05 luminance-lift layer (line 134) writes colour that is independent of what is underneath, so ground albedo and shading are lost.",
+      "suggestion": "Switch the fill to MultiplyBlending (or a custom blend: dst * mix(vec3(1.0), hue, k)) so grass, dirt, tree shadows and the sun terminator read straight through, and keep the source-over pass only for the lines, frontage bar and previews. Target the look of the purple tint in reference/cs2_01.jpg where every facade panel survives the overlay."
+    },
+    {
+      "severity": "major",
+      "description": "Line hierarchy is inverted: the internal cell gutters are near-white and thick, so a zoned block reads as white grout with colour in between (see w2_zoning_detail_13.png, the res-low field on the left, and every block in the hero). The required 'bright road-side edge' does not win - the frontage bar at the kerb is the same value as the interior gutters, so the road side is not readable at district range.",
+      "evidence": "ZoneOverlay.js:196-197 draws vec3(1.0) at 0.22 tile plus a 0.92-strength white band; the gutter/rim layers use similarly high white values, giving cell seams comparable weight to the frontage.",
+      "suggestion": "Drop internal cell seams to a dark, low-alpha line (0.10-0.15 alpha, tinted with the zone hue, not white), keep parcel borders mid, and reserve pure white above 0.7 alpha exclusively for the frontage bar and the hover/brush cursor. Widen the gutter inset so the colour field, not the grout, dominates."
+    },
+    {
+      "severity": "major",
+      "description": "51% of painted cells never become a lot: zones.api.stats() reports zonedCells 2851 but lotCells 1386 across 238 lots. The overlay paints colour on 1465 cells that no building can ever occupy, so the player is shown buildable land that is not buildable and buildings.api receives half the coverage it should.",
+      "evidence": "Live probe of ?showcase=zoning&seed=7: {cells:3603, blocked:1395, conflicts:1345, lots:238, lotCells:1386, zonedCells:2851}. Root cause is the per-type depth cap (e.g. res-low depth max 3 of the 4 available rows) plus width remainders leaving 1-cell-deep strips that cannot form a 2x2.",
+      "suggestion": "Either allow a trailing 1-cell-deep row to be absorbed into the adjacent lot's depth (up to the 4-cell max) so the whole strip is consumed, or visually distinguish unlotted cells in the overlay (desaturate / hatch them) so the overlay stops promising land it cannot deliver. Report lotCells/zonedCells coverage in stats() and target >90%."
+    },
+    {
+      "severity": "minor",
+      "description": "res-low (#8fd95a) barely separates from the grass it sits on. In w2_zoning_hero_13.png the suburban loop and the whole southern half of the east grid read as 'slightly minty grass' rather than a zone, while ind/office/com pop strongly - the palette is unbalanced against this biome.",
+      "evidence": "src/modules/zoning/ZoneTypes.js:9 - res-low #8fd95a, a pale yellow-green almost isoluminant with the terrain albedo at midday.",
+      "suggestion": "Push res-low toward a cooler, more saturated green with a clear value offset from the terrain (CS2 uses a distinctly desaturated mint against warm grass), or add a subtle darkening vignette inside each res-low parcel so the field edge is legible without raising fill alpha."
+    },
+    {
+      "severity": "minor",
+      "description": "The hover highlight and the brush preview do not read as interactive UI. In w2_zoning_detail_13.png the showcase's 3x2 com-high brush preview at bottom-centre is indistinguishable at a glance from ordinary painted com-high tiles, and the hovered lot cannot be located at all.",
+      "evidence": "showcase.js:82-85 sets setHover near (150,122) and setBrush({121,107,145,131},'com-high'); neither produces a distinct cursor treatment in the rendered frame.",
+      "suggestion": "Give the brush a hard white 2-3 px outline around the whole rect footprint plus a subtle pulse, and give hover a bright rim on the whole LOT (not the cell) as CS2 does, so both sit clearly above the painted-zone layer in the value hierarchy."
+    },
+    {
+      "severity": "minor",
+      "description": "Block boundaries are ragged 'swiss cheese' rather than clean rectangles with square notches at junctions - visible on the office block (upper right) and the suburban loop in w2_zoning_hero_13.png and w2_zoning_hero_21.png, where the outer edge staircases in and out and interior holes appear mid-block.",
+      "evidence": "Live stats: conflicts 1345 cells dropped by the junction independent-set pass and blockedSlope 217, out of 3603 surviving cells - a very high drop rate for a district this size.",
+      "suggestion": "After the independent-set pass, run a fill step that re-admits a dropped cell when all four of its in-frame neighbours survived (it cannot be a junction overlap), and soften slope rejection to use the cell's mean slope rather than a corner test, so blocks end in straight lines like CS2."
+    }
+  ],
+  "screenshots": [
+    "shots/critic/zoning/w2_zoning_hero_13.png",
+    "shots/critic/zoning/w2_zoning_detail_13.png",
+    "shots/critic/zoning/w2_zoning_hero_21.png",
+    "shots/critic/zoning/w2_zoning_detail_21.png"
+  ],
+  "perf": { "fps": 82.1, "drawCalls": 1027, "triangles": 3830470, "consoleErrors": 0 }
+}

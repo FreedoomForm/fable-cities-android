@@ -1,0 +1,72 @@
+{
+  "score": 7.5,
+  "pass": false,
+  "summary": "Roads r1: contract complete (build/remove/types/snap/nearest/sampleEdge/segmentsInRadius/laneGraph all on world.roads.api), zero console errors, perf well in budget (958-1072 draw calls, 3.3-4.9 M tris, >100 fps). Network and junction geometry are genuinely good: corner radii, crosswalks, stop lines, avenue turn arrows, median island noses, 2x3-lane highway with shoulders and lamps, seamless curves, shader-based markings (no z-fighting), partial rebuild via dirty sets, conformPath/conformDisc consumed with flattenRect fallback. What keeps it at good-indie rather than AAA is material realism: local/avenue asphalt reads near-black in shade and charcoal in sun (CS2 is mid-grey with visible aggregate), the kerb has no readable height or gutter shadow, markings are pristine bright white, and the night lamps are cold white blobs over a flat grey wash with no specular response. Embankment skirts still show a pale halo along the avenue and terrain cuts next to roads are raw steep dirt.",
+  "perf": { "fps": 274, "drawCalls": 1072, "triangles": 4899466, "consoleErrors": 0 },
+  "screenshots": [
+    "shots/critic/roads/r1_roads_hero_13.png",
+    "shots/critic/roads/r1_roads_detail_13.png",
+    "shots/critic/roads/r1_roads_detail_21.png",
+    "shots/critic/roads/r1b_roads_highway_13.png",
+    "shots/critic/roads/r1b_roads_avenue_13.png",
+    "shots/critic/roads/r1b_hw_av_combo.png"
+  ],
+  "strengths": [
+    "Full section-5 API present incl. laneGraph (cached by version, lane + pedestrian connections); extras surfaceHeight/isOnRoad useful to terrain/effects",
+    "Junction geometry: rounded kerb corners, continental crosswalks on every approach, stop lines, avenue turn arrows, median island noses carried across 2-way continuations (r1b_roads_avenue_13.png)",
+    "Highway: 2x3 lanes, dashed lane lines, solid edge lines, hard shoulder, Jersey barrier profile, lamps; seamless along the curve (r1b_roads_highway_13.png)",
+    "Markings are shader-generated on the asphalt mesh: no decal geometry, no z-fighting, crisp at 60 m",
+    "Terrain conform via conformPath once per segment + conformDisc per node (RoadNetwork.js:611-627) with feature-detected flattenRect fallback; renderer rebuilds only dirty segments/nodes and their tiles (RoadRenderer.js:55-73)",
+    "Zero console errors/warnings across 6 shots; roads init 147-167 ms; perf far inside budget"
+  ],
+  "issues": [
+    {
+      "severity": "major",
+      "description": "Local/avenue asphalt is far too dark: in tree shade the junction centre measures RGB ~18/23/36 (near black) and sun-lit lanes ~68/73/79; the whole local grid reads as black ribbons with glowing white edges in the hero. CS2 asphalt is a mid grey with visible aggregate and tonal variation.",
+      "evidence": "shots/critic/roads/r1_roads_detail_13.png centre junction and bottom road; shots/critic/roads/r1_roads_hero_13.png entire grid",
+      "suggestion": "Raise effective albedo of asphalt_local/asphalt_avenue (asphalt albedo mean is 65 sRGB, tint 0xcfc9bf keeps it ~52): target ~105-125 sRGB in sun; add a low-frequency albedo variation and an aggregate detail normal at 0.4-0.6 m tiling; drop roughness from 0.93 to ~0.82-0.86 so the sun gives a faint sheen; make sure wheel-track wear is visible as slightly darker (not black) bands."
+    },
+    {
+      "severity": "major",
+      "description": "Kerbs have no readable height: asphalt->sidewalk is a thin lighter stripe with no shadow/AO line and no visible gutter, so the road reads as a flat painted surface. In CS2 the kerb face and gutter are a clear dark contact line.",
+      "evidence": "shots/critic/roads/r1_roads_detail_13.png all four approaches; shots/critic/roads/r1b_hw_av_combo.png right half avenue edges",
+      "suggestion": "Darken the kerb face (curb material tint 0xbdbab2 -> ~0x8a8883) and bake a per-vertex AO gradient in the 0.4 m gutter strip (0.5-0.6 darkening at the kerb foot, fading over 0.4 m); increase kerb visual height to 0.15-0.18 m with a 2-3 cm chamfer top highlight so it catches sun."
+    },
+    {
+      "severity": "major",
+      "description": "Night look is flat: lamp pools are a neutral grey wash with no specular/anisotropic highlight on the asphalt, lamp heads are pure-white spheres (several appear detached from poles since poles vanish into black), colour temperature is cold white instead of warm street lighting.",
+      "evidence": "shots/critic/roads/r1_roads_detail_21.png blobs at ~(250,130), (545,245), (615,190); whole junction wash",
+      "suggestion": "Warm the lamp colour (~0xffd7a3, 3000-3500 K), add a Blinn/GGX-style specular term to the light-pool function using the asphalt roughness map so pools get a bright core plus a streak towards the camera, shrink the emissive head and model a small fixture cap; dim the ambient pool so the crosswalk stripes are not the brightest thing in frame."
+    },
+    {
+      "severity": "minor",
+      "description": "Lane markings are pristine pure white, thick (~0.3 m) and uniformly sharp; no wear, no dirt, giving a toy/board-game contrast against the black asphalt.",
+      "evidence": "shots/critic/roads/r1_roads_detail_13.png dashed centre line; r1_roads_hero_13.png edge lines glowing at 400 m",
+      "suggestion": "Off-white 0xe6e3d8, 0.12-0.15 m width for local lines (0.15-0.2 m edges), multiply by a wear noise (0.55-1.0) that increases in wheel tracks and near junctions; consider a yellow centre line variant for local roads like CS2 (cs2_04.jpg)."
+    },
+    {
+      "severity": "minor",
+      "description": "Embankment skirt still shows a pale green halo along both sides of the avenue in the hero shot; the alpha fade lightens rather than matches the terrain.",
+      "evidence": "shots/critic/roads/r1_roads_hero_13.png bottom-left avenue ~x 0-250, y 500-620",
+      "suggestion": "Drop skirt tint from 0xe4e2d6 to the terrain's actual grass tint (sample terrain material color) and start the alpha fade at the kerb foot so the skirt is never fully opaque; alternatively let terrain own the shoulder and only draw a 0.6 m verge strip."
+    },
+    {
+      "severity": "minor",
+      "description": "Highway median barrier reads as a flat pale stripe at 200 m with no shadow or height; guard rails are invisible at showcase distance so the highway silhouette is flat.",
+      "evidence": "shots/critic/roads/r1b_hw_av_combo.png left half, centre strip along the highway",
+      "suggestion": "Darken barrier_base further, ensure the 1 m Jersey barrier casts CSM shadows and has a lighter top highlight; make the guard rail 0.3 m tall galvanised metal with metalness 0.9/roughness 0.4 and posts every 4 m so it reads as a bright line from the air."
+    },
+    {
+      "severity": "minor",
+      "description": "Terrain conform leaves raw steep dirt/rock cut slopes directly beside roads on hills; looks like a landslide rather than a graded verge.",
+      "evidence": "shots/critic/roads/r1_roads_detail_13.png top centre above the junction; r1b_hw_av_combo.png right half ~(1150-1250, 300-340)",
+      "suggestion": "Increase conformPath falloff from 8 m to 12-16 m where the local grade exceeds ~15 %, or emit short retaining-wall/rip-rap pieces along cuts deeper than 2 m (CS2 does this automatically)."
+    },
+    {
+      "severity": "minor",
+      "description": "Dead-end caps and the 'path' type were not visually verified in this pass (read budget); traffic-view tinting and selection highlight also unverified.",
+      "evidence": "no shot read; builder's shots/critic/roads/r2b_roads_deadend_13.png exists",
+      "suggestion": "Next critic pass should shoot roads_deadend and roads_path at 13 and the traffic info view once the traffic module writes segment.traffic."
+    }
+  ]
+}

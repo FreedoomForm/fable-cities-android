@@ -1,0 +1,12 @@
+{
+  "id": "modular_street_seating",
+  "name": "Modular Street Seating",
+  "type": "models",
+  "authors": {
+    "Stuart Attenborrow": "All"
+  },
+  "license": "CC0",
+  "source": "https://polyhaven.com/a/modular_street_seating",
+  "res": "1k",
+  "fmt": "gltf"
+}

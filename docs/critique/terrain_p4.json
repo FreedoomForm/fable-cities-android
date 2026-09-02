@@ -1,0 +1,75 @@
+{
+  "score": 5.0,
+  "pass": false,
+  "summary": "Real progress on tone (lum_p10 0.0098 vs target 0.010, haze far/near 2.07 vs 2.15, water Y 0.074 down from 0.30) but the module fails on the three things the judges named loudest. The night preset is now an almost pure-black frame (median Y 0.0025, 96.7% of pixels under Y 0.01, vs CS2 cs2_10 median 0.057 / 7.7%) - the shore-band fix was applied by crushing the whole night hemisphere term. Black silhouettes got worse, not fixed: a hero forest clump is 20.4% pure black (brief cited 9.8%) and shaded mountain rock is 25.3% pure black, where every CS2 reference frame measures 0.00%. And at 16:15 with the sun near 30 deg elevation not one tree, tuft or rock casts a shadow onto the terrain, so everything is pasted on. Vegetation chroma is still ~3x reference and water ~2.2x under an identical mask; the correction so far was darkening (okL_mean 0.342 vs target 0.44), not desaturating. Perf and hygiene are clean: 549-872 draw calls, 2.7-5.4M tris, zero console errors, terrain module ok.",
+  "issues": [
+    {
+      "severity": "blocker",
+      "description": "Night preset renders an effectively black frame. shots/critic/terrain/p4_terrain_night_21.png, entire frame: median Y 0.0025, okL_mean 0.149, 96.7% of pixels below Y 0.01. Land is an unreadable dark speckle field, the water body is indistinguishable from the sky, there is no shoreline, no silhouette separation, no moon, no stars, no horizon gradient. Reference reference/cs2_10.jpg (CS2 night waterfront) measures median Y 0.0568, okL_mean 0.383, only 7.7% below Y 0.01 - we are 23x darker in median. The brief asked to kill the pale shoreline band and give the land moonlit modelling; the band was killed by suppressing everything.",
+      "evidence": "night median Y 0.00250 / okL 0.149 / 96.7% < 0.01  vs  cs2_10 0.0568 / 0.383 / 7.7%. Land crop (100,300)-(1100,600) Ymed 0.00336, max 0.0316.",
+      "suggestion": "Separate the shore-band suppression from the global night ambient. Restore a moon key (warm-neutral, elev 20-30 deg, casting real shadows) plus a cool 214 deg sky-fill floor so lit land lands at Y 0.02-0.05 and water at Y 0.05-0.07 like cs2_10; keep the 6x suppression only on the shoreline foam/wet term, not on the hemisphere."
+    },
+    {
+      "severity": "blocker",
+      "description": "Pure-black foliage and rock is worse than before the pass, not fixed. shots/critic/terrain/p4b_terrain_hero_16h2.png, forest clump at x 230-470 y 400-530: 20.4% of pixels are Y<0.002 (the brief cited 9.8%). shots/critic/terrain/p4b_terrain_mountain_16h2.png, shaded peak faces x 400-900 y 150-280: 25.3% pure black. Every CS2 reference frame measures 0.00% at that threshold (cs2_02, cs2_10) or 0.37% (cs2_11). The zoomed crop shows individual canopy puffs at literally zero luminance next to lit ones, which is an ambient/shadow-term bug, not artistic shading.",
+      "evidence": "hero forest clump Ymin 0.00000, p1 0.00000, 20.43% < 0.002. mtn upper 25.25% < 0.002. cs2_02 0.00%.",
+      "suggestion": "Add a hard non-zero ambient floor to both the leaf-card shader and TerrainMaterial - clamp irradiance to at least ~0.02 linear tinted at sky hue 214 deg before shadow multiply. Verify the claimed wrap-transmission + hemisphere floor actually reaches LOD0/LOD1 leaf cards (Vegetation.js) and not only the impostor path, and that the terrain shadow term is clamped rather than multiplying to 0."
+    },
+    {
+      "severity": "blocker",
+      "description": "No cast shadows from vegetation or props onto the terrain at the hero sun angle. shots/critic/terrain/p4b_terrain_hero_16h2.png at 16:15 (sun ~30 deg, shadows should run 1.7x object height): the tree clumps at x 230-470 y 400-530 and x 950-1150 y 460-520 sit on open meadow with no directional shadow at all, only a faint contact halo. shots/critic/terrain/p4_terrain_detail_17h5.png: the tree line at y 60-130 throws nothing onto the meadow behind it. Compare reference/cs2_11.jpg, where every palm and broadleaf rakes a long soft-edged shadow across the lawn. Vegetation.js:683 sets castShadow=true, so the flag is set but nothing lands.",
+      "evidence": "Vegetation.js:683 im.castShadow = shadow; lodDistances [165, 520] (Vegetation.js:513). No shadow lobes measurable on meadow scanlines y=470/500/560, x 850-1250 - variation there is tree pixels only.",
+      "suggestion": "Two likely causes: the directional shadow camera frustum/far does not cover the 520 m LOD1 band, and the alpha-tested leaf material has no customDepthMaterial carrying the same alphaMap/alphaTest - without it alpha cards cast nothing. Fix both, then re-shoot terrain_hero at 16.2 and confirm visible tree shadows on the meadow."
+    },
+    {
+      "severity": "major",
+      "description": "Vegetation is still ~3x reference chroma; the pass corrected by darkening instead of desaturating. Same green mask applied to ours and CS2: shots/critic/terrain/p4b_terrain_hero_16h2.png meadow C 0.0885 at Y 0.042, vs reference/cs2_02.jpg C 0.0296 at Y 0.073 and reference/cs2_11.jpg C 0.0378. docs/LOOK_TARGET.md row 5 asks C 0.053 at Y 0.056. The meadow reads as golf-course emerald and the mountain conifers (p4b_terrain_mountain_16h2.png x 560-880 y 320-480) are bright emerald spikes. Overall okL_mean fell to 0.342 against the 0.44 target, so the frame is now too dark AND too chromatic - the exact pairing LOOK_TARGET calls 'cartoon'.",
+      "evidence": "hero_16h2 VEG Y 0.0419 C 0.0885 hue 128; cs2_02 VEG Y 0.0726 C 0.0296 hue 126; cs2_11 C 0.0378. okL_mean 0.342 vs target 0.44.",
+      "suggestion": "Cut cover and foliage chroma ~40% toward the 74 deg hue axis (target C 0.053) while raising albedo back so lit grass lands at Y 0.055-0.070. Add per-instance hue jitter of +/-8 deg and value jitter of +/-15% so the meadow is not one colour."
+    },
+    {
+      "severity": "major",
+      "description": "Water chroma is 2.2x reference and the pale shoreline band survives in daylight, hiding any bank reflection. shots/critic/terrain/p4_terrain_detail_17h5.png, right half: water C 0.0655 vs cs2_02 0.0311 and cs2_11 0.0247 (LOOK_TARGET row 6 target 0.028). The brightest water in the frame is a soft airbrushed white band 40-70 px wide hugging the shore at x 520-640, y 150-620 - at a 34 m camera that is several metres of foam on a still river, and it reads as mist, not surf. No reflection of the dark left bank or its trees appears anywhere in the water despite the reflection-clamp removal, and there is no wet-sand darkening strip; the land/water intersection is still a hard tan seam.",
+      "evidence": "detail_17h5 WATER C 0.0678, hero_16h2 WATER C 0.0655; cs2_02 0.0311, cs2_11 0.0247. Foam band is the frame's brightest water region.",
+      "suggestion": "Narrow foam to <=2 m world width with a noise-broken, animated edge and fade it by shore-slope; add a wet-sand darkening strip inshore of it; pull water chroma to 0.028 by desaturating the body colour, not the reflection; then verify the near-bank trees are visible in the reflection at 34 m."
+    },
+    {
+      "severity": "major",
+      "description": "Mountains: hard-edged snow caps, terrace banding and lattice moire all remain. shots/critic/terrain/p4b_terrain_mountain_16h2.png x 520-840 y 120-280: snow meets rock on a crisp near-geometric line; the new contour bedding reads as horizontal stair-step terracing across the snow slopes; a dotted white zig-zag stair artifact runs along the ridge at ~x 690-720 y 205; a diagonal lattice moire is visible on the right-hand snow slopes; and the snow texture is a vertical brushed-fibre streak that reads as metal. Rock faces are charcoal to pure black with no sky-fill.",
+      "evidence": "mtn rock face crop (300,300)-(700,430) Ymed 0.0366 with 2.2% pure black; mtn upper 25.3% pure black. Zoomed 3x crop shows terracing and the ridge zig-zag.",
+      "suggestion": "Break the snow mask with two octaves of slope-and-curvature noise plus wind-scour streaks so the snowline is ragged at both 5 m and 50 m; drop contour-bedding amplitude ~3x and weight it by curvature only so it stops reading as contour lines; increase heightmap sample rate or add a normal-map detail octave on the ridge LOD to kill the zig-zag and the lattice moire; lift rock ambient off charcoal."
+    },
+    {
+      "severity": "major",
+      "description": "Tree variety is effectively one silhouette per type. Zoomed 3x crop of shots/critic/terrain/p4b_terrain_hero_16h2.png x 200-520 y 380-540: every broadleaf crown is the same mass of identical circular puffs at the same scale, with no trunk, no branch break-up and no hue variation - it reads as broccoli. On shots/critic/terrain/p4b_terrain_mountain_16h2.png x 560-880 y 320-480 the conifers are evenly sprinkled lone spikes across the whole slope, so the claimed two-octave Worley stand/copse distribution is not reaching the mountain scatter.",
+      "evidence": "3x crop shows repeated puff-cluster crowns; mountain conifers at even spacing with no clustering.",
+      "suggestion": "Ship at least three broadleaf crown silhouettes and two conifer silhouettes with per-instance scale 0.7-1.4x and hue jitter, expose a visible trunk at LOD0, and apply the Worley stand mask to the conifer scatter as well as the broadleaf one."
+    },
+    {
+      "severity": "minor",
+      "description": "Near-camera undergrowth still reads as repeated identical sprites rather than turf. shots/critic/terrain/p4_terrain_detail_17h5.png x 0-520 y 200-700: a bed of near-identical straw-yellow spiky rosettes over bare olive ground, with only two silhouettes discernible rather than the six claimed, no continuous low grass mat between them, and no contact darkening or AO at any base. Bare tan trunk stubs with no crown stand at x 370-460 y 155-190.",
+      "evidence": "detail_17h5 near-field: two dominant sprite shapes, uniform straw-yellow hue, no base darkening; trunk stubs without canopy at x 370-460 y 155-190.",
+      "suggestion": "Add a dense short grass-mat card layer under the tufts so ground is never bare, bake a soft AO gradient into the bottom 20% of every tuft card, widen hue jitter into green as well as straw, and check the trunk instances whose crown is missing."
+    },
+    {
+      "severity": "minor",
+      "description": "Ground still has no readable geology. shots/critic/terrain/p4b_terrain_hero_16h2.png meadow: fine speckle noise only - no rock outcrop, dirt patch, path, gully or scree at any scale. shots/critic/terrain/p4b_terrain_mountain_16h2.png x 560-880 y 320-480: the drainage/ridge network reads as soft grey-purple airbrush smudge, and chalk-white fall-line streaks are reduced but still present at ~x 590-680 y 580-660.",
+      "evidence": "3x crop panel 3 shows grey wash bands and pale vertical fall-line streaks on the mid-slope.",
+      "suggestion": "Drive the drainage network as an albedo+roughness+normal layer swap (gravel/scree PBR set from public/assets/shared) rather than a darkening wash, and clamp the remaining pale streaks by lowering the scree specular response at grazing angles."
+    }
+  ],
+  "screenshots": [
+    "shots/critic/terrain/p4_terrain_hero_17h5.png",
+    "shots/critic/terrain/p4_terrain_detail_17h5.png",
+    "shots/critic/terrain/p4_terrain_night_21.png",
+    "shots/critic/terrain/p4b_terrain_hero_16h2.png",
+    "shots/critic/terrain/p4b_terrain_mountain_16h2.png"
+  ],
+  "systemicProgress": {
+    "materials": "Partly improved, not solved. The macro PBR band gives the meadow fine speckle and the mountain grey wash bands, so nothing is a literally flat single-colour field any more. But at 40 m (p4_terrain_detail_17h5.png) the bank between the tufts is a flat olive wash with no aggregate, pebbles, mud or wear, and at 500 m the meadow is noise, not geology. Rock has no strata, snow reads as brushed fibre. No surface yet reads as photographed.",
+    "lighting": "Not fixed - the weakest axis. Hero runs at 16:15 (sun ~30 deg) yet no tree, tuft or rock casts a shadow onto the terrain; only large-scale terrain self-shading reads. There is no contact darkening or AO at any object base. There is no cool sky-fill in shadow: 20.4% of a hero forest clump and 25.3% of shaded mountain rock are pure black (Y<0.002) where CS2 measures 0.00%. Night is a black frame at 23x below CS2 night median.",
+    "density": "Improved at close range - the 2.8x undergrowth gives a continuous near-field carpet at 34 m, and trees now group into clumps instead of even sprinkling on the meadow. Still short at range: large stretches of open meadow with nothing on them, and the mountain conifers are evenly scattered singles rather than stands.",
+    "variety": "Not fixed. One broadleaf crown silhouette (identical circular-puff cluster) and one conifer silhouette, one hue each, no visible trunks, no scale spread wide enough to read. The six claimed undergrowth atlas silhouettes read as two in the detail frame. Terrain landforms themselves are varied and are the module's strongest asset.",
+    "colour": "Mixed. Hit: lum_p10 0.0098 vs target 0.010; haze far/near 2.07 vs 2.15; water Y 0.074 inside the CS2 0.042-0.109 band, down from 0.30. Missed: vegetation C 0.0885 vs cs2_02 0.0296 / cs2_11 0.0378 (~3x, target 0.053), water C 0.0655 vs 0.0247-0.0311 (~2.2x, target 0.028), and okL_mean 0.342 vs the 0.44 target. The over-saturation was answered by darkening rather than desaturating, which is the pairing LOOK_TARGET explicitly warns reads as cartoon."
+  }
+}

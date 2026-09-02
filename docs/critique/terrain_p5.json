@@ -1,0 +1,149 @@
+{
+  "module": "terrain",
+  "pass_number": 5,
+  "date": "2026-09-02",
+  "score": 7.0,
+  "pass": false,
+  "summary": "Every per-surface roughness target in MATERIAL_TARGET.md is now met (water 0.04 / effective env 1.05, leaves 0.70 + clearcoat 0.30, impostor 0.72, undergrowth 0.85, terrain-splat 0.85 base with per-layer in-shader targets, bark 0.85), the night frame is no longer black (0.2% of pixels under Y 0.01, was 96.7%), zero console errors, all modules ok, and perf is far inside budget. But the numbers did not buy the look. Across eight frames at three hours there is not one pixel above Y 0.5, versus 1.18% in cs2_02. The water body still measures 3.2x brighter than the reference bay and reads blue-grey, not dark teal. The night preset traded a black frame for a flat grey one.",
+  "specular_verdict": "PARTIAL, and mostly not visible. Measured: water roughness 0.04, envMapIntensity 2.02 renormalised against scene.environmentIntensity 0.5187 = 1.05 effective; tree-leaves 0.70 with clearcoat 0.30 on 9 materials; whole-scene clearcoat>0 now 40 (was 1). Two specular events are genuinely visible: soft cloud reflections on the near water in terrain_detail_17h5, and a moon glitter path in terrain_hero_21. That is all. Frame stats: terrain_hero_17h5 Ymean 0.1327 p50 0.1101 p90 0.2685 p99 0.3520, fraction above Y 0.5 = 0.0000. Reference cs2_02: Ymean 0.1055 p50 0.0800 p90 0.2198 p99 0.5250, fraction above Y 0.5 = 0.0118. Our midtones are BRIGHTER than the reference and our highlights stop 33% lower, with zero highlight tail. At 19.2 the whole frame maxes at Y 0.085. No sun glint appears at any hour tested (17.5, 19.2, 21). The targets hold on paper; the specular lobe does not reach the film.",
+  "matstats": {
+    "whole_scene": {
+      "materials": 237,
+      "roughness_p10": 0.30,
+      "roughness_median": 0.72,
+      "roughness_p90": 1.00,
+      "buckets": { "lt_0.2": 18, "0.2_0.4": 20, "0.4_0.7": 55, "gte_0.7": 144 },
+      "clearcoat_gt_0": 40,
+      "roughnessMap": 94,
+      "normalMap": 115,
+      "environmentIntensity": 0.5187,
+      "exposure": 1.603,
+      "vs_target": "clearcoat >=15 MET (40). Distribution NOT met: <0.2 18 vs 35-60, 0.2-0.4 20 vs 40-70, 0.4-0.7 55 vs 60-90, >=0.7 144 vs 60-100. environmentIntensity still 0.52, spec says raise towards 1.0."
+    },
+    "terrain_module": {
+      "filter": "^(terrain|water|tree|undergrowth|foliage|leaf|leaves|grass|rock|impostor|bark)",
+      "materials": 31,
+      "roughness_p10": 0.70,
+      "roughness_median": 0.72,
+      "roughness_p90": 0.85,
+      "buckets": { "lt_0.2": 1, "0.2_0.4": 0, "0.4_0.7": 0, "gte_0.7": 30 },
+      "clearcoat_gt_0": 9,
+      "roughnessMap": 9,
+      "normalMap": 27,
+      "named": {
+        "water": { "roughness": 0.04, "metalness": 0.0, "envMapIntensity": 2.02, "effective_env": 1.048, "target": 0.04, "verdict": "MET" },
+        "terrain-splat": { "roughness": 0.85, "target": "0.85 grass / 0.95 soil", "verdict": "MET base; soil path resolves to 0.85*1.06=0.90 vs 0.95 target, 0.05 short" },
+        "terrain-splat-horizon": { "roughness": 0.85, "verdict": "MET" },
+        "tree-leaves": { "roughness": 0.70, "clearcoat": 0.30, "target": 0.70, "verdict": "MET, 9 materials" },
+        "tree-impostor": { "roughness": 0.72, "target": 0.70, "verdict": "MET within tolerance" },
+        "tree-bark": { "roughness": 0.85, "verdict": "MET" },
+        "undergrowth": { "roughness": 0.85, "target": 0.85, "verdict": "MET" }
+      }
+    }
+  },
+  "photometry": {
+    "method": "sRGB->linear, Rec.709 luma, HUD rows 0-69 and 640-719 cropped",
+    "frames": {
+      "p5_terrain_hero_17h5": { "Ymean": 0.1327, "p10": 0.0453, "p50": 0.1101, "p90": 0.2685, "p99": 0.3520, "frac_lt_0.01": 0.000, "frac_gt_0.5": 0.0000 },
+      "p5_terrain_detail_17h5": { "Ymean": 0.0775, "p10": 0.0221, "p50": 0.0613, "p90": 0.1523, "p99": 0.3152, "frac_lt_0.01": 0.009, "frac_gt_0.5": 0.0000 },
+      "p5_terrain_night_21": { "Ymean": 0.0536, "p10": 0.0210, "p50": 0.0510, "p90": 0.0890, "p99": 0.1210, "frac_lt_0.01": 0.002, "frac_gt_0.5": 0.0000 },
+      "p5_terrain_hero_21": { "Ymean": 0.0476, "p10": 0.0210, "p50": 0.0441, "p90": 0.0781, "p99": 0.1213, "frac_lt_0.01": 0.001, "frac_gt_0.5": 0.0000 },
+      "p5b_terrain_hero_19h2": { "Ymean": 0.0259, "p50": 0.0236, "p99": 0.0541, "max": 0.085, "frac_gt_0.5": 0.0000 },
+      "p5b_terrain_detail_19h2": { "Ymean": 0.0366, "p50": 0.0332, "p99": 0.1103, "max": 0.217, "frac_gt_0.5": 0.0000 }
+    },
+    "reference": {
+      "cs2_02_aerial": { "Ymean": 0.1055, "p10": 0.0101, "p50": 0.0800, "p90": 0.2198, "p99": 0.5250, "frac_gt_0.5": 0.0118 },
+      "cs2_09_golden_hour": { "Ymean": 0.1518, "p50": 0.1359, "p99": 0.5131, "frac_gt_0.5": 0.0118 },
+      "cs2_10_night": { "Ymean": 0.0596, "p50": 0.0418, "p90": 0.1110, "p99": 0.4304, "frac_lt_0.01": 0.093, "frac_gt_0.5": 0.0084 }
+    },
+    "surface_patches": {
+      "our_open_water": { "Ymean": 0.0843, "p50": 0.0749, "p99": 0.2322, "max": 0.392, "sRGB": [0.268, 0.302, 0.382] },
+      "cs2_open_bay": { "Ymean": 0.0260, "p50": 0.0147, "p99": 0.2021, "max": 0.873, "sRGB": [0.088, 0.160, 0.192] },
+      "water_ratio": "3.24x too bright by mean, 5.1x by median; peak 2.2x too DIM",
+      "our_grass": { "Ymean": 0.0704, "sRGB": [0.235, 0.288, 0.237] },
+      "cs2_vegetation": { "Ymean": 0.0483, "sRGB": [0.216, 0.232, 0.170] },
+      "grass_ratio": "1.46x too bright, and near-neutral green where the reference is yellow-green"
+    }
+  },
+  "perf": {
+    "budget": "<=2500 draw calls, <=8M triangles @1080p high",
+    "measured": { "hero_17h5": { "drawCalls": 512, "triangles": 2748784 }, "detail_21": { "drawCalls": 588, "triangles": 3496306 }, "detail_19h2": { "drawCalls": 594, "triangles": 3411442 }, "night_21": { "drawCalls": 501, "triangles": 2451554 } },
+    "verdict": "IN BUDGET, comfortably. 24% of draw-call budget, 44% of triangle budget at worst.",
+    "console_errors": 0,
+    "module_status": "all 12 modules ok, terrain init 2667 ms"
+  },
+  "issues": [
+    {
+      "severity": "blocker",
+      "title": "No specular highlight exists anywhere in the frame at any hour",
+      "where": "src/modules/terrain/Water.js:544 (sun glitter clamp); all six p5 frames",
+      "description": "Zero pixels above Y 0.5 in eight frames at 17.5, 19.2 and 21. terrain_hero_17h5 p99 is 0.352 against cs2_02's 0.525 with 1.18% of pixels above 0.5. The sun glitter lobe is hard-clamped to `min(D * Fh * Vis * ndlS, 0.9 + 1.7 * detailFade)` -- at distance detailFade goes to 0 and the sun path ceilings at 0.9, while the moon path directly below it clamps at 5.0 and is then multiplied by 1.4. The one lobe that should produce the brightest thing in a daylight frame is capped six times tighter than the moon.",
+      "fix": "Raise the sun clamp to at least the moon's ceiling and make it distance-independent: `min(D*Fh*Vis*ndlS, 6.0)`. Then add a terrain_glint camera preset whose reflection vector actually contains the sun at 17.5 so the lobe is testable, and confirm frac(Y>0.5) lands in 0.005-0.02 to match cs2_02."
+    },
+    {
+      "severity": "blocker",
+      "title": "Water body is still 3.2x too bright and is blue-grey, not dark teal",
+      "where": "src/modules/terrain/Water.js:520-527 (uDeepColor / absorb / luma desaturation), planar-RT 14% floor",
+      "description": "Open water in p5_terrain_detail_17h5 (x 800-1270, y 300-620) measures Ymean 0.0843, median 0.0749, sRGB (0.268, 0.302, 0.382). The cs2_02 open bay measures Ymean 0.0260, median 0.0147, sRGB (0.088, 0.160, 0.192). We are 3.2x too bright by mean and 5.1x by median, while our peak (0.392) is 2.2x DIMMER than the reference's (0.873). The reference water is a dark body with a bright glint; ours is a uniform mid-grey slab. The brief's 3.7x has only moved to 3.2x. `diffuseColor.rgb = mix(diffuseColor.rgb, vec3(dot(diffuseColor.rgb, luma)), 0.30)` at line 526 is deliberately desaturating the teal out of it, and the 14% planar-RT floor plus the min-albedo sky floor lift the shadowed body.",
+      "fix": "Drop uDeepColor about 3x toward linear (0.008, 0.020, 0.028), cut the luma desaturation mix from 0.30 to 0.10 so the teal survives, and lower the planar-RT floor from 14% to ~4%. Re-measure the same patch: target Ymean 0.025-0.035 and a blue:green ratio near 1.2, not 1.27 with an equal red channel."
+    },
+    {
+      "severity": "major",
+      "title": "The night preset traded a black frame for a flat grey one",
+      "where": "src/modules/terrain/TerrainMaterial.js:450 (albMin sky floor), night sky-bounce 3.5x multiplier",
+      "description": "terrain_night_21 measures Ymean 0.0536, p10 0.0210, p90 0.0890, p99 0.1210 -- 80% of the frame lives inside 0.021 to 0.089, under two stops of range, with zero pixels above 0.5 and only 0.2% below 0.01. cs2_10 at night holds p99 0.430, 0.84% of pixels above 0.5 AND 9.3% below 0.01. The 96.7%-black failure was fixed by flooding the frame with uniform ambient rather than by lighting it. Visually the night ground reads as grey static: low-frequency shading range over the grass patch is 0.140 against 0.319 for a reference vegetation patch, so all the variation left is high-frequency dither.",
+      "fix": "Cut the night sky-bounce from 3.5x to about 1.5x and let 5-10% of pixels fall back below Y 0.01 as the reference does. Spend the recovered range on the moon glitter (already working -- the glitter path in p5_terrain_hero_21 is the one good specular in the set) and on shadow shape, not on a flat lift."
+    },
+    {
+      "severity": "major",
+      "title": "Terrain albedo runs bright and desaturated against the reference",
+      "where": "src/modules/terrain/TerrainMaterial.js:262-311 (region / grass / dry tints)",
+      "description": "Our grass strip in p5_terrain_detail_17h5 measures Ymean 0.0704, sRGB (0.235, 0.288, 0.237). CS2 vegetation measures Ymean 0.0483, sRGB (0.216, 0.232, 0.170). We are 1.46x brighter and effectively neutral -- red and blue within 0.002 of each other -- where the reference is clearly yellow-green with blue 0.062 below red. This is why the wide shot reads as a flat olive card and why our p50 (0.110) sits above the reference's (0.080) despite our having no highlights.",
+      "fix": "Pull the grass and dry-cover tints down about 30% in value and rotate them toward yellow: drop the blue channel by roughly 0.05 linear and lift red slightly relative to green. Verify by re-measuring the same grass patch to Ymean 0.045-0.055 with blue at least 0.04 below red in sRGB."
+    },
+    {
+      "severity": "minor",
+      "title": "Periodic contour banding on hillsides was re-diagnosed but not removed",
+      "where": "src/modules/terrain/TerrainMaterial.js:381 (bedBand from fract(vTWorld.y*0.30))",
+      "description": "FFT of the vertical mean profile over the hero hillside (x 960-1240, y 230-430) shows a dominant period of 50 px at 17x the median spectral floor. The amplitude is small -- 0.9% of local mean -- but it is a coherent elevation-locked stripe, the classic procedural-terrain tell, and it is visible at 1:1 in the crop. The builder correctly identified this as contour bedding rather than shadow acne and then withdrew the request instead of fixing it.",
+      "fix": "Offset each band by a low-frequency noise sample before the fract, and fade bedBand to zero beyond about 200 m view distance where it can no longer resolve as strata anyway."
+    },
+    {
+      "severity": "minor",
+      "title": "Planar reflection resolves as flat polygonal blocks with straight edges",
+      "where": "src/modules/terrain/Water.js planar-RT coverage blend; p5_terrain_detail_17h5 approx x 700-1270, y 120-300",
+      "description": "The reflected cloud masses on the near water are large flat grey shapes with straight diagonal boundaries and no internal gradient. At roughness 0.04 the surface is a near-mirror, so any hard coverage cut between the planar RT and the PMREM probe shows as a visible polygon edge rather than as a reflection.",
+      "fix": "Dilate the planar-RT coverage mask by a few pixels and cross-fade to the PMREM probe over an ~8 px ramp instead of a hard cut; add a small ripple-driven jitter to the RT lookup so the boundary is broken up."
+    },
+    {
+      "severity": "minor",
+      "title": "Shoreline is a saturated ochre stripe, not a soft dithered dissolve",
+      "where": "src/modules/terrain/Water.js foam / wet-shore band; p5_terrain_detail_17h5 shoreline",
+      "description": "The land-water transition reads as a distinct mustard-ochre rim of roughly constant width rather than a dissolve. At night the same band inverts into a hard near-black outline tracing the whole river (visible in p5_terrain_hero_21), which reads as a rendering artifact.",
+      "fix": "Widen the dither band and modulate its width by the same noise that drives the foam, desaturate the wet-shore tint about 40%, and clamp the night value of the wet-shore layer so it cannot fall more than ~30% below the adjacent water."
+    },
+    {
+      "severity": "minor",
+      "title": "Tree trunks read as flat untextured beige cylinders",
+      "where": "tree-bark material; p5_terrain_detail_17h5 near-field trunks",
+      "description": "matstats reports tree-bark carries both a roughnessMap and a normalMap at roughness 0.85, but in the near-field detail frame the trunks are uniform pale beige with no visible grain, no vertical break-up and no darkening where they meet the undergrowth. They are the least convincing element in an otherwise good foliage pass.",
+      "fix": "Raise the bark normal-map strength and add a vertical value gradient plus contact darkening at the base; the albedo is also too light -- pull it 25% darker so it does not out-value the leaves above it."
+    },
+    {
+      "severity": "minor",
+      "title": "Scene-wide roughness distribution target is unreachable while terrain owns 30 matte surfaces",
+      "where": "docs/MATERIAL_TARGET.md target distribution vs terrain per-surface targets",
+      "description": "The spec asks the whole scene to land >=0.7 matte at 60-100 materials. Terrain alone contributes 30 materials at or above 0.7, and every one of them is AT its own per-surface target (leaves 0.70, grass 0.85, soil 0.95, bark 0.85). The whole scene currently sits at 144. Terrain cannot help close that gap without violating the per-surface table.",
+      "fix": "Reconcile the spec: either exclude vegetation and ground from the distribution target, or restate the target as buildings-and-vehicles-only. Terrain should not be re-tuned against a number it is forbidden to move."
+    }
+  ],
+  "screenshots": [
+    "shots/critic/terrain/p5_terrain_hero_17h5.png",
+    "shots/critic/terrain/p5_terrain_detail_17h5.png",
+    "shots/critic/terrain/p5_terrain_night_21.png",
+    "shots/critic/terrain/p5_terrain_hero_21.png",
+    "shots/critic/terrain/p5b_terrain_hero_19h2.png",
+    "shots/critic/terrain/p5b_terrain_detail_19h2.png",
+    "reference/cs2_02.jpg"
+  ]
+}

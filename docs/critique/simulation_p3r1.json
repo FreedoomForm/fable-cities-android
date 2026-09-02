@@ -1,0 +1,82 @@
+{
+  "score": 7.8,
+  "pass": false,
+  "summary": "The simulation MODEL is a pass: contract complete (api.setSpeed/setTax/tick/stats + fastForward/setInfoView/showHud; world.time, world.economy per-week, world.services.api), deterministic across 6 cold loads (pop 1,783, money 78,400 every time), zero console errors, and the economy now reads (78,400 treasury, +471/wk, 60k milestone reward) - open issue 6 fixed. Service buildings are no longer grey boxes: the fire station, school and power plant have signage, parapets, roof plant, glazed strips, aprons with bay markings, hedges and hydrants. Info view is genuinely fixed for magnitude and now opens a live legend panel. But every single screenshot of a service site carries a dashed white tool-ghost line (confirmed: it disappears when 'tools-overlay' is hidden), service buildings are completely unlit at night while the neighbouring buildings-module stock glows, the cooling tower is a featureless white shell, staff cars are toy boxes, and 8 service sites cost 581 draw calls. Against cs2_04 the material and night-lighting gap is obvious.",
+  "screenshots": [
+    "shots/critic/simulation/p3r1_simulation_hero_13.png",
+    "shots/critic/simulation/p3r1_simulation_detail_13.png",
+    "shots/critic/simulation/p3r1_simulation_detail_21.png",
+    "shots/critic/simulation/p3r1_simulation_night_21.png",
+    "shots/critic/simulation/p3r1b_simulation_infoview_13.png",
+    "shots/critic/simulation/p3r1b_simulation_fire_apron_13.png",
+    "shots/critic/simulation/p3r1b_simulation_school_13.png",
+    "shots/critic/simulation/p3r1b_simulation_power_13.png",
+    "shots/critic/simulation/p3r1c_fireinfo.png",
+    "shots/critic/simulation/probe2.png"
+  ],
+  "perf": { "drawCalls": 2564, "triangles": 9523882, "consoleErrors": 0 },
+  "strengths": [
+    "Contract complete and verified in source: api.setSpeed/setTax/tick/stats plus fastForward/setInfoView/showHud; world.time, world.economy (period 'week'), world.services {api,list,types,version} all written by simulation.",
+    "Deterministic: six independent cold loads all report population 1,783, money 78,400/78,401, 224 buildings, 8 services. Zero console errors and zero warnings in every log.",
+    "Economy is now legible and consequential - 78,400 treasury, +471/week, week-9 budget notification (income 8,226 / expenses 7,914 / +312 vs last week), 60,000 milestone reward. Open issue 6 fixed.",
+    "Info-view magnitude encoding fixed: fire view now runs a green-served to salmon-unserved ramp over a desaturated city instead of a uniform red wash, and the water view opens a real legend panel with live capacity/demand/supply numbers (p3r1b_simulation_infoview_13.png).",
+    "Service buildings read as real civic architecture at mid distance: fire station with hose tower, signed fascia, roll-up bays, roof HVAC, parapet coping and downpipe; L-shaped school with sports court, canopy and buses; power plant with switchyard, banded stacks and plumes.",
+    "Service sites now sit flush on flat ground with kerbs, aprons, lane markings, hedges and hydrants - the R2 dirt-scar/plinth issue (open issue 2) is fixed."
+  ],
+  "issues": [
+    {
+      "severity": "blocker",
+      "description": "A dashed white line is drawn across every service site in every frame - the tools placement ghost left behind by the showcase's eight api.place() calls. showcase.js:130 clearToolGhost() runs but does not clear it. Most damaging at night, where the dashes are the brightest thing in the shot.",
+      "evidence": "shots/critic/simulation/p3r1b_simulation_fire_apron_13.png (dotted line x 630-880, y 365-410 across the apron); p3r1_simulation_detail_21.png (glowing dashes x 405-750, y 405-495); p3r1b_simulation_school_13.png (x 350-870, y 355-480); p3r1c_fireinfo.png (white rect x 625-670, y 335-420). Proof of attribution: shots/critic/simulation/probe2.png is the identical apron shot with --eval hiding the 'tools-overlay' group - the line is gone and draw calls drop by exactly 1 (2394 -> 2393). sceneSummary reports exactly one LineSegments in the scene.",
+      "suggestion": "clearToolGhost() is called synchronously right after place(); the ghost is (re)created later. Re-run it after a frame - requestAnimationFrame(() => clearToolGhost()) plus once on the first 'services:changed' after the last place - and if tools' debugPreview(null) still leaves the LineSegments alive, log the exact object in docs/requests/tools.md and ask tools to hide the ghost whenever world.tool.active !== 'service'. Do not ship a screenshot with it in frame."
+    },
+    {
+      "severity": "major",
+      "description": "Service buildings have no night lighting of their own. At 21:00 the fire station is a dark silhouette: the FIRE STATION sign is unlit, the apparatus bays and apron are unlit, the upper windows are flat opaque tan cards with no glow or bloom, and the parked engines have no marker lamps despite the builder's claim. The buildings module's residential stock 20 m away glows warmly, so the service block reads as switched off.",
+      "evidence": "shots/critic/simulation/p3r1_simulation_detail_21.png - sign band x 540-660 y 358-372 is dark red; bay doors x 420-760 y 380-460 unlit; window cards x 640-760 y 355-395 and x 440-500 y 340-370 are flat tan with no halo; trucks x 415-600 y 405-495 are grey lumps. Compare the lit blocks at x 640-1000 y 60-260 in the same frame, and reference/cs2_08.",
+      "suggestion": "In visuals.js, drive three night terms off world.env.nightFactor: (1) emissive on the sign geometry (warm white, ~2.0 intensity, on LAYER_NO_AO so it blooms); (2) a wall-pack / soffit emissive strip over each bay door plus one dim PointLight per site aimed at the apron; (3) raise window emissive to the same 2700 K curve the buildings module uses so the panes glow instead of reading as opaque cards. Add two small emissive quads (amber marker lamps) to each apparatus recipe in vehicles.js."
+    },
+    {
+      "severity": "major",
+      "description": "The power-plant cooling tower is a featureless smooth white hyperboloid - no concrete panel seams, no vertical shell ribbing, no weather staining, no support columns or air inlet at the base (it sinks straight into the ground), and the plume is a small detached cotton puff offset to the left of the rim rather than a column rising from it. It is the single most programmer-art object in the module.",
+      "evidence": "shots/critic/simulation/p3r1b_simulation_power_13.png - tower x 480-600 y 200-390; plume x 505-575 y 150-215; base/ground join x 490-590 y 370-390. Compare reference/cs2_06 cooling towers.",
+      "suggestion": "In recipes.js give the tower a tiling concrete texture with horizontal lift-line seams and vertical rib normals, a dirt/streak gradient darkening the lower third, and a ring of ~24 instanced X-columns with a shadowed inlet gap at the base (1/6 of tower height). Move the plume emitters to the rim centre, widen the spawn disc to ~0.8x rim radius, and give them upward drift so the plume rises as a column."
+    },
+    {
+      "severity": "major",
+      "description": "The eight service sites cost 581 draw calls - 30% of the whole 1,919-call hero frame - while the entire rest of the city (224 buildings, 87 roads, 306 vehicles, terrain, trees) uses 1,338. That is ~73 calls per service building against a 2,500-call budget that must also carry the full demo city.",
+      "evidence": "shots/critic/simulation/p3r1_simulation_hero_13.png: 1,919 calls. shots/critic/simulation/probe4.png: identical camera with --eval hiding 'service-buildings'/'standin-buildings'/'services-infoview' -> 1,338 calls, 3.84M tris (vs 4.59M). Same delta at the detail camera: 2,564 -> 1,996 calls.",
+      "suggestion": "Merge each site's static geometry into one BufferGeometry per material (walls, glazing, roof, ground) with mergeGeometries at build time, and instance the repeated kit (roof HVAC, bollards, lamps, hedges, hydrants, bay doors) across ALL sites into a handful of shared InstancedMeshes rather than per-site meshes. Target under 12 draw calls per site. Note: the 8.7-9.5M triangle counts in the close-up shots are NOT simulation's - 8.78M remains with simulation hidden."
+    },
+    {
+      "severity": "major",
+      "description": "Vehicles are toy-grade at close range. The staff pickup on the fire apron is a plain white box with a black window band and four black discs. The fire engines have flat dark disc wheels with no rim, hub or wheel arch, no mirrors, no headlights, no grille and no front bumper.",
+      "evidence": "shots/critic/simulation/p3r1b_simulation_fire_apron_13.png - white pickup x 1070-1170 y 310-405; engine wheels x 380-470 y 355-395 and x 500-660 y 375-410; engine cab front x 365-420 y 300-370. Compare reference/cs2_05 parked cars at a similar distance.",
+      "suggestion": "In vehicles.js: cut wheel arches into the body (a scaled cylinder boolean or a simple recessed panel), give wheels a two-tone tyre + light rim disc with 5 spoke holes, and add four small quads per vehicle - mirrors, headlight lenses (emissive at night), a dark grille and a chrome bumper strip. The staff car should not reuse the box massing at all; give it a windscreen rake, a bonnet step and a roofline taper."
+    },
+    {
+      "severity": "minor",
+      "description": "Fire info view paints undeveloped terrain, forest and the river bank with a coarse salmon hatch, and draws the station radius as a fat soft pink arc that reads as a lens artifact. Only the water view gets a legend panel (INFO_PRESET_VIEW defaults to 'water' because that is the one view the HUD catalogue carries), so fire/police/health/education still have no in-scene legend - the R2 complaint is only half closed.",
+      "evidence": "shots/critic/simulation/p3r1c_fireinfo.png - hatch over wilderness x 250-500 y 60-200 and x 400-1000 y 560-700, over the river bank x 0-200 y 400-700; soft radius arcs x 0-400 y 200-700 and x 950-1280 y 100-700; no legend panel anywhere in frame. Compare reference/cs2_07, which tints only entities and leaves terrain plain grey.",
+      "suggestion": "Clip the unserved hatch to the same developed mask the served wash already uses (or to zoned + roaded cells), fade it to zero beyond ~40 m of the mask edge. Draw the radius as a 2 px crisp ring with a 6 px inner glow instead of a 10 px soft band. Then write a docs/requests/ui.md entry asking the HUD to carry the other five coverage views, and until it lands render a minimal in-scene legend from simulation for any view the HUD does not own."
+    },
+    {
+      "severity": "minor",
+      "description": "R2 open issue 3 (scale/progression) is still open. The HUD reads 'LARGE VILLAGE / 1,783 residents' over a downtown of roughly ten 12-20 storey towers plus dozens of 6-10 storey blocks. A CS2 Large Village is detached houses; residential capacity of 2,034 is not credible for that skyline.",
+      "evidence": "shots/critic/simulation/p3r1_simulation_hero_13.png - HUD badge x 20-180 y 10-50 vs towers x 430-700 y 190-460.",
+      "suggestion": "Either drop the showcase downtown to 4-6 storeys and keep 1,783 residents, or fast-forward further (about 25-30 weeks) so the population matches the built stock - a 15-storey tower block alone is 120+ residents, so this skyline implies 8-12k. Simplest honest fix: raise the showcase target population and let the milestone chain land on 'Town'/'City'."
+    },
+    {
+      "severity": "minor",
+      "description": "Service-site ground and planting are still flat. The claimed mown-stripe lawn shader is not visible even at 46 m - lawns read as one plastic mid-green; hedges are extruded boxes with a noise texture and no leaf silhouette; there is no site fence, flagpole or signage pole; brick walls carry no course or normal detail at close range.",
+      "evidence": "shots/critic/simulation/p3r1b_simulation_fire_apron_13.png - lawn x 950-1280 y 400-620 and x 60-330 y 380-620; hedge wall x 1180-1240 y 340-570; brick x 420-900 y 160-380. shots/critic/simulation/p3r1b_simulation_school_13.png - front lawn x 150-450 y 470-570. Compare reference/cs2_04, where hedges have leaf silhouettes, lawns have mow direction and shadow gradient, and every lot has a fence.",
+      "suggestion": "Raise the mow-stripe contrast to about 8% albedo delta with a 2.5 m period and rotate it per lot; give hedges an alpha-tested leaf card shell or at least a noisy displaced top edge so the silhouette breaks; add an instanced chain-link or picket run along each site boundary plus a flagpole and a pole-mounted sign at the road frontage; add a brick normal map (or a cheap triplanar course pattern) to the fire-station and school walls."
+    },
+    {
+      "severity": "minor",
+      "description": "R2 open issue 0 (stand-in massing blocks) cannot be verified and the builder's standins.js work is dead code in the showcase: the buildings module is ok and supplies 224 buildings, so the syntheticBuildings fallback never runs. The report claims it as fixed without saying it is unexercised.",
+      "evidence": "shot logs report moduleStatus.buildings ok and buildings: 224; showcase.js comment 'used only when no buildings module exists'.",
+      "suggestion": "Either drop the claim, or add a verification path (?standins=1 / focus=simulation) so the fallback can actually be shot and reviewed, and say plainly in the report which path a screenshot exercises."
+    }
+  ]
+}

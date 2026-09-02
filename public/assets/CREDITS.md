@@ -1,0 +1,59 @@
+# Asset credits
+
+All third-party assets in this project are CC0 (public domain). Sources are appended below automatically by the fetch tools.
+
+- ambientCG: Concrete034 — CC0 — https://ambientcg.com/view?id=Concrete034
+- ambientCG: Gravel022 — CC0 — https://ambientcg.com/view?id=Gravel022
+- ambientCG: PavingStones131 — CC0 — https://ambientcg.com/view?id=PavingStones131
+- ambientCG: MetalPlates006 — CC0 — https://ambientcg.com/view?id=MetalPlates006
+- ambientCG: Bricks051 — CC0 — https://ambientcg.com/view?id=Bricks051
+- ambientCG: CorrugatedSteel005 — CC0 — https://ambientcg.com/view?id=CorrugatedSteel005
+- ambientCG: Facade006 — CC0 — https://ambientcg.com/view?id=Facade006
+- ambientCG: Bark012 — CC0 — https://ambientcg.com/view?id=Bark012
+- ambientCG: Bark014 — CC0 — https://ambientcg.com/view?id=Bark014
+- ambientCG: Ground054 — CC0 — https://ambientcg.com/view?id=Ground054
+- ambientCG: Grass004 — CC0 — https://ambientcg.com/view?id=Grass004
+- ambientCG: Grass003 — CC0 — https://ambientcg.com/view?id=Grass003
+- ambientCG: Ground033 — CC0 — https://ambientcg.com/view?id=Ground033
+- ambientCG: Rock030 — CC0 — https://ambientcg.com/view?id=Rock030
+- ambientCG: Ground048 — CC0 — https://ambientcg.com/view?id=Ground048
+- ambientCG: Concrete034 — CC0 — https://ambientcg.com/view?id=Concrete034
+- ambientCG: MetalPlates006 — CC0 — https://ambientcg.com/view?id=MetalPlates006
+- ambientCG: CorrugatedSteel005 — CC0 — https://ambientcg.com/view?id=CorrugatedSteel005
+- Poly Haven: Aerial Grass Rock (aerial_grass_rock) — CC0 — https://polyhaven.com/a/aerial_grass_rock
+- Poly Haven: Concrete Wall 008 (concrete_wall_008) — CC0 — https://polyhaven.com/a/concrete_wall_008
+- ambientCG: PavingStones070 — CC0 — https://ambientcg.com/view?id=PavingStones070
+- ambientCG: Concrete034 — CC0 — https://ambientcg.com/view?id=Concrete034
+- ambientCG: Grass004 — CC0 — https://ambientcg.com/view?id=Grass004
+- ambientCG: PavingStones128 — CC0 — https://ambientcg.com/view?id=PavingStones128
+- ambientCG: Asphalt010 — CC0 — https://ambientcg.com/view?id=Asphalt010
+- ambientCG: Asphalt031 — CC0 — https://ambientcg.com/view?id=Asphalt031
+- Kenney: Car Kit 3.1 (firetruck, ambulance, police, garbage-truck, tractor-shovel, sedan, suv, van, truck, delivery) — CC0 — https://kenney.nl/assets/car-kit
+- ambientCG: Rock035 — CC0 — https://ambientcg.com/view?id=Rock035
+- ambientCG: PaintedPlaster017 — CC0 — https://ambientcg.com/view?id=PaintedPlaster017
+- ambientCG: Facade001 — CC0 — https://ambientcg.com/view?id=Facade001
+- ambientCG: RoofingTiles013A — CC0 — https://ambientcg.com/view?id=RoofingTiles013A
+- ambientCG: Bricks060 — CC0 — https://ambientcg.com/view?id=Bricks060
+- ambientCG: Planks021 — CC0 — https://ambientcg.com/view?id=Planks021
+- ambientCG: Plaster001 — CC0 — https://ambientcg.com/view?id=Plaster001
+- ambientCG: Ground055S — CC0 — https://ambientcg.com/view?id=Ground055S
+- ambientCG: Facade009 — CC0 — https://ambientcg.com/view?id=Facade009
+- ambientCG: Ground038 — CC0 — https://ambientcg.com/view?id=Ground038
+- ambientCG: Bricks059 — CC0 — https://ambientcg.com/view?id=Bricks059
+- ambientCG: RoofingTiles014A — CC0 — https://ambientcg.com/view?id=RoofingTiles014A
+- ambientCG: Bricks075A — CC0 — https://ambientcg.com/view?id=Bricks075A
+- ambientCG: Plaster003 — CC0 — https://ambientcg.com/view?id=Plaster003
+- Poly Haven: Kloofendal 48d Partly Cloudy (Pure Sky) (kloofendal_48d_partly_cloudy_puresky) — CC0 — https://polyhaven.com/a/kloofendal_48d_partly_cloudy_puresky
+- Poly Haven: Street Lamp 01 (street_lamp_01) — CC0 — https://polyhaven.com/a/street_lamp_01
+- Poly Haven: Planter Box 01 (planter_box_01) — CC0 — https://polyhaven.com/a/planter_box_01
+- Poly Haven: Street Lamp 02 (street_lamp_02) — CC0 — https://polyhaven.com/a/street_lamp_02
+- Poly Haven: Concrete Road Barrier (concrete_road_barrier) — CC0 — https://polyhaven.com/a/concrete_road_barrier
+- Poly Haven: Potted Plant 01 (potted_plant_01) — CC0 — https://polyhaven.com/a/potted_plant_01
+- Poly Haven: Metal Trash Can (metal_trash_can) — CC0 — https://polyhaven.com/a/metal_trash_can
+- Poly Haven: Trashbag (trashbag) — CC0 — https://polyhaven.com/a/trashbag
+- Poly Haven: Covered Car (covered_car) — CC0 — https://polyhaven.com/a/covered_car
+- Poly Haven: Painted Wooden Bench (painted_wooden_bench) — CC0 — https://polyhaven.com/a/painted_wooden_bench
+- Poly Haven: Modular Chainlink Fence (modular_chainlink_fence) — CC0 — https://polyhaven.com/a/modular_chainlink_fence
+- Poly Haven: Wild Rooibos Bush (wild_rooibos_bush) — CC0 — https://polyhaven.com/a/wild_rooibos_bush
+- Poly Haven: Modular Street Seating (modular_street_seating) — CC0 — https://polyhaven.com/a/modular_street_seating
+- Poly Haven: Fire Hydrant (fire_hydrant) — CC0 — https://polyhaven.com/a/fire_hydrant

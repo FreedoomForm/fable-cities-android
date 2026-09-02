@@ -1,0 +1,13 @@
+{
+  "id": "wild_rooibos_bush",
+  "name": "Wild Rooibos Bush",
+  "type": "models",
+  "authors": {
+    "James Ray Cock": "modeling",
+    "Jenelle van Heerden": "photography"
+  },
+  "license": "CC0",
+  "source": "https://polyhaven.com/a/wild_rooibos_bush",
+  "res": "1k",
+  "fmt": "gltf"
+}
