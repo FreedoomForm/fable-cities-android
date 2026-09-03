@@ -23,3 +23,11 @@ docs/critique/site_*
 # Python bytecode embeds absolute source paths
 __pycache__/
 *.pyc
+
+# Native Android build outputs and local machine configuration
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+*.iml
+.idea/
