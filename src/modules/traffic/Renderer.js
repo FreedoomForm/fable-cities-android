@@ -9,7 +9,7 @@
 import * as THREE from 'three';
 import { VEHICLE_SPECS, VEHICLE_IDS, PAINT_COLOURS, BOX_COLOURS, buildVehicleGeometry, buildWheelGeometry, buildShadowProxyGeometry, axlesOf } from './VehicleModels.js';
 import { buildPedestrianGeometry } from './PedestrianModel.js';
-import { createVehicleMaterial, createPedestrianMaterial, createPedestrianDepthMaterial, createBeamMaterial, createGlareMaterial, createContactShadowMaterial, lampUniforms, envUniforms } from './materials.js';
+import { createVehicleMaterial, createPedestrianMaterial, createPedestrianDepthMaterial, createBeamMaterial, createGlareMaterial, createContactShadowMaterial, createSentinelMaterials, lampUniforms, envUniforms } from './materials.js';
 
 const NEAR_LOD = 50;
 const MAX_BEAMS = 420;      // headlight cones + the red wash behind braking cars
@@ -208,6 +208,7 @@ export class TrafficRenderer {
     this.contactMat = createContactShadowMaterial();
     this.contact = new THREE.InstancedMesh(contactGeom, this.contactMat, MAX_CONTACT);
     this.contactD = instAttr(contactGeom, 'aDark', 1, MAX_CONTACT);
+    this.contactS = instAttr(contactGeom, 'aShape', 1, MAX_CONTACT);   // 1 vehicle (axle patches), 0 ped
     this.contact.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     this.contact.frustumCulled = false;
     this.contact.count = 0;
@@ -216,9 +217,19 @@ export class TrafficRenderer {
     this.contact.name = 'traffic-contact-shadows';
     this.group.add(this.contact);
 
-    // Wheels are excluded from the shadow map: four cascades of 400-odd alloy rims cost more than
-    // the silhouette difference is worth, and the body shadow plus the contact decal cover it.
-    this.wheels[0].castShadow = false;
+    // p5 major 1: LOD 0 wheels ARE in the shadow map now — four cascades of the ~120 near
+    // vehicles' rims cost a fraction of the triangle budget and are what puts darkening under
+    // and between the tyres. LOD 1 has no instanced wheels (they are baked into the far shell,
+    // which casts through the shadow proxy), so nothing changes past the LOD switch.
+
+    // --- audit sentinels (p5 minor 1): the glass / chrome / tyre / lens response targets live in
+    //     the vehicle shader, invisible to matstats.mjs. Hold them on an invisible mesh so the
+    //     audit sees the module's real numbers at zero instance / triangle / draw-call cost.
+    this.sentinelMesh = new THREE.Mesh(new THREE.BufferGeometry(), createSentinelMaterials(engine));
+    this.sentinelMesh.name = 'traffic-material-sentinels';
+    this.sentinelMesh.visible = false;
+    this.sentinelMesh.frustumCulled = false;
+    this.group.add(this.sentinelMesh);
 
     this._counts = {};
     this._beamList = [];
@@ -237,8 +248,26 @@ export class TrafficRenderer {
     lampUniforms.uLampExposure.value = this.engine.renderer.toneMappingExposure || 1;
     // The scene probe is dialled to ~0.52, which halves every reflection. Undo it for vehicles so
     // glass and clearcoat see a full-strength sky; collapses to 1.0 if the probe is raised.
+    // p5 minor 2: DEFENSIVE CLAMP — uEnvComp never exceeds 1.9. This whole uniform is a
+    // workaround for a probe below 1.0; when the environment module raises
+    // scene.environmentIntensity toward 1.0 (core IBL split), uEnvComp collapses to 1.0 and the
+    // per-class boosts in materials.js (glass 1.05, clearcoat 1.6, chrome 2.0) become the FINAL
+    // authored values. If the probe moves, re-tune that set — do not grow this multiplier.
     const envI = this.engine.scene && this.engine.scene.environmentIntensity;
-    envUniforms.uEnvComp.value = envI > 0.05 ? Math.min(2.2, 1 / envI) : 1;
+    envUniforms.uEnvComp.value = envI > 0.05 ? Math.min(1.9, 1 / envI) : 1;
+    // Analytic sun glint (paint clearcoat) tracks the engine's own shadow-casting sun, and the
+    // glass sky floor tracks the scene's published sky radiance — both read-only core state.
+    const csm = this.engine.csm;
+    if (csm && csm.lightDirection) {
+      envUniforms.uSunDir.value.set(-csm.lightDirection.x, -csm.lightDirection.y, -csm.lightDirection.z).normalize();
+    }
+    const sunGain = (this.engine.sunIntensity || 0) * 0.12;
+    envUniforms.uSunRad.value.copy(this.engine.sunColor || envUniforms.uSunRad.value).multiplyScalar(sunGain);
+    const gu = this.engine.globalUniforms;
+    if (gu && gu.uSkyUpRad && gu.uSkyHzRad) {
+      envUniforms.uSkyUp.value.copy(gu.uSkyUpRad.value);
+      envUniforms.uSkyHz.value.copy(gu.uSkyHzRad.value);
+    }
     const drawDist = opts.drawDistance;
     const lightsOn = opts.lightsOn;
     const cx = camera.position.x, cy = camera.position.y, cz = camera.position.z;
@@ -306,6 +335,7 @@ export class TrafficRenderer {
         // Occlusion under a car is ambient, not direct: it must not fade when the sun drops, or
         // a vehicle standing in building shade reads as pasted onto the road.
         contactArr[ci] = contactDark * 0.95 * (1 - Math.min(1, Math.max(0, (d - 260) / 140)));
+        this.contactS.array[ci] = 1;   // vehicle footprint: per-axle wheel patches
         ci++;
       }
 
@@ -357,7 +387,7 @@ export class TrafficRenderer {
     ci = this._syncPeds(peds, cx, cy, cz, drawDist, ci, contactArr, contactDark, shx, shz);
     this.contact.count = ci;
     this.contact.visible = ci > 0 && contactDark > 0.01;
-    if (ci > 0) { this.contact.instanceMatrix.needsUpdate = true; this.contactD.needsUpdate = true; }
+    if (ci > 0) { this.contact.instanceMatrix.needsUpdate = true; this.contactD.needsUpdate = true; this.contactS.needsUpdate = true; }
     this._syncLights(camera, lightsOn);
   }
 
@@ -402,6 +432,7 @@ export class TrafficRenderer {
         _m.compose(_v, _q, _sc);
         this.contact.setMatrixAt(ci, _m);
         contactArr[ci] = contactDark * 0.80;
+        this.contactS.array[ci] = 0;     // pedestrian footprint: plain soft ellipse
         ci++;
       }
     }
@@ -529,6 +560,10 @@ export class TrafficRenderer {
     this.proxyMat.dispose();
     this.glareMat.dispose();
     this.pedDepth.dispose();
+    if (this.sentinelMesh) {
+      (Array.isArray(this.sentinelMesh.material) ? this.sentinelMesh.material : [this.sentinelMesh.material])
+        .forEach((m) => m.dispose());
+    }
     if (this.group.parent) this.group.parent.remove(this.group);
   }
 }

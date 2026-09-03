@@ -21,20 +21,28 @@ const clamp01 = (x) => (x < 0 ? 0 : x > 1 ? 1 : x);
 // ---------------------------------------------------------------- shared surface styles
 // `cls` is the flat surface class the vehicle shader reads (see materials.js CLS). It pins the
 // specular response per MATERIAL_TARGET.md instead of letting a lofted quad interpolate a
-// windscreen into the pillar beside it. Glass is a neutral dark tint at roughness 0.06 — it is
-// allowed to reflect the sky and nothing else, and it is NEVER the body colour.
+// windscreen into the pillar beside it. Glass is a neutral dark tint at roughness 0.085 (p5
+// blocker 1: spread the sun lobe so the glint reads as a reflection, not a bloom blob) — it is
+// allowed to reflect the sky and nothing else, and it is NEVER the body colour. The shader pins
+// the pane response off the class anyway; these constants keep the vertex stream consistent.
 const G = 2, GB = 3, MET = 4, RUB = 5, LMP = 6;
-const GLASS = { color: lin(0x0e1216), metal: 0.0, rough: 0.06, cls: G };
-const GLASS_DARK = { color: lin(0x0a0d11), metal: 0.0, rough: 0.06, cls: G };
-const GLASS_TAIL = { color: lin(0x101418), metal: 0.0, rough: 0.06, cls: G };
+const GLASS = { color: lin(0x0e1216), metal: 0.0, rough: 0.085, cls: G };
+const GLASS_DARK = { color: lin(0x0a0d11), metal: 0.0, rough: 0.085, cls: G };
+const GLASS_TAIL = { color: lin(0x101418), metal: 0.0, rough: 0.085, cls: G };
 // Bus glazing: same pane, plus a light code so the saloon reads as lit after dark.
-const GLASS_BUS = { color: lin(0x11161b), metal: 0.0, rough: 0.06, cls: GB, light: 10 };
-const GLASS_BUS_D = { color: lin(0x0d1116), metal: 0.0, rough: 0.06, cls: GB, light: 10 };
+const GLASS_BUS = { color: lin(0x11161b), metal: 0.0, rough: 0.085, cls: GB, light: 10 };
+const GLASS_BUS_D = { color: lin(0x0d1116), metal: 0.0, rough: 0.085, cls: GB, light: 10 };
 const SEAL = { color: lin(0x0c0e10), metal: 0.03, rough: 0.70 };
 const TRIM = { color: lin(0x23262a), metal: 0.12, rough: 0.55 };
 const BUMPER = { color: lin(0x2b2f33), metal: 0.06, rough: 0.60 };
+// p5 major 3: bumpers split into a body-colour upper half and a dark lower valance — a
+// full-width grey slab bumper is one of the things that made the LOD 0 body read as a box.
+const VALANCE = { color: lin(0x191c1f), metal: 0.05, rough: 0.62 };
 const RUBBER = { color: lin(0x0e1013), metal: 0.0, rough: 0.90, cls: RUB };
 const ARCH = { color: lin(0x141619), metal: 0.02, rough: 0.92 };
+// p5 major 3: the arch INTERIOR — darker than the lip so the cut-in reads as a recess, not a
+// stripe painted on the flank.
+const ARCH_IN = { color: lin(0x0b0d10), metal: 0.0, rough: 0.97 };
 const SHADOW = { color: lin(0x0a0b0d), metal: 0.0, rough: 0.95 };
 const CHROME = { color: lin(0xd2d7dc), metal: 1.0, rough: 0.15, cls: MET };
 const GRILLE = { color: lin(0x0f1114), metal: 0.55, rough: 0.35 };
@@ -193,6 +201,7 @@ function carShell(b, spec, res, M, detail) {
   const lampY = spec.sill + (spec.belt - spec.sill) * 0.62;
   const tailY = spec.sill + (spec.belt - spec.sill) * 0.66;
   const bumperTop = spec.sill + (spec.belt - spec.sill) * 0.36;
+  const valanceTop = spec.sill + (spec.belt - spec.sill) * 0.20;   // p5 major 3: bumper split line
   const cuts = detail ? doorCuts(spec) : [];
 
   b.loft(secs, {
@@ -200,12 +209,12 @@ function carShell(b, spec, res, M, detail) {
     style: (x, y, z, nx, ny, nz) => {
       const ay = archY(z);
       // wheel-arch lip — a thin dark line right around the opening
-      if (ay > spec.sill + 0.012 && y < ay + 0.052) return spec.cladding ? TRIM : ARCH;
+      if (ay > spec.sill + 0.012 && y < ay + 0.066) return spec.cladding ? TRIM : ARCH;
       // rocker / sill
       if (y < spec.sill + 0.115) return spec.cladding ? TRIM : SHADOW;
       if (spec.cladding && y < spec.sill + 0.16) return TRIM;
-      // bumpers
-      if (y < bumperTop && (z > hz - 0.42 || z < -hz + 0.40)) return BUMPER;
+      // bumpers: body-colour upper half over a dark lower valance (p5 major 3)
+      if (y < bumperTop && (z > hz - 0.42 || z < -hz + 0.40)) return y > valanceTop ? PAINT : VALANCE;
       // door / bonnet / boot shut lines. Without them a lofted flank is one continuous surface and
       // the clearcoat highlight smears across it like an airbrush.
       if (detail && y > ay + 0.06) {
@@ -217,7 +226,8 @@ function carShell(b, spec, res, M, detail) {
       return y < spec.belt * 0.60 ? PAINT_L : PAINT;
     },
     capStyle: (x, y, z, nx, ny, nz) => {
-      if (y < bumperTop) return BUMPER;
+      if (y < valanceTop) return VALANCE;
+      if (y < bumperTop) return PAINT;
       if (nz > 0) {
         // radiator grille sits between the headlights
         if (Math.abs(x) < hw0 * 0.34 && y < lampY + 0.10) return GRILLE;
@@ -226,7 +236,7 @@ function carShell(b, spec, res, M, detail) {
       return PAINT;
     },
   });
-  return { ...pr, lampY, tailY, bumperTop };
+  return { ...pr, lampY, tailY, bumperTop, valanceTop };
 }
 
 function carCanopy(b, spec, res, M, detail) {
@@ -289,23 +299,35 @@ function carDetails(b, spec, ctx, lod) {
   const { hz, hw0, halfw, lampY, tailY, bumperTop, archY } = ctx;
   const fhw = halfw(hz - 0.12), rhw = halfw(-hz + 0.12);
   const hl = { w: fhw * 0.50, h: (spec.belt - spec.sill) * 0.20 };
-  // --- headlights: a lens box flush with the nose, indicator strip at its outer end
+  // --- headlights: a TRIM bezel frame standing ~1 cm proud of the nose with the lens sunk
+  //     ~3 cm behind its face (p5 major 3) — flush stickers never catch a rim highlight. The
+  //     outboard slot of the frame IS the indicator strip, face flush with the bezel.
   for (const sx of [-1, 1]) {
     const cx = sx * (fhw - hl.w * 0.5 - 0.055);
-    b.box(cx, lampY, hz - 0.085, hl.w, hl.h, 0.20, (f) => (f === 4 ? LAMP_F : TRIM));
     if (lod === 0) {
-      b.box(sx * (fhw - 0.055), lampY - hl.h * 0.20, hz - 0.115, 0.055, hl.h * 0.55, 0.14,
+      b.box(cx, lampY + hl.h * 0.5 + 0.018, hz - 0.10, hl.w + 0.072, 0.036, 0.22, TRIM);
+      b.box(cx, lampY - hl.h * 0.5 - 0.018, hz - 0.10, hl.w + 0.072, 0.036, 0.22, TRIM);
+      b.box(cx - sx * (hl.w * 0.5 + 0.018), lampY, hz - 0.10, 0.036, hl.h + 0.072, 0.22, TRIM);
+      b.box(sx * (fhw - 0.0275), lampY, hz - 0.10, 0.055, hl.h + 0.072, 0.22,
         (f) => ((f === 4 || f === (sx > 0 ? 0 : 1)) ? (sx > 0 ? LAMP_IL : LAMP_IR) : TRIM));
+      b.box(cx, lampY, hz - 0.10, hl.w, hl.h, 0.16, (f) => (f === 4 ? LAMP_F : TRIM));
+    } else {
+      b.box(cx, lampY, hz - 0.085, hl.w, hl.h, 0.20, (f) => (f === 4 ? LAMP_F : TRIM));
     }
   }
-  // --- tail lights + rear indicator
+  // --- tail lights: same treatment — dark bezel, recessed lens, indicator in the outboard slot
   const tl = { w: rhw * 0.44, h: (spec.belt - spec.sill) * 0.26 };
   for (const sx of [-1, 1]) {
     const cx = sx * (rhw - tl.w * 0.5 - 0.045);
-    b.box(cx, tailY, -hz + 0.075, tl.w, tl.h, 0.17, (f) => (f === 5 ? LAMP_R : TRIM));
     if (lod === 0) {
-      b.box(sx * (rhw - 0.05), tailY - tl.h * 0.30, -hz + 0.10, 0.05, tl.h * 0.42, 0.12,
+      b.box(cx, tailY + tl.h * 0.5 + 0.016, -hz + 0.07, tl.w + 0.068, 0.032, 0.18, TRIM);
+      b.box(cx, tailY - tl.h * 0.5 - 0.016, -hz + 0.07, tl.w + 0.068, 0.032, 0.18, TRIM);
+      b.box(cx - sx * (tl.w * 0.5 + 0.016), tailY, -hz + 0.07, 0.032, tl.h + 0.064, 0.18, TRIM);
+      b.box(sx * (rhw - 0.0225), tailY, -hz + 0.07, 0.045, tl.h + 0.064, 0.18,
         (f) => ((f === 5 || f === (sx > 0 ? 0 : 1)) ? (sx > 0 ? LAMP_IL : LAMP_IR) : TRIM));
+      b.box(cx, tailY, -hz + 0.075, tl.w, tl.h, 0.13, (f) => (f === 5 ? LAMP_R : TRIM));
+    } else {
+      b.box(cx, tailY, -hz + 0.075, tl.w, tl.h, 0.17, (f) => (f === 5 ? LAMP_R : TRIM));
     }
   }
   if (lod === 0) {
@@ -336,11 +358,13 @@ function carDetails(b, spec, ctx, lod) {
     // exhaust
     b.box(-hw0 * 0.52, spec.sill * 0.62, -hz + 0.03, 0.075, 0.075, 0.11, CHROME);
   }
-  // inner wheel housings + underbody so the arches are not see-through
+  // inner wheel housings + underbody so the arches are not see-through. LOD 0 gets a wider,
+  // darker housing that fills the enlarged arch cut-in (p5 major 3): through the opening you
+  // see a shadowed void, not the road.
   if (lod === 0) {
     for (const ax of ctx.axles) {
       const top = archY(ax.z);
-      b.box(0, (spec.sill * 0.30 + top) * 0.5, ax.z, spec.wid * 0.62, top - spec.sill * 0.30, spec.wheelR * 1.70, ARCH);
+      b.box(0, (spec.sill * 0.30 + top) * 0.5, ax.z, spec.wid * 0.70, top - spec.sill * 0.30, spec.wheelR * 1.85, ARCH_IN);
     }
   } else {
     b.box(0, (spec.sill * 0.30 + archY(ctx.axles[0].z)) * 0.5, 0, spec.wid * 0.62,
@@ -666,9 +690,14 @@ export function buildVehicleGeometry(id, lod = 0) {
   const b = new MeshBuilder();
   const res = RES[lod], M = SECTIONS[lod];
   if (spec.kind === 'car') {
-    const ctx = carShell(b, spec, res, M, lod === 0);
-    carCanopy(b, spec, res, lod === 0 ? 9 : 4, lod === 0);
-    carDetails(b, spec, ctx, lod);
+    // p5 major 3: LOD 0 only — deeper, rounder wheel-arch cut-ins so the near silhouette reads
+    // as a car with arches, not a rounded box (LOD 1 keeps the cheap opening; the switch is at
+    // 50 m where the difference is sub-pixel). fo/ro/wheelR are untouched, so axle and wheel
+    // placement — and the sim — are unchanged.
+    const s0 = lod === 0 ? { ...spec, archR: 1.48, archTop: 2.30 } : spec;
+    const ctx = carShell(b, s0, res, M, lod === 0);
+    carCanopy(b, s0, res, lod === 0 ? 9 : 4, lod === 0);
+    carDetails(b, s0, ctx, lod);
   } else if (spec.kind === 'box') {
     vanShell(b, spec, res, M + 1, lod);
   } else if (spec.kind === 'truck') {

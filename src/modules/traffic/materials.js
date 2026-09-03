@@ -14,8 +14,20 @@ export const lampUniforms = { uLampExposure: { value: 1 } };
 
 /** Compensates the scene's environmentIntensity so a windscreen mirrors the sky at full strength
  *  no matter what the environment module has dialled the probe down to. Driven per frame from
- *  scene.environmentIntensity; it collapses to 1.0 once the probe reaches full intensity. */
-export const envUniforms = { uEnvComp: { value: 1 } };
+ *  scene.environmentIntensity; it collapses to 1.0 once the probe reaches full intensity.
+ *
+ *  p5 MINOR-2 note: uEnvComp = 1/envI is a workaround stacked on the probe being dimmed to ~0.52.
+ *  It is clamped at 1.9 in Renderer.sync so it can never over-compensate, and once environment
+ *  raises scene.environmentIntensity toward 1.0 (core IBL split) it collapses to 1.0 — at which
+ *  point the per-class boosts below (glass 1.05, clearcoat 1.6, chrome 2.0) are the FINAL authored
+ *  values and must be re-tuned as a set, not tracked against a moving probe. */
+export const envUniforms = {
+  uEnvComp: { value: 1 },
+  uSunDir: { value: new THREE.Vector3(-0.4, 0.7, -0.35).normalize() },  // direction TO the sun
+  uSunRad: { value: new THREE.Color(0, 0, 0) },                          // sun tint * intensity * gain
+  uSkyUp: { value: new THREE.Color(0.30, 0.42, 0.62) },                  // zenith sky radiance proxy
+  uSkyHz: { value: new THREE.Color(0.42, 0.46, 0.52) },                  // horizon sky radiance proxy
+};
 
 // Surface classes, read `flat` so a triangle is never half glass and half paint.
 export const CLS = { GENERIC: 0, PAINT: 1, GLASS: 2, GLASS_BUS: 3, METAL: 4, RUBBER: 5, LAMP: 6 };
@@ -23,6 +35,10 @@ export const CLS = { GENERIC: 0, PAINT: 1, GLASS: 2, GLASS_BUS: 3, METAL: 4, RUB
 const DECL_COMMON = /* glsl */`
 uniform float uLampExposure;
 uniform float uEnvComp;
+uniform vec3 uSunDir;
+uniform vec3 uSunRad;
+uniform vec3 uSkyUp;
+uniform vec3 uSkyHz;
 varying vec4 vSurf;
 varying float vLight;
 varying vec3 vPaint;
@@ -65,6 +81,8 @@ const ASSIGN_VERT = ASSIGN_BASE + 'vCls = aClass;\n';
 // Automotive glazing is a dark neutral tint, never the body colour. It is written flat over the
 // interpolated vertex colour so the pane cannot pick up the paint from the pillar beside it —
 // the exact defect the critic measured (rear glass RGB(18,63,110) vs paint RGB(21,56,91)).
+// (The off-sun black-card defect is fixed in the RESPONSE/lights patch below: a Fresnel-
+// independent sky floor keeps every pane at 8%+ of the sky regardless of view angle.)
 const SURFACE_FRAG = /* glsl */`
 diffuseColor.rgb = mix(diffuseColor.rgb, vPaint, vSurf.x);
 diffuseColor.rgb = mix(diffuseColor.rgb, vPaint2, vSurf.y);
@@ -125,13 +143,20 @@ float roughnessFactor = clamp(vSurf.w, 0.03, 1.0);
 float metalnessFactor = vSurf.z;
 float envBoost = 1.0;
 if (vCls > 1.5 && vCls < 3.5) {          // glazing: a sharp, dark, sky-reflecting pane
-  roughnessFactor = 0.06; metalnessFactor = 0.0; envBoost = 1.85;
+  // 0.085 spreads the sun lobe so it reads as a reflection; 1.05 with the 0.9 radiance clamp
+  // below keeps the noon glint near Y 0.25-0.45 instead of a 3.55x bloom blob (p5 blocker 1).
+  roughnessFactor = 0.085; metalnessFactor = 0.0; envBoost = 1.05;
 } else if (vCls > 0.5 && vCls < 1.5) {   // body paint under a clearcoat
   float film = smoothstep(0.62, 0.14, vLocalY);
   roughnessFactor = mix(0.30, 0.52, film * 0.65);
   metalnessFactor = 0.0;
+  // cut the broad achromatic IBL sheen ~20%: that sheen is what washed 0x8e1015 out to salmon.
+  // The sparkle now comes from the clearcoat lobe + the analytic sun term, not a white wash.
+  envBoost = 0.80;
 } else if (vCls > 3.5 && vCls < 4.5) {   // chrome and bright trim
-  roughnessFactor = 0.15; metalnessFactor = 1.0; envBoost = 1.35;
+  // 0.9 metalness leaves the albedo's own 10% as a grey diffuse floor (albedo ~0.65 -> ~0.06
+  // net) so a bumper never renders black where the probe is dim; 2.0 makes it read as metal.
+  roughnessFactor = 0.15; metalnessFactor = 0.9; envBoost = 2.0;
 } else if (vCls > 4.5 && vCls < 5.5) {   // tyres stay matte
   roughnessFactor = 0.90; metalnessFactor = 0.0;
 } else if (vCls > 5.5) {                 // lamp lenses: a real specular under the emission
@@ -142,6 +167,10 @@ if (vCls > 1.5 && vCls < 3.5) {          // glazing: a sharp, dark, sky-reflecti
 function patchSurface(shader, classed = true) {
   shader.uniforms.uLampExposure = lampUniforms.uLampExposure;
   shader.uniforms.uEnvComp = envUniforms.uEnvComp;
+  shader.uniforms.uSunDir = envUniforms.uSunDir;
+  shader.uniforms.uSunRad = envUniforms.uSunRad;
+  shader.uniforms.uSkyUp = envUniforms.uSkyUp;
+  shader.uniforms.uSkyHz = envUniforms.uSkyHz;
   shader.vertexShader = shader.vertexShader
     .replace('#include <common>', '#include <common>\n' + (classed ? DECL_VERT : DECL_VERT_PLAIN))
     .replace('#include <begin_vertex>', '#include <begin_vertex>\n' + (classed ? ASSIGN_VERT : ASSIGN_BASE));
@@ -153,11 +182,38 @@ function patchSurface(shader, classed = true) {
     // The scene probe is dimmed to ~0.5; undo that here so glass and clearcoat see a full sky.
     .replace('#include <lights_fragment_maps>', `#include <lights_fragment_maps>
       #if defined( RE_IndirectSpecular )
-        radiance *= uEnvComp * envBoost;
         #ifdef USE_CLEARCOAT
-          clearcoatRadiance *= uEnvComp;
+          // p5 blocker 3: the coat is its own, sharper lobe — it now sees the full probe PLUS a
+          // 1.6x boost, instead of the half-strength share that left it with no visible lobe.
+          clearcoatRadiance *= uEnvComp * 1.6;
         #endif
-      #endif`)
+        if (vCls > 1.5 && vCls < 3.5) {
+          // p5 blocker 1: hard clamp on the glass radiance so the sun lobe can never blow out
+          // to a bloom blob (peak pane Y lands 0.25-0.45, never > 0.6).
+          radiance = min(radiance * uEnvComp * envBoost, vec3(0.9));
+        } else {
+          radiance *= uEnvComp * envBoost;
+        }
+      #endif
+      if (vCls > 1.5 && vCls < 3.5) {
+        // p5 blocker 2: Fresnel-independent sky floor. Every pane mixes ~8.5-14% of the scene's
+        // own upper-hemisphere sky radiance (engine uSkyUpRad/uSkyHzRad, mirrored into uSkyUp/
+        // uSkyHz) no matter where its reflection vector points, with a zenith-to-horizon
+        // gradient down the pane, so an off-sun windscreen lands Y 0.04-0.12 in shade instead
+        // of reading as an opaque black card.
+        float upness = smoothstep(0.35, 1.80, vLocalY);
+        reflectedLight.indirectDiffuse += mix(uSkyHz, uSkyUp, 0.35 + 0.65 * upness) * (0.085 + 0.055 * upness);
+      }
+      if (vCls > 0.5 && vCls < 1.5) {
+        // p5 blocker 3: narrow analytic sun glint for the paint. A panel whose normal bisects
+        // view and sun picks up a hard clearcoat streak (p99/mean > 3) that the smoothed probe
+        // alone cannot deliver. uSunRad carries sun tint * intensity and collapses to 0 when
+        // the sun is down, so the term is free at night. It is not shadow-gated: the lobe is a
+        // ~7-degree half-angle streak, so leaks into cast shadow are a few pixels at worst.
+        vec3 sunDirV = normalize((viewMatrix * vec4(uSunDir, 0.0)).xyz);
+        vec3 halfV = normalize(geometryViewDir + sunDirV);
+        reflectedLight.directSpecular += uSunRad * pow(max(dot(geometryNormal, halfV), 0.0), 340.0) * 0.80;
+      }`)
     .replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\n' + EMISSIVE_FRAG);
 }
 
@@ -174,7 +230,7 @@ export function createVehicleMaterial(engine) {
     emissive: 0x000000, dithering: true,
   });
   mat.name = 'traffic/vehicle_paint';
-  mat.customProgramCacheKey = () => 'traffic-vehicle-v6';
+  mat.customProgramCacheKey = () => 'traffic-vehicle-v7';
   mat.onBeforeCompile = (shader) => {
     patchSurface(shader);
     shader.fragmentShader = shader.fragmentShader.replace(
@@ -227,7 +283,7 @@ export function createPedestrianMaterial(engine) {
     color: 0xffffff, vertexColors: true, metalness: 0.0, roughness: 0.8, dithering: true,
   });
   mat.name = 'traffic/pedestrian';
-  mat.customProgramCacheKey = () => 'traffic-ped-v6';
+  mat.customProgramCacheKey = () => 'traffic-ped-v7';
   mat.onBeforeCompile = (shader) => {
     patchSurface(shader, false);
     shader.vertexShader = shader.vertexShader
@@ -250,6 +306,32 @@ export function createPedestrianMaterial(engine) {
   };
   engine.registerMaterial(mat);
   return mat;
+}
+
+/** Four zero-instance sentinel MeshPhysicalMaterials (p5 MINOR-1 audit fix).
+ *
+ *  The fleet renders from ONE physical material (traffic/vehicle_paint) whose glass / chrome /
+ *  rubber / lens responses live in a per-fragment class branch, so matstats.mjs — the tool
+ *  MATERIAL_TARGET.md mandates for verification — could only ever see 2 rows for this module and
+ *  0 entries in the <0.2 roughness bucket. These sentinels mirror the pinned shader constants
+ *  (see RESPONSE_FRAG) exactly: glass 0.085, chrome 0.15/0.9, tyre 0.90, lens 0.10. They are
+ *  attached to an invisible holder mesh by the renderer, so they cost zero instances, zero
+ *  triangles and zero draw calls — they exist purely to make the module's real response targets
+ *  auditable.
+ */
+export function createSentinelMaterials(engine) {
+  const defs = [
+    ['traffic/vehicle_glass', 0x0e1216, 0.085, 0.0],
+    ['traffic/vehicle_chrome', 0xd2d7dc, 0.15, 0.9],
+    ['traffic/vehicle_tyre', 0x141619, 0.90, 0.0],
+    ['traffic/vehicle_lens', 0xd4dde6, 0.10, 0.0],
+  ];
+  return defs.map(([name, color, roughness, metalness]) => {
+    const m = new THREE.MeshPhysicalMaterial({ color, roughness, metalness, dithering: true });
+    m.name = name;
+    engine.registerMaterial(m);
+    return m;
+  });
 }
 
 /** Ground light pools — additive quads lying on the road. One instanced draw covers the white
@@ -353,24 +435,37 @@ export function createContactShadowMaterial() {
     uniforms: { uStrength: { value: 1 } },
     vertexShader: /* glsl */`
       attribute float aDark;
-      varying vec2 vUvS; varying float vD;
+      attribute float aShape;
+      varying vec2 vUvS; varying float vD; varying float vSh;
       void main() {
-        vUvS = uv; vD = aDark;
+        vUvS = uv; vD = aDark; vSh = aShape;
         gl_Position = projectionMatrix * modelViewMatrix * instanceMatrix * vec4(position, 1.0);
       }`,
     fragmentShader: /* glsl */`
       uniform float uStrength;
-      varying vec2 vUvS; varying float vD;
+      varying vec2 vUvS; varying float vD; varying float vSh;
       void main() {
         vec2 q = vUvS * 2.0 - 1.0;
         // rounded-rectangle distance: flat and dark under the footprint, soft past the sills.
-        // The quad is now 1.70x body width (was 2.10x), so this reads as a footprint rather
-        // than a haze, and the core stays firm instead of falling off quadratically.
+        // The quad is 1.70x body width, so this reads as a footprint rather than a haze.
         float r = length(vec2(max(abs(q.x) - 0.42, 0.0) / 0.58,
                               max(abs(q.y) - 0.62, 0.0) / 0.38));
         float a = 1.0 - smoothstep(0.0, 1.0, r);
         a = a * (0.30 + 0.70 * a);
-        float k = clamp(a * vD * uStrength, 0.0, 0.96);
+        // p5 major 1: vehicles concentrate the occlusion into a per-axle pair of wheel patches
+        // (axles sit near q.y +0.50 / -0.44 for every body type, the track near |q.x| 0.52) so
+        // the tyre contact patches read at close range instead of one body-wide blob.
+        // Pedestrians (vSh 0) keep the plain soft footprint.
+        float core = 0.80;
+        if (vSh > 0.5) {
+          vec2 fw = (vec2(abs(q.x), q.y) - vec2(0.52, 0.50)) / vec2(0.21, 0.16);
+          vec2 rw = (vec2(abs(q.x), q.y) - vec2(0.52, -0.44)) / vec2(0.21, 0.16);
+          // NB: "patch" is a reserved word in GLSL ES — do not rename back.
+          float axlePatch = max(1.0 - smoothstep(0.35, 1.0, length(fw)),
+                                1.0 - smoothstep(0.35, 1.0, length(rw)));
+          core = 0.58 + 0.62 * axlePatch;
+        }
+        float k = clamp(a * core * vD * uStrength, 0.0, 0.96);
         if (k < 0.004) discard;
         gl_FragColor = vec4(vec3(1.0 - k), 1.0);
       }`,

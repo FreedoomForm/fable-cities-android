@@ -68,3 +68,51 @@ jobs:
             --title "Android build ${short_sha}" \
             --notes "Automated native Android APK for commit ${GITHUB_SHA}. Build and unit tests passed in GitHub Actions." \
             --prerelease
+
+  web-check:
+    name: Browser verification loop (check + screenshots)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out commit
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Production build
+        run: npx vite build
+
+      - name: Start dev server
+        run: |
+          nohup npx vite --host 127.0.0.1 --port 5180 > /tmp/vite.log 2>&1 &
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:5180/ > /dev/null; then break; fi
+            sleep 1
+          done
+          curl -sf http://127.0.0.1:5180/ > /dev/null || (cat /tmp/vite.log && exit 1)
+
+      - name: Smoke check (modules, console errors, perf)
+        run: node tools/check.mjs --url "http://127.0.0.1:5180/?quality=low" --frames 180 | tee /tmp/check.json
+
+      - name: Capture screenshots (day / dusk / night, three cameras)
+        run: |
+          mkdir -p shots
+          node tools/shot.mjs --out shots/hero.png --preset city --time 10 || true
+          node tools/shot.mjs --out shots/street.png --preset street --time 17.5 || true
+          node tools/shot.mjs --out shots/night.png --preset city --time 21.5 || true
+          node tools/shot.mjs --out shots/aerial.png --preset aerial --time 12 || true
+
+      - name: Upload verification artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-check-${{ github.sha }}
+          path: |
+            /tmp/check.json
+            shots/**
+          if-no-files-found: warn
+          retention-days: 30

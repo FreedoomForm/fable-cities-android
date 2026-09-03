@@ -1,6 +1,6 @@
 {
-  "updated": "2026-09-02T17:00",
-  "runId": "wf_4dc079ed-fca",
+  "updated": "2026-09-04T01:30",
+  "runId": "loop_20260904_1",
   "threshold": 8.5,
   "modules": {
     "terrain": {
@@ -633,6 +633,14 @@
           "score": 7.0,
           "pass": false,
           "summary": "Breadth is real: lamps/halos, mast-arm signals, signs, trees+grates, benches, bins, shelters, hydrants, hedges/fences, bollards, planters, parked cars all exist, instanced, LOD'd, deterministic; props.api.refresh/setDensity/stats present; 0 console errors; props' own cost measured by hiding the 'pro"
+        },
+        {
+          "run": "loop_20260904_1",
+          "round": "builder",
+          "status": "pending-critique",
+          "score": 7,
+          "pass": false,
+          "summary": "BUILDER ROUND (not yet critic-scored). props_p5 issues addressed in src/modules/props: B1 all 10 glTF materials retargeted per MATERIAL_TARGET (bench 0.55/cc0.4, can 0.35/m0.9, rust 0.8/m0.2, hydrant 0.3/cc0.8, aged 0.6, planter 0.7, pole 0.4/m0.85, lamp glass 0.15, bulb emissive 5.0 night); B2 analytic sun lobe (exp 110-130, gain 0.2-0.5) on sign faces + metal posts via props-owned onBeforeCompile; M1 procedural 96px roughness+normal map families on metal/painted/concrete (16 materials), base values mean-compensated; M2 night light-pool peak 0.05->0.024 + zero-rim tail + lamp PointLights -22% (in-pool Y projected 0.10-0.12); M3 tuft emissive 0, jitter +/-11%, 35% desat, hemispherical normal blend, count 56k->66k w/ lower per-tuft brightness; M4 kerb/verge/sidewalk tuft exclusion (corridor gate + 1.25/0.95m margins); MIN1 decimation 0.02->0.03 + ~20% night instance caps on heaviest photogrammetry kinds. Verification: node --check OK on 6 files, vite build OK (props bundle 84.19 kB). Pending critic visual re-measure."
         }
       ],
       "lastScore": 7,
@@ -676,6 +684,14 @@
           "score": 6.5,
           "pass": false,
           "summary": "The simulation is the best part of this module and is close to AAA: A* routing, IDM car-following, signal phases and right-before-left priority all read correctly on screen, queues form and clear, lane following is smooth through curves, scale is metrically correct (sedan 4.62 m, bus 11.80 m, truck "
+        },
+        {
+          "run": "loop_20260904_1",
+          "round": "builder",
+          "status": "pending-critique",
+          "score": 6.5,
+          "pass": false,
+          "summary": "BUILDER ROUND (not yet critic-scored). All 8 ranked issues from traffic_p5 addressed in src/modules/traffic: B1 glass glint clamp (envBoost 1.85->1.05, rough 0.06->0.085, radiance clamp 0.9); B2 Fresnel-independent sky floor for off-sun panes (zenith/horizon radiance uniforms, 0.085-0.14 mix); B3 clearcoat boost 1.6x + analytic sun lobe (pow(N.H,340)*0.12 sun gain), achromatic sheen cut 20%; M1 LOD0 wheels cast shadows + per-axle contact patches via aShape instanced attribute; M2 chrome envBoost 2.0 + 0.9 metalness with 0.06 grey diffuse floor; M3 LOD0 silhouette: wheel-arch cut-ins w/ dark interior, bumper split into body+valance, lamps inset in bezels (sedan 2160 tris, <=4k budget); MIN1 four zero-instance sentinel materials registered (glass/chrome/tyre/lens) so matstats sees them; MIN2 uEnvComp clamped to 1.9 with re-tune-as-a-set warning. Verification: node --check OK, vite build OK, all 12 vehicle geometries build in Node, traffic shader programs compiled+rendered clean in headless chrome (SwiftShader) with 0 GL errors. Numeric re-measurement (pane Y 0.25-0.45 / 0.04-0.12, paint p99/mean>3) delegated to CI critic round."
         }
       ],
       "lastScore": 6.5,
@@ -805,6 +821,27 @@
       "builderSummary": null,
       "presets": [],
       "note": "Placeholder only; build from scratch once the other modules are in place."
+    },
+    "android": {
+      "rounds": [
+        {
+          "run": "loop_20260904_1",
+          "round": "builder",
+          "status": "pending-critique",
+          "score": null,
+          "pass": false,
+          "summary": "BUILDER ROUND (not yet critic-scored). Replaced the Canvas 2D prototype with a native OpenGL ES 3.0 renderer (android/app/.../GlCityRenderer.kt, GLSurfaceView + EGL 3.0 + 24-bit depth). Deterministic seeded world: 96x96 FBM heightfield (800m) flattened under road network, sand/rock/verge coloring, coastal water ring; prebuilt avenue + 3 cross streets w/ lane dashes + sidewalks; ~seeded building generation (res/com/office/service kinds) with fragment-shader window grids that emit warm light at night; 26 deterministic 3-part vehicles with colored bodies driving lanes; ray-marched sky gradient w/ sun glow + horizon tone; animated Fresnel water w/ sun glint; directional sun + hemisphere ambient + distance fog; damped orbit camera; 16:9 letterboxed glViewport; tap picking (ray->ground/building AABB) wired to 5 tools (select/road/zone/service/bulldoze) with cells persisted; touch: drag pan, pinch zoom, twist rotate, two-finger pitch; HUD moved to Canvas overlay (HudOverlayView) with large labelled dock, pause panel, toasts; CityState extended: edits string + camera state, restored on relaunch incl. process death. KNOWN LIMITS (honest): no shadow mapping; procedural vertex colors only (no PBR textures); traffic decorative; verification so far = line-by-line code review + API consistency check only — no Android SDK/emulator on this machine; APK compile gate + device exercise happen in CI and remain open."
+        }
+      ],
+      "lastScore": null,
+      "passed": false,
+      "openIssues": [
+        "No emulator/device verification yet (no Android SDK locally) — CI compile + future device run are the gates",
+        "No shadow mapping or PBR materials in native renderer yet",
+        "Traffic visual only, not coupled to a lane network simulation",
+        "Touch hit-target audit and safe-area audit not yet performed on a device"
+      ],
+      "note": "Native GLES 3.0 path — no WebView anywhere in android/."
     }
   },
   "lastRun": {

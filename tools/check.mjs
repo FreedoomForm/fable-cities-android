@@ -34,7 +34,8 @@ const url = new URL(args.url || 'http://127.0.0.1:5180/');
 if (!url.searchParams.has('headless')) url.searchParams.set('headless', '1');
 const frames = +args.frames || 120;
 
-const browser = await puppeteer.launch({ executablePath: CHROME, headless: true, defaultViewport: { width: 1920, height: 1080 }, args: ['--use-angle=metal', '--ignore-gpu-blocklist', '--mute-audio', '--enable-unsafe-swiftshader'] });
+const angleBackend = process.platform === 'darwin' ? 'metal' : (process.env.CHOOSE_ANGLE || 'swiftshader');
+const browser = await puppeteer.launch({ executablePath: CHROME, headless: true, defaultViewport: { width: 1920, height: 1080 }, args: [`--use-angle=${angleBackend}`, '--ignore-gpu-blocklist', '--mute-audio', '--enable-unsafe-swiftshader'] });
 const logs = [];
 let code = 0;
 try {

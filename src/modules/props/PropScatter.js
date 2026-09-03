@@ -367,7 +367,9 @@ export class PropScatter {
       this.luminaire(
         l.x, l.y, l.z, l.gy,
         _c.setRGB(l.color[0], l.color[1], l.color[2], THREE.SRGBColorSpace).clone(),
-        16, Math.max(22, l.radius * 1.8), clamp(l.radius * 1.95, 17, 36), 1.8,
+        // p5: lamp-lit pavement peaked at Y 0.239 (CS2 wet road p95 0.210) — the point-light half
+        // of the pool comes down with the pool decal (POOL_PEAK) so in-pool Y lands near 0.12
+        12.5, Math.max(22, l.radius * 1.8), clamp(l.radius * 1.95, 17, 36), 1.8,
         { x: l.tx, z: l.tz }, l.bx == null ? null : { x: l.bx, z: l.bz },
       );
       this.claim(seg, l.side, l.s, 1.1);
@@ -574,7 +576,7 @@ export class PropScatter {
       if (this.isWater(p.x, p.z)) continue;
       const y = Math.min(e.y + 0.25, Math.max(e.y - 0.5, this.groundY(p.x, p.z)));
       this.add('lamp_classic', { x: p.x, y, z: p.z, yaw: rng() * 6.28, s: 1 });
-      this.luminaire(p.x, y + lampH * 0.93, p.z, y, _c.setHex(0xffc98a).clone(), 10, 21, 13, 1.3);
+      this.luminaire(p.x, y + lampH * 0.93, p.z, y, _c.setHex(0xffc98a).clone(), 8.5, 21, 13, 1.3);
       if (rng() < 0.55) {
         const b = this.edge(seg, s + 4, -side);
         if (b) {

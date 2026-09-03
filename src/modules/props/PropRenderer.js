@@ -142,7 +142,14 @@ export class PropRenderer {
       const items = kind.items;
       if (!items.length || !kind.meshes.length) continue;
       if (kind.nightOnly && night < 0.02) { for (const m of kind.meshes) this._finish(m, 0); continue; }
-      const cap = kind.meshes[0].instanceMatrix.count;
+      // p5 minor: after dark the heaviest photogrammetry kinds give back ~20% of their instance
+      // cap (assets sets nightCapScale). It rides the same deterministic distance histogram as the
+      // daytime overflow cut — instances thin out with distance, nothing pops at a threshold, and
+      // the LOD distances themselves are untouched.
+      const dayCap = kind.meshes[0].instanceMatrix.count;
+      const cap = night > 0.5 && kind.nightCapScale && kind.nightCapScale < 1
+        ? Math.max(8, (dayCap * kind.nightCapScale) | 0)
+        : dayCap;
       const max = kind.maxDist, max2 = max * max;
       const lod2 = kind.lodDist * kind.lodDist;
       const hasLod = kind.lodMeshes.length > 0;

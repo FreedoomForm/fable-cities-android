@@ -6,9 +6,11 @@ import android.view.Window
 import android.view.WindowInsets
 import android.view.WindowInsetsController
 import android.view.WindowManager
+import android.widget.FrameLayout
 
 class MainActivity : Activity() {
     private lateinit var gameView: FableCitiesView
+    private lateinit var hud: HudOverlayView
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -16,16 +18,31 @@ class MainActivity : Activity() {
         window.setFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN, WindowManager.LayoutParams.FLAG_FULLSCREEN)
         hideSystemBars()
         gameView = FableCitiesView(this)
-        setContentView(gameView)
+        hud = HudOverlayView(this)
+        hud.gameView = gameView
+        val root = FrameLayout(this)
+        root.addView(
+            gameView, FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT
+            )
+        )
+        root.addView(
+            hud, FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT
+            )
+        )
+        setContentView(root)
     }
 
     override fun onResume() {
         super.onResume()
         gameView.resumeGame()
+        hud.resumeHud()
     }
 
     override fun onPause() {
         gameView.pauseGame()
+        hud.pauseHud()
         super.onPause()
     }
 

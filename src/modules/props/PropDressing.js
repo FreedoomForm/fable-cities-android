@@ -44,8 +44,11 @@ export function makeGrassTuft(seed, style = 0, matKey = 'tuft_a') {
     g.rotateY(yaw);
     g.translate(R(-spec.spread, spec.spread), -0.02, R(-spec.spread, spec.spread));
     // shading normal tipped toward the sky: a blade card lit purely edge-on goes black in shadow,
-    // which is what makes cheap grass cards read as flat cut-outs
-    const n = new THREE.Vector3(Math.sin(yaw) * 0.42, 1, Math.cos(yaw) * 0.42).normalize();
+    // which is what makes cheap grass cards read as flat cut-outs. Horizontal component tightened
+    // 0.42 → 0.18 (p5: neighbours carried visibly different normals, so one tuft blazed while the
+    // next to it shaded dark — the bimodal yard lighting; one shared hemispherical blend shades
+    // the whole patch together).
+    const n = new THREE.Vector3(Math.sin(yaw) * 0.18, 1, Math.cos(yaw) * 0.18).normalize();
     const na = g.attributes.normal;
     for (let k = 0; k < na.count; k++) na.setXYZ(k, n.x, n.y, n.z);
     P.add(matKey, g);

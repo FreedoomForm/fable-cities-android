@@ -454,10 +454,12 @@ export function makeApronTexture(size = 256, seed = 77) {
 
 const BLADE = [
   // n   height        hue        sat          light        width  bend  dead
-  { n: 46, h: [0.40, 0.74], hue: [86, 118], sat: [0.28, 0.46], lig: [0.24, 0.42], w: 0.030, bend: 0.40, dead: 0.06 },
-  { n: 34, h: [0.58, 0.97], hue: [70, 104], sat: [0.24, 0.42], lig: [0.26, 0.45], w: 0.027, bend: 0.58, dead: 0.16 },
-  { n: 30, h: [0.30, 0.62], hue: [42, 78], sat: [0.22, 0.40], lig: [0.30, 0.48], w: 0.036, bend: 0.74, dead: 0.44 },
-  { n: 36, h: [0.42, 0.78], hue: [82, 114], sat: [0.26, 0.44], lig: [0.25, 0.43], w: 0.029, bend: 0.48, dead: 0.07 },
+  // saturation narrowed ~15% from the first table (p5): the brightest isolated tufts measured
+  // saturation p99 = 1.000 — neon-lime sparks against near-black neighbours a metre away
+  { n: 46, h: [0.40, 0.74], hue: [86, 118], sat: [0.24, 0.39], lig: [0.24, 0.40], w: 0.030, bend: 0.40, dead: 0.06 },
+  { n: 34, h: [0.58, 0.97], hue: [70, 104], sat: [0.20, 0.36], lig: [0.26, 0.43], w: 0.027, bend: 0.58, dead: 0.16 },
+  { n: 30, h: [0.30, 0.62], hue: [42, 78], sat: [0.19, 0.34], lig: [0.30, 0.46], w: 0.036, bend: 0.74, dead: 0.44 },
+  { n: 36, h: [0.42, 0.78], hue: [82, 114], sat: [0.22, 0.37], lig: [0.25, 0.41], w: 0.029, bend: 0.48, dead: 0.07 },
 ];
 
 /**
@@ -496,7 +498,9 @@ export function makeGrassCardTexture(size = 256, seed = 7, style = 0) {
     const grd = g.createLinearGradient(0, size, 0, size - h);
     grd.addColorStop(0, hsl(hue, sat, lig * 0.62));
     grd.addColorStop(0.55, hsl(hue, sat, lig));
-    grd.addColorStop(1, hsl(hue + 6, sat * 0.92, Math.min(0.70, lig * 1.55)));
+    // tip boost trimmed (1.55→1.42, cap 0.70→0.62): sunlit blade tips were the top of the tuft
+    // brightness histogram — the p5 critic read them as hard bright sparks
+    grd.addColorStop(1, hsl(hue + 6, sat * 0.92, Math.min(0.62, lig * 1.42)));
     g.fillStyle = grd;
     g.beginPath();
     g.moveTo(L[0][0], L[0][1]);
@@ -539,6 +543,79 @@ export function makeGrassCardTexture(size = 256, seed = 7, style = 0) {
 }
 
 /**
+ * Tiny procedural surface-detail maps (seeded, deterministic — same pattern as every other canvas
+ * texture here). ONE seeded value-noise height field drives BOTH a roughness map (grayscale;
+ * three multiplies it by the material's base roughness, so the base value is what the map varies
+ * AROUND) and a matching tangent-space normal map. 96 px, RepeatWrapping, NoColorSpace — one pair
+ * per material family, shared by every material in it: no draw-call cost, and highlights stop
+ * being a smooth wash (p5: 0 of 42 props materials carried any map).
+ *
+ * `style` 'brushed' directional streaks (poles, sheet metal) · 'speckle' cast-metal grain ·
+ * 'mottle' concrete / plaster · 'grain' painted metal & wood. `stretch` = [u,v] noise frequency
+ * multipliers (a pole's UV runs u around the circumference, v along the height, so brushed metal
+ * wants fast-u / slow-v). Returns { roughMap, normalMap, mean } — `mean` is the roughness map's
+ * average so the caller can divide the base roughness by it and keep the effective value on target.
+ */
+export function makeSurfaceMaps(size = 96, seed = 17, style = 'mottle', { amp = 0.20, normalStrength = 0.4, stretch = [1, 1] } = {}) {
+  const rng = makeRng(seed);
+  const F = [4, 8, 16];                 // value-noise grid resolution per octave (tiles: wraps at f)
+  const W = style === 'speckle' ? [0.35, 0.30, 0.35] : [0.55, 0.30, 0.15];
+  const grids = F.map((f) => {
+    const g = new Float32Array(f * f);
+    for (let i = 0; i < g.length; i++) g[i] = rng();
+    return g;
+  });
+  const sm = (t) => t * t * (3 - 2 * t);
+  const sample = (g, f, u, v) => {
+    const x = u * f, y = v * f;
+    const ix = Math.floor(x), iy = Math.floor(y);
+    const fx = sm(x - ix), fy = sm(y - iy);
+    const x0 = ((ix % f) + f) % f, x1 = (x0 + 1) % f;
+    const y0 = ((iy % f) + f) % f, y1 = (y0 + 1) % f;
+    const a = g[y0 * f + x0], b = g[y0 * f + x1], c = g[y1 * f + x0], d = g[y1 * f + x1];
+    return (a + (b - a) * fx) * (1 - fy) + (c + (d - c) * fx) * fy;
+  };
+  const su = stretch[0], sv = stretch[1];
+  const h = new Float32Array(size * size);
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      let v = 0;
+      for (let o = 0; o < 3; o++) v += sample(grids[o], F[o], (x / size) * su, (y / size) * sv) * W[o];
+      h[y * size + x] = v;
+    }
+  }
+  const rc = canvas(size, size), rg2 = rc.getContext('2d');
+  const nc = canvas(size, size), ng = nc.getContext('2d');
+  const rImg = rg2.createImageData(size, size);
+  const nImg = ng.createImageData(size, size);
+  let mean = 0;
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const i = y * size + x;
+      // roughness: [1-amp .. 1], mean ≈ 1 - amp/2 (base value preserved by rescaling the material)
+      const r = Math.round(255 * (1 - amp * (1 - h[i])));
+      const o = i * 4;
+      rImg.data[o] = rImg.data[o + 1] = rImg.data[o + 2] = r;
+      rImg.data[o + 3] = 255;
+      mean += r / 255;
+      // normal: central differences on the wrapped height field, subtle slope
+      const hx1 = h[y * size + ((x + 1) % size)], hx0 = h[y * size + ((x - 1 + size) % size)];
+      const hy1 = h[((y + 1) % size) * size + x], hy0 = h[((y - 1 + size) % size) * size + x];
+      let nx = (hx0 - hx1) * normalStrength, ny = (hy0 - hy1) * normalStrength;
+      const il = 1 / Math.hypot(nx, ny, 1);
+      nImg.data[o] = Math.round(255 * (nx * il * 0.5 + 0.5));
+      nImg.data[o + 1] = Math.round(255 * (ny * il * 0.5 + 0.5));
+      nImg.data[o + 2] = Math.round(255 * (1 * il * 0.5 + 0.5));
+      nImg.data[o + 3] = 255;
+    }
+  }
+  mean /= size * size;
+  rg2.putImageData(rImg, 0, 0);
+  ng.putImageData(nImg, 0, 0);
+  return { roughMap: tex(rc, { srgb: false }), normalMap: tex(nc, { srgb: false }), mean };
+}
+
+/**
  * Contact-occlusion decal: white at the rim, dark in the middle, drawn with MultiplyBlending so it
  * darkens whatever ground it lies on in linear space. This is the AO tucked under every prop that
  * the shadow map is too coarse to resolve.
@@ -571,13 +648,15 @@ export function makeLightPoolTexture(size = 256) {
   g.fillStyle = '#000';
   g.fillRect(0, 0, size, size);
   const grd = g.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
-  // smootherstep-shaped ramp on a warm sodium-white, black at the rim
+  // smootherstep-shaped ramp on a warm sodium-white, black well BEFORE the rim: the falloff now
+  // completes at 76% of the radius and stays zero to the edge, so the pool blends into the
+  // un-pooled pavement over the outer quarter instead of ending in a hard 6.7x rim cliff (p5)
   const N = 24;
   for (let i = 0; i <= N; i++) {
-    const t = i / N;
-    const f = 1 - t * t * t * (t * (t * 6 - 15) + 10);   // 1 at centre, 0 at rim, C2 at both ends
-    const k = Math.pow(f, 0.85);
-    grd.addColorStop(t, `rgb(${Math.round(255 * k)},${Math.round(240 * k)},${Math.round(214 * k)})`);
+    const t = Math.min(1, (i / N) / 0.76);
+    const f = 1 - t * t * t * (t * (t * 6 - 15) + 10);   // 1 at centre, 0 at 76% radius, C2 at both ends
+    const k = Math.pow(Math.max(f, 0), 0.85);
+    grd.addColorStop(i / N, `rgb(${Math.round(255 * k)},${Math.round(240 * k)},${Math.round(214 * k)})`);
   }
   g.fillStyle = grd;
   g.fillRect(0, 0, size, size);
