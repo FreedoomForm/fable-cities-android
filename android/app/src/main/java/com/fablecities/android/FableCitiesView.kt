@@ -6,6 +6,7 @@ import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.RectF
+import android.view.ScaleGestureDetector
 import android.view.MotionEvent
 import android.view.View
 import kotlin.math.max
@@ -33,6 +34,16 @@ class FableCitiesView(context: Context) : View(context) {
     private var population = 240
     private var message = "Welcome to Fable Cities"
     private var messageTime = 4f
+    private var running = true
+    private var lastFrameNanos = System.nanoTime()
+    private val savedState = CityState.load(context)
+    private val scaleDetector = ScaleGestureDetector(context, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
+        override fun onScale(detector: ScaleGestureDetector): Boolean {
+            zoom = (zoom * detector.scaleFactor).coerceIn(0.65f, 1.65f)
+            invalidate()
+            return true
+        }
+    })
     private val blocks = listOf(
         CityBlock(-390f, -190f, 210f, 145f, 0), CityBlock(-110f, -200f, 190f, 150f, 1),
         CityBlock(170f, -175f, 230f, 135f, 2), CityBlock(-350f, 60f, 230f, 150f, 1),
@@ -40,10 +51,31 @@ class FableCitiesView(context: Context) : View(context) {
         CityBlock(-180f, 285f, 230f, 135f, 2), CityBlock(145f, 280f, 250f, 145f, 1)
     )
 
+    private val frameCallback = object : Runnable {
+        override fun run() {
+            val now = System.nanoTime()
+            val dt = ((now - lastFrameNanos) / 1_000_000_000f).coerceIn(0f, 0.1f)
+            lastFrameNanos = now
+            if (running && !paused) {
+                messageTime = max(0f, messageTime - dt)
+                savedState.hour = (savedState.hour + dt / 18f) % 24f
+                savedState.money = money
+                savedState.population = population
+                savedState.selectedTool = selectedTool.name
+                if (messageTime > 0f || dt > 0f) invalidate()
+            }
+            postOnAnimation(this)
+        }
+    }
+
     init {
         isFocusable = true
         keepScreenOn = true
+        money = savedState.money
+        population = savedState.population
+        selectedTool = Tool.entries.firstOrNull { it.name == savedState.selectedTool } ?: Tool.SELECT
         setBackgroundColor(Color.rgb(9, 14, 20))
+        postOnAnimation(frameCallback)
     }
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
@@ -176,6 +208,7 @@ class FableCitiesView(context: Context) : View(context) {
     private fun pausedLabel() = if (paused) "PAUSED" else "▶ 1×"
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
+        scaleDetector.onTouchEvent(event)
         val x = (event.x - viewport.left) / scale
         val y = (event.y - viewport.top) / scale
         when (event.actionMasked) {
@@ -207,8 +240,22 @@ class FableCitiesView(context: Context) : View(context) {
         return true
     }
 
-    fun pauseGame() { paused = true; invalidate() }
-    fun resumeGame() { if (isShown) { paused = false; invalidate() } }
+    fun pauseGame() {
+        running = false
+        paused = true
+        savedState.money = money
+        savedState.population = population
+        savedState.selectedTool = selectedTool.name
+        savedState.save(context)
+        invalidate()
+    }
+
+    fun resumeGame() {
+        running = true
+        paused = false
+        lastFrameNanos = System.nanoTime()
+        invalidate()
+    }
 
     private data class CityBlock(val x: Float, val y: Float, val w: Float, val d: Float, val kind: Int)
     private enum class Tool(val label: String) { SELECT("Select"), ROAD("Road"), ZONE("Zone"), SERVICE("Service"), BULLDOZE("Bulldoze") }
