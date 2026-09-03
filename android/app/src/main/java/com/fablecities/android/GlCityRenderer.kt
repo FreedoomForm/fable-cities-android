@@ -609,7 +609,7 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         val center = cellCenter(idx)
         if (roadDistance(center[0], center[1]) < 0f) return false
         for (b in buildings) if (!b.removed && b.cell == idx) return false
-        val rng = Random(idx * 31 + 7)
+        val rng = Random(idx * 31L + 7)
         addBuilding(center[0] - cellSize / 2f, center[1] - cellSize / 2f, rng, cellSize, forcedKind = 3)
         selectedBuilding = null
         rebuildEditMeshes()
