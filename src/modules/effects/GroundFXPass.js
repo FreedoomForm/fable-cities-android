@@ -58,8 +58,15 @@ uniform float uRipple;       // rain intensity → wobble in the mirror
 uniform vec3 uHorizon;       // ndc y of the horizon, falloff, strength (night light-pollution glow)
 uniform vec3 uGlowColor;
 uniform vec2 uOcclusion;     // occlusion strength, cool sky-bounce fraction
+uniform float uContactDark;  // how dark a confirmed contact patch goes (multiplicative)
+uniform float uNight;        // 0 day … 1 night — clamps the SSR miss fallback to near-black
 uniform sampler2D uPoolMap;  // world-space drainage map from PuddleField (R pool, G tyre band, B corridor)
 uniform vec4 uPoolXf;        // originX, originZ, 1/spanMetres, hasMap
+// analytic emitters for the wet mirror (p5 blocker: SSR cannot see lamps/headlights that are
+// off-screen or above the frame, so the wet night road carried no reflected light at all)
+uniform vec4 uWetLights[12];     // xyz = world position, w = intensity (0 = unused slot)
+uniform vec3 uWetLightCol[12];   // emitter radiance colour
+uniform int uWetLightN;
 
 varying vec2 vUv;
 ${FX_NOISE_GLSL}
@@ -166,14 +173,15 @@ void main() {
     shadow = 1.0 - uContact.x * hit * (1.0 - smoothstep(120.0, 380.0, dist));
   }
 
-  float shade = min(ao, shadow);
-  // Occlusion is an AMBIENT term, and in daylight the ambient IS the sky. Multiplying it toward black is
-  // what turned every object base into a hole (20-36 % of the frame clipped to RGB(0,0,0)); instead the
-  // occluded fraction is replaced by a dim, COOL sky bounce. The crease then reads deeper *and* bluer
-  // than the lit surface, which is LOOK_TARGET row 13 (CS2 shadows measure 1.3-2.2x bluer per unit red;
-  // ours measured 0.35-0.65 — the wrong way round).
-  float occ = (1.0 - shade) * uOcclusion.x;
-  c = c * (1.0 - occ) + uSkyColor * (luma(c) + 0.0015) * occ * uOcclusion.y;
+  // Occlusion is split in two (p5 major: contact patches could not darken — every occluded pixel
+  // kept a 30-40 % cool sky bounce, so tyre contact was only slightly cooler than the road):
+  //  - the BROAD hemisphere AO stays an ambient term resolved to a dim, COOL sky bounce. The crease
+  //    reads deeper *and* bluer than the lit surface (LOOK_TARGET row 13).
+  //  - the tight CONTACT band multiplies toward near-black with no sky add — the first 0.3 m under
+  //    a wheel must actually go dark below the surrounding asphalt.
+  float occAO = (1.0 - ao) * uOcclusion.x;
+  c = c * (1.0 - occAO) + uSkyColor * (luma(c) + 0.0015) * occAO * uOcclusion.y;
+  c *= 1.0 - (1.0 - shadow) * uContactDark;
 
   // ---------------- wet reflections ----------------
   float up = dot(N, uUpView);
@@ -199,6 +207,9 @@ void main() {
       fxValueNoise(W.xz * 1.7 + vec2(uTime * 0.05, 0.0)) - fxValueNoise(W.xz * 1.7 + vec2(0.3 + uTime * 0.05, 0.0)),
       fxValueNoise(W.xz * 1.7 + vec2(0.0, uTime * 0.05)) - fxValueNoise(W.xz * 1.7 + vec2(0.0, 0.3 + uTime * 0.05)));
     g += vec2(fxValueNoise(W.xz * 1.45) - 0.5, fxValueNoise(W.xz * 1.45 + 31.0) - 0.5) * (0.30 + 0.5 * uRipple);
+    // second octave at ~0.3x frequency (p5 minor: a single world-space frequency aliases into
+    // 20-40 px horizontal bands on the foreground carriageway at grazing angles)
+    g += vec2(fxValueNoise(W.xz * 0.47) - 0.5, fxValueNoise(W.xz * 0.47 + 17.0) - 0.5) * 0.55;
     float NdV = clamp(-dot(N, V), 0.0, 1.0);
     float F = 0.028 + 0.972 * pow(1.0 - NdV, 4.5);
     // world-space tilt → view space: long, soft vertical smears on damp tarmac, a clean mirror in a pool.
@@ -210,8 +221,10 @@ void main() {
 
     // what a MISSED ray sees: near-horizontal rays look at the horizon haze, steep ones at the sky.
     // Using the zenith colour for everything is what turns a grazing wet road into a white sheet.
+    // At night a miss must go DARK (p5 blocker: the pale-blue fallback wash is why the night wet
+    // road read as flat grey) — the analytic emitters below supply the actual reflected light.
     vec3 Rw = mat3(uViewInv) * reflect(V, N);
-    vec3 miss = mix(uHaze, uSkyColor, smoothstep(0.03, 0.40, Rw.y)) * 0.75;
+    vec3 miss = mix(uHaze, uSkyColor, smoothstep(0.03, 0.40, Rw.y)) * 0.75 * (1.0 - 0.92 * uNight);
     vec3 refl = miss;
     float conf = 0.0;
     if (R.z < 0.35) {                                   // ray not flying straight at the camera
@@ -260,6 +273,41 @@ void main() {
     c = mix(c, refl, k);
     // a pool is water, not paint: extra darkening under it keeps the mirror readable
     c *= 1.0 - 0.20 * pool * uWet;
+
+    // ---------------- analytic emitter smears (lamps, head- and tail-lights) ----------------
+    // The mirror image of a point emitter across the (wobbled) water plane is a streak: tight
+    // across the road, stretched ALONG the view vertical — which is what CS2's 15 m tail-light
+    // smears are. Per emitter: distance from the reflected ray to the mirrored emitter position,
+    // with the vertical error tolerated ~6x more than the horizontal one. In a pool the streak is
+    // sharp; on damp tarmac it spreads into the broad vertical sheen.
+    if (uWetLightN > 0) {
+      vec3 acc = vec3(0.0);
+      vec3 RwDir = mat3(uViewInv) * R;
+      RwDir /= max(length(RwDir), 1e-4);
+      for (int i = 0; i < 12; i++) {
+        if (i >= uWetLightN) break;
+        vec4 Le = uWetLights[i];
+        if (Le.w <= 0.0) continue;
+        vec3 M = vec3(Le.x, 2.0 * W.y - Le.y, Le.z);   // emitter mirrored across the water plane
+        vec3 toM = M - W;
+        float t = dot(toM, RwDir);
+        if (t <= 0.5) continue;
+        vec3 diff = toM - RwDir * t;
+        float dh2 = dot(diff.xz, diff.xz);
+        float dv = abs(diff.y);
+        float sh = mix(0.85, 0.32, pool);              // horizontal half-width of the streak (m)
+        float sv = mix(2.0, 0.85, pool);               // vertical smear tolerance (m) — kept tight so a
+                                                       // grazing ray hugging the ground can never sit
+                                                       // ~8 m from a lamp image and still glow (that
+                                                       // read as a horizontal beam across the road)
+        float w = exp(-dh2 / (sh * sh)) * exp(-dv * dv / (sv * sv));
+        if (w < 0.004) continue;
+        float att = 1.0 / (1.0 + 0.0016 * t * t);
+        acc += uWetLightCol[i] * (Le.w * w * att);
+      }
+      // Fresnel keeps the streaks off perpendicular views; pools carry them at nearly full strength
+      c += acc * F * wetMask * (0.30 + 0.70 * pool) * 0.55;
+    }
   }
 
   // ---------------- aerial perspective (lifts blacks toward the sky, desaturates) ----------------
@@ -304,6 +352,11 @@ export class GroundFXPass extends Pass {
       uHorizon: { value: new THREE.Vector3(0, 9, 0) },
       uGlowColor: { value: new THREE.Color(1.0, 0.72, 0.42) },
       uOcclusion: { value: new THREE.Vector2(0.95, 0.30) },
+      uContactDark: { value: 0.72 },
+      uNight: { value: 0 },
+      uWetLights: { value: null },
+      uWetLightCol: { value: null },
+      uWetLightN: { value: 0 },
       uPoolMap: { value: null },
       uPoolXf: { value: new THREE.Vector4(0, 0, 0, 0) },
     };

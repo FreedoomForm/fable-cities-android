@@ -28,6 +28,18 @@ export async function showcase(ctx) {
   const rng = makeRng(world.seed ^ 0x5ca5e);
   const log = (...a) => console.info('[effects:showcase]', ...a);
 
+  // p5 minor 7: the module's headline deliverable is the wet look, but the documented URL
+  // (?showcase=effects&seed=7) rendered a dry sunny street and reviewers burned renders before they
+  // could see the surface the module is judged on. Default the showcase to rain unless the URL
+  // explicitly asks for another weather (?weather=… still wins).
+  try {
+    const explicit = new URLSearchParams(window.location.search).get('weather');
+    if (!explicit && world.env?.api?.setWeather) {
+      world.env.api.setWeather('rain', { instant: true });
+      log('showcase defaults to weather=rain (pass ?weather=clear to shoot dry)');
+    }
+  } catch (err) { log('weather default failed', err); }
+
   // one plateau that contains the whole district and every camera position
   const y0 = world.terrain.getHeight(0, 0);
   const flat = world.terrain.api?.flattenRect;

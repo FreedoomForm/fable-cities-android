@@ -36,6 +36,7 @@ import { VehicleSpray } from './VehicleSpray.js';
 import { ColorGradingPass, MAX_SHIMMER } from './ColorGradingPass.js';
 import { EffectsPass } from './EffectsPass.js';
 import { GroundFXPass } from './GroundFXPass.js';
+import { WetLights } from './WetLights.js';
 import { installWetSurfaces } from './WetSurfaces.js';
 import { PuddleField } from './PuddleField.js';
 
@@ -87,6 +88,8 @@ export async function init(ctx) {
   //     the ground pass both sample (see PuddleField.js) ---
   S.puddles = new PuddleField({ engine, scene, world, seed });
   S.puddleVersion = -1;
+  // real emitters (street lamps, vehicle head/tail-lights) for the analytic wet-mirror streaks
+  S.wetLights = new WetLights();
 
   // --- sprites (procedural, deterministic) ---
   const atlas = makeSmokeAtlas(seed, q.textureSize >= 2048 ? 256 : 128, 4, 4, engine.maxAnisotropy);
@@ -279,8 +282,17 @@ export function update(dt, elapsed) {
     u.uWet.value = wetFx;
     u.uReflect.value = (0.95 + 0.35 * night) * sf.reflect;
     u.uRipple.value = S.rainAmt;
+    u.uNight.value = night;
     // what a mirror sees when the ray leaves the screen: the sky, not the diffuse irradiance
     u.uSkyColor.value.copy(skyRad).multiplyScalar(1.05).addScalar(0.003 * (1 - night));
+    // analytic emitters for the wet mirror: the nearest lamps / vehicle lights to the camera.
+    // Arrays are assigned once and mutated in place — no per-frame allocation.
+    if (u.uWetLights.value !== S.wetLights.pos) {
+      u.uWetLights.value = S.wetLights.pos;
+      u.uWetLightCol.value = S.wetLights.col;
+    }
+    const exposure = engine.renderer.toneMappingExposure || 1;
+    u.uWetLightN.value = S.wetLights.update(dt, S.scene, camera, world.roads ? world.roads.version ?? -1 : -1, exposure);
     // aerial perspective: lifts distant blacks toward the sky colour and drains chroma (LOOK_TARGET 11/12)
     const hazeC = fogC || skyRad;
     u.uHaze.value.copy(hazeC);
@@ -288,7 +300,15 @@ export function update(dt, elapsed) {
     const aerial = S.enabled.aerial ? 1 : 0;
     // Aerial perspective LIFTS distant blacks toward the haze colour (LOOK_TARGET 11/12: the far third
     // should be 1.4-4.1x brighter than the near third; we measured 0.3-1.2, i.e. backwards).
-    u.uAerial.value.set(0.00055 * aerial * sf.aerial, 0.42 * sf.desat, hazeL > 1e-4 ? 0.42 * sf.aerial : 0, 0);
+    // p5 blocker: the 0.42 lift is a DAYLIGHT scattering term — at night it lifted the whole frame
+    // ~6x off the reference black floor (p01 0.089 vs 0.0126). Day keeps the measured look, night
+    // collapses the lift (and rain softens it: a wet atmosphere does not glow).
+    u.uAerial.value.set(
+      0.00055 * aerial * sf.aerial,
+      0.42 * sf.desat,
+      hazeL > 1e-4 ? 0.42 * sf.aerial * (1 - night) * (1 - 0.45 * wetFx) : 0,
+      0,
+    );
     // the drainage map from PuddleField: the SSR march sharpens and strengthens exactly on the pools
     u.uPoolMap.value = S.puddles.mapUniforms.uFxPoolMap.value;
     u.uPoolXf.value.copy(S.puddles.mapUniforms.uFxPoolXf.value);
@@ -472,9 +492,12 @@ export function update(dt, elapsed) {
       // mist lit by the sky plus whatever the vehicle's own lamps throw into it at night
       // Additive mist: at night the sky radiance is ~0, so a purely sky-tinted plume added nothing at all
       // and the spray was invisible in every night frame. The constant term is the street/vehicle light
-      // the mist actually catches after dark.
-      u.uColor.value.copy(skyRad).multiplyScalar(0.85).addScalar(0.006 + 0.075 * night);
-      u.uOpacity.value = 1.35 * (0.45 + 0.55 * S.rainAmt);
+      // the mist actually catches after dark. p5 major: a 0.1-alpha grey sprite over a 0.13-luminance
+      // road is invisible — the plume now carries real radiance (warm at night, sky-lit by day).
+      u.uColor.value.copy(skyRad).multiplyScalar(1.10)
+        .add(tmpC2.setRGB(1.0, 0.88, 0.70).multiplyScalar(0.045 + 0.16 * night))
+        .addScalar(0.012);
+      u.uOpacity.value = 2.1 * (0.45 + 0.55 * S.rainAmt);
       sp.sync(S.world.traffic?.list || S.world.traffic?.vehicles, camera.position, S.wetness, 150);
     } else if (sp.geometry.instanceCount) {
       sp.geometry.instanceCount = 0;

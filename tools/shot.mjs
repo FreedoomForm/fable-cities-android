@@ -98,6 +98,13 @@ try {
       logs.length = 0;
     }
   }
+  // A vite full reload (config/HMR rollback) re-boots the page AFTER the ready gate resolved, and
+  // every screenshot then comes out as a 'LOADING …' overlay. Re-check, right here, that the page
+  // is booted: ready flag AND the loading overlay actually hidden.
+  await page.waitForFunction(
+    'window.__game && window.__game.ready === true && (!document.getElementById("loading") || document.getElementById("loading").classList.contains("hidden"))',
+    { timeout, polling: 500 },
+  );
   const gpu = await page.evaluate(() => {
     try {
       const gl = window.__game.engine.renderer.getContext();
@@ -120,6 +127,11 @@ try {
   const base = out.slice(0, out.length - (path.extname(out) ? ext.length : 0));
 
   for (const combo of combos) {
+    // per-shot re-gate: if the page reloaded mid-run, wait out the re-boot instead of shooting it
+    await page.waitForFunction(
+      'window.__game && window.__game.ready === true && (!document.getElementById("loading") || document.getElementById("loading").classList.contains("hidden"))',
+      { timeout, polling: 500 },
+    );
     if (combo.preset) await page.evaluate((p) => window.__game.setCamera(p, true), combo.preset);
     if (combo.time != null) await page.evaluate((t) => window.__game.setTime(parseFloat(t)), combo.time);
     // Poll the frame counter with short evaluates — one long waitStable evaluate trips the
