@@ -42,6 +42,7 @@ const logs = [];
 let code = 0;
 try {
   const page = await browser.newPage();
+  page.setDefaultTimeout(+args['ready-timeout'] || 150000);
   page.on('console', (m) => logs.push({ type: m.type(), text: m.text() }));
   page.on('pageerror', (e) => logs.push({ type: 'pageerror', text: String(e && e.message || e) }));
   await page.goto(url.toString(), { waitUntil: 'domcontentloaded', timeout: 150000 });

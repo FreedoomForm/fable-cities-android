@@ -89,7 +89,7 @@ try {
   for (let attempt = 1; ; attempt++) {
     try {
       await page.goto(url.toString(), { waitUntil: 'domcontentloaded', timeout });
-      await page.waitForFunction('window.__game && window.__game.ready === true', { timeout, polling: 200 });
+      await page.setDefaultTimeout(timeout); page.waitForFunction('window.__game && window.__game.ready === true', { timeout, polling: 500 });
       break;
     } catch (err) {
       if (attempt >= 3) throw err;

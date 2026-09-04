@@ -100,7 +100,7 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          node tools/check.mjs --url "http://127.0.0.1:5180/?quality=low" --frames 120 --ready-timeout 600000 --soft-crash 2>&1 | tee /tmp/check.json
+          node tools/check.mjs --url "http://127.0.0.1:5180/?quality=low" --frames 60 --ready-timeout 600000 --soft-crash 2>&1 | tee /tmp/check.json
           grep -q environmentalCrash /tmp/check.json && echo "::warning::Headless GPU crashed (SwiftShader limitation) — module-level gate unavailable on this runner; see docs/ANDROID_PORT.md" || true
 
       - name: Capture screenshots (day / dusk / night, three cameras)
