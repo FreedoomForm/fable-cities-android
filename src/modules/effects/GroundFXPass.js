@@ -205,7 +205,7 @@ void main() {
     float pool = max(poolMap, fxPuddleMask(W.xz, uWet, rim) * offRoad);
     // ripples / micro-relief: plain damp tarmac wobbles the mirror (long vertical light smears),
     // a pool is nearly flat so it reflects sharply
-    float rough = mix(0.85, 0.16, pool);
+    float rough = mix(0.85, 0.10, pool);
     vec2 g = vec2(
       fxValueNoise(W.xz * 1.7 + vec2(uTime * 0.05, 0.0)) - fxValueNoise(W.xz * 1.7 + vec2(0.3 + uTime * 0.05, 0.0)),
       fxValueNoise(W.xz * 1.7 + vec2(0.0, uTime * 0.05)) - fxValueNoise(W.xz * 1.7 + vec2(0.0, 0.3 + uTime * 0.05)));
@@ -231,12 +231,11 @@ void main() {
     // actually above it, and clamping the fallback to 8 % is what left the p6 puddles with no
     // image at all (the analytic smears alone cannot fill a metre-wide pool). Damp tarmac still
     // clamps hard so the road itself never turns back into a pale sheet.
-    // p8: audit measured night ground p99 0.0099 — pools still black. Two levers: the damp clamp
-    // relaxes a little more (0.92 → 0.86) AND an explicit night-skyglow floor is added to the
-    // miss fallback. CS2 night rain frames sit at p01 ≈ 0.0126 linear; ours measured 0.0036-0.0048.
+    // p9: the p8 ambient lifts (skyglow add, relaxed damp clamp) are REVERTED — the p8 audit
+    // re-measured cs2_08 with the identical linear pipeline: ref ground p10 is 0.0038, ours was
+    // 0.0118-0.0128 (3x TOO BRIGHT, not dark — the p7 "0.0126 anchor" was a measurement artefact).
     vec3 miss = mix(uHaze, uSkyColor, smoothstep(0.03, 0.40, Rw.y)) * 0.75
-                * (1.0 - 0.86 * uNight * (1.0 - 0.78 * pool));
-    miss += vec3(0.0030, 0.0038, 0.0052) * uNight * (0.35 + 0.65 * pool);
+                * (1.0 - 0.92 * uNight * (1.0 - 0.78 * pool));
     vec3 refl = miss;
     float conf = 0.0;
     if (R.z < 0.35) {                                   // ray not flying straight at the camera
@@ -300,7 +299,14 @@ void main() {
         if (i >= uWetLightN) break;
         vec4 Le = uWetLights[i];
         if (Le.w <= 0.0) continue;
-        vec3 M = vec3(Le.x, 2.0 * W.y - Le.y, Le.z);   // emitter mirrored across the water plane
+        // p9 ROOT CAUSE (the emitters had NEVER rendered — not in p6/p7/p8): the code mirrored the
+        // emitter across the water plane (M.y = 2W.y − Le.y, BELOW the surface) while marching the
+        // reflected ray UPWARD (RwDir.y > 0 for an up-facing surface). dot(toM, RwDir) was therefore
+        // negative for every pixel of every frame and the t <= 0.5 guard skipped every emitter.
+        // All the columns the critics saw were SSR hits and the roads module's own lamp pools.
+        // The physical path is light leaving the REAL emitter, bouncing at W, rising to the camera —
+        // so the marched ray is tested against the TRUE emitter position.
+        vec3 M = Le.xyz;
         vec3 toM = M - W;
         float t = dot(toM, RwDir);
         if (t <= 0.5) continue;
@@ -308,28 +314,33 @@ void main() {
         float dh2 = dot(diff.xz, diff.xz);
         float dv = abs(diff.y);
         float sh = mix(0.85, 0.32, pool);              // horizontal half-width of the streak (m)
-        // p8 audit blocker: sv IN A POOL was TIGHTER than on damp tarmac (0.85 vs 2.0 m) — a pool
-        // mirror wobbles with ripples and a light column in water is TALL, so the razor-thin band
-        // caught nothing and every pool read pure black (ground p99 0.0099). Pools now stretch the
-        // image vertically (the classic CS2 light river); damp tarmac keeps the moderate band that
-        // p6 tuned to kill the grazing-ray horizontal beam.
-        float sv = mix(1.9, 3.0, pool);
+        // p8: perceptual brightness per emitter (tail radiance carries only 0.22 luma — unnormalised,
+        // the red streaks land 4x dimmer than white and read as murky).
+        vec3 colN = uWetLightCol[i] / max(luma(uWetLightCol[i]), 0.25);
+        // p8: pools stretch the image vertically (the CS2 light river); damp keeps the moderate
+        // band that p6 tuned to kill the grazing-ray horizontal beam.
+        // p9 audit: 3.0 m traded reach for crispness → 2.5; the wobble below tightens with it.
+        float sv = mix(1.9, 2.5, pool);
+        // p9 audit blocker (2 rounds): tail-light mirrors can NEVER form a geometric column — a tail
+        // sits ~0.6 m above the plane so its mirror is only ~1.2 m away, versus a 9 m lamp's 18 m
+        // path. CS2's red rivers are the BLOOM of the emitter smeared vertically by the wet shader.
+        // Red-dominant emitters (colN.r ≫ colN.g after normalisation) get a tall, slightly wider
+        // smear so queued traffic paints the road behind it.
+        float tailish = smoothstep(2.0, 5.0, colN.r / max(colN.g, 0.05));
+        sv *= mix(1.0, 3.6, tailish);
+        sh *= mix(1.0, 1.35, tailish);
         float w = exp(-dh2 / (sh * sh)) * exp(-dv * dv / (sv * sv));
         if (w < 0.004) continue;
         // p8: CS2 corridors carry columns from lamps 60-150 m away; 0.0016 cut everything past
         // ~45 m. 0.0009 keeps the near-field weight identical and doubles the far reach.
         float att = 1.0 / (1.0 + 0.0009 * t * t);
-        // p8 audit blocker: tail-light radiance (1, 0.075, 0.03) carries only 0.22 luma, so the red
-        // streaks landed ~4x dimmer than white columns and the red rivers never appeared. Equalise
-        // PERCEPTUAL brightness per emitter (red stays red, just not murky): normalise by luma with
-        // a floor so headlights/lamps do not over-boost.
-        vec3 colN = uWetLightCol[i] / max(luma(uWetLightCol[i]), 0.25);
         acc += colN * (Le.w * w * att);
       }
-      // Fresnel keeps the streaks off perpendicular views; pools carry them at nearly full strength
-      // p7: amplitude x2-x3 (p6 audit measured the columns a fraction of the CS2 reference) and the
-      // damp-tarmac floor raised so tail-light smears survive off-pool.
-      c += acc * F * wetMask * (0.45 + 0.80 * pool) * 1.35;
+      // Fresnel keeps the streaks off perpendicular views; pools carry them at nearly full strength.
+      // p9: emitter term gets a Fresnel FLOOR (0.25) — self-luminous mirrors do not need the sky
+      // Fresnel gate at full strength, and the tail rivers died exactly at the moderate NdV the
+      // street views live at.
+      c += acc * (0.25 + 0.75 * F) * wetMask * (0.45 + 0.80 * pool) * 1.35;
     }
   }
 

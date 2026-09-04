@@ -111,20 +111,27 @@ export class WetLights {
     }
 
     camera.getWorldPosition(_cam);
-    // p8 audit major: only 1-3 readable columns per street frame vs CS2's dozen-plus — the nearest-12
-    // rule wasted slots on lamps BEHIND the camera. Deprioritise behind-camera emitters (x4 distance
-    // penalty) so the visible corridor fills the slots first without ever losing a near light.
+    // p9 root cause 3: "nearest 12" is fundamentally wrong for any camera above the rooftops. What
+    // matters is whether the emitter's REFLECTION LOCUS lands inside the view frustum — and the locus
+    // of a lamp 8 m from a 20 m-high camera is ~5 m from the camera footprint, i.e. BEHIND the frame
+    // (a 16° pitch frustum first touches ground ~4·camY out). Rank by the angular deviation of the
+    // emitter seen from the camera MIRRORED about the road plane: that is exactly the direction the
+    // reflected view ray travels, so in-frustum emitters win no matter the camera height.
     _fwd.setFromMatrixColumn(camera.matrixWorld, 2).negate();   // camera looks down -Z
+    const mcY = -_cam.y;                                        // mirrored camera height
     const cand = this._candidates;
     cand.length = 0;
     for (const l of this._lamps) {
       const dx = l.x - _cam.x, dy = l.y - _cam.y, dz = l.z - _cam.z;
-      let d2 = dx * dx + dy * dy + dz * dz;
+      const d2 = dx * dx + dy * dy + dz * dz;
       if (d2 > 62500) continue;                       // 250 m: past that the smear is sub-pixel
-      if (dx * _fwd.x + dy * _fwd.y + dz * _fwd.z < 0) d2 *= 4;
+      // direction from the MIRRORED camera to the emitter (the reflected ray's world direction)
+      const rx = l.x - _cam.x, ry = l.y - mcY, rz = l.z - _cam.z;
+      const rl = Math.sqrt(rx * rx + ry * ry + rz * rz) || 1;
+      const cosA = (rx * _fwd.x + ry * _fwd.y + rz * _fwd.z) / rl;   // 1 = dead-centre of the view
       // p7: 2.1 → 3.2 — the p6 audit measured the lamp columns visibly dimmer than the CS2
       // reference; the pool column has to read at a glance.
-      cand.push({ x: l.x, y: l.y, z: l.z, r: 1.00, g: 0.80, b: 0.58, i: 3.2, d2 });
+      cand.push({ x: l.x, y: l.y, z: l.z, r: 1.00, g: 0.80, b: 0.58, i: 3.2, d2, cosA });
     }
     const glare = this._glare;
     // p6 audit root cause: traffic writes radiance into the CUSTOM `aGlare` InstancedBufferAttribute
@@ -134,7 +141,11 @@ export class WetLights {
     // (head 1.32·hI / tail 1.0·tI), so no exposure recovery is applied.
     const glareAttr = glare ? glare.geometry.getAttribute('aGlare') : null;
     if (glare && glare.visible && glare.count > 0 && glareAttr) {
-      const n = Math.min(glare.count, 260);
+      // p9 root cause 2: the cap was 260 of up to 900 instances — the writer fills glares in traffic
+      // iteration order (mostly FAR vehicles), so the camera-near queue was never even read and the
+      // 12 slots went to 200 m tails (att ≈ 0.03 → invisible). Read them all; the d2 sort below
+      // already picks the nearest.
+      const n = Math.min(glare.count, 900);
       for (let i = 0; i < n; i++) {
         glare.getMatrixAt(i, _m);
         // the glare quads face the camera and carry no scale in a fixed 1x1 plane — the position
@@ -145,17 +156,24 @@ export class WetLights {
         const b = glareAttr.array[i * 3 + 2] || 0;
         const maxC = Math.max(r, g, b);
         if (maxC < 0.02) continue;
-        let d2 = (_p.x - _cam.x) ** 2 + (_p.y - _cam.y) ** 2 + (_p.z - _cam.z) ** 2;
-        if (d2 > 40000) continue;                     // 200 m
         const dxv = _p.x - _cam.x, dyv = _p.y - _cam.y, dzv = _p.z - _cam.z;
-        if (dxv * _fwd.x + dyv * _fwd.y + dzv * _fwd.z < 0) d2 *= 4;
-        cand.push({ x: _p.x, y: _p.y, z: _p.z, r: r / maxC, g: g / maxC, b: b / maxC, i: maxC * 1.5, d2 });
+        const d2 = dxv * dxv + dyv * dyv + dzv * dzv;
+        if (d2 > 40000) continue;                     // 200 m
+        const rx = _p.x - _cam.x, ry = _p.y - mcY, rz = _p.z - _cam.z;
+        const rl = Math.sqrt(rx * rx + ry * ry + rz * rz) || 1;
+        const cosA = (rx * _fwd.x + ry * _fwd.y + rz * _fwd.z) / rl;
+        // p9: red-dominant (tail) emitters carry a higher mirror intensity — their radiance is
+        // genuinely dimmer than headlamps, and the shader stretches rather than brightens the smear.
+        const redDom = r > 2.5 * Math.max(g, 0.02);
+        cand.push({ x: _p.x, y: _p.y, z: _p.z, r: r / maxC, g: g / maxC, b: b / maxC, i: maxC * (redDom ? 2.6 : 1.5), d2, cosA });
       }
     }
     this.stats.vehicles = cand.length - this.stats.lamps;
 
-    // nearest to the camera win — the mirror the player actually sees is the one in front of them
-    cand.sort((a, b) => a.d2 - b.d2);
+    // p9: in-frustum wins — rank by angular deviation from the mirrored-camera view direction, then
+    // by distance as a tie-break. cosA < 0.2 (~78° off-axis) is outside any of our framings.
+    cand.sort((a, b) => (b.cosA - a.cosA) || (a.d2 - b.d2));
+    for (let i = cand.length - 1; i >= 0; i--) if (cand[i].cosA < 0.2) cand.splice(i, 1);
     this.count = Math.min(cand.length, MAX_LIGHTS);
     for (let i = 0; i < this.count; i++) {
       const s = cand[i];

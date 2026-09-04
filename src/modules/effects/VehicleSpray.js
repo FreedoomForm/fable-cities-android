@@ -43,6 +43,13 @@ void main() {
   // p8: the audit bracket is now measured — 3.2 growth read as white cotton foam, 2.0 was
   // invisible (VLM 0/10). 2.6 sits between: puffs reach ~0.9 m, a mist trail, not a sheet.
   float s = aSeed.z * (0.42 + 2.6 * u) * (0.62 + 0.05 * speed);
+  // p9 ROOT CAUSE (audit: "parameter tuning is proven not the bottleneck"): the spray texture's
+  // content (drops + haze + bead) lives in the BOTTOM 40 % of the sprite, but the billboard was
+  // anchored at the rear axle (road + 0.05 m) — the content projected BELOW the road plane and the
+  // depth soft-test erased it. Growth 3.2 accidentally lifted content above the road (= the p6
+  // foam); 2.0 sank it (= the p7 invisibility). Anchor the CONTENT just above the road instead:
+  // raise the sprite centre by ~45 % of the puff size so the mist fans UP from the contact patch.
+  p.y += s * 0.45;
   vAlpha = smoothstep(0.0, 0.08, u) * pow(1.0 - u, 1.5) * strength;
   vUv = aCorner * 0.5 + 0.5;
   vec4 mv = modelViewMatrix * vec4(p, 1.0);
@@ -66,7 +73,9 @@ varying float vViewZ;
 ${DEPTH_PARS}
 void main() {
   float a = texture2D(uTex, vUv).a * vAlpha * uOpacity;
-  if (uHasDepth > 0.5) a *= clamp((vViewZ - effectsSceneViewZ() + 0.15) / 0.4, 0.0, 1.0);
+  // p9: bias +0.15 → +0.35 — puffs hug the road surface; the soft test at +0.15 was killing the
+  // lower half of every puff that leant even slightly away from the camera.
+  if (uHasDepth > 0.5) a *= clamp((vViewZ - effectsSceneViewZ() + 0.35) / 0.5, 0.0, 1.0);
   if (a < 0.003) discard;
   float fogAtt = 1.0;
   #ifdef USE_FOG

@@ -116,6 +116,13 @@ try {
   });
 
   if (args.eval) await page.evaluate(String(args.eval));
+  if (args.probe) {
+    // --probe "<js expression>" → evaluate after the ready gate and record the JSON result in the
+    // log (the console arrays only carry warnings/errors, so info-level dumps never persisted).
+    let probe = null, probeErr = null;
+    try { probe = await page.evaluate(String(args.probe)); } catch (e) { probeErr = String(e && e.message || e); }
+    var probeResult = { probe, probeErr };
+  }
   if (args.view) {
     await page.evaluate((v) => window.__game.setCamera(JSON.parse(v), true), String(args.view));
   }
@@ -161,6 +168,7 @@ try {
   const moduleStatus = await page.evaluate(() => window.__game.moduleStatus);
   const summary = await page.evaluate(() => window.__game.sceneSummary());
   const report = { url: url.toString(), gpu, moduleStatus, results, errors, warningCount: warnings.length, warnings: warnings.slice(0, 20), sceneSummary: summary };
+  if (typeof probeResult !== 'undefined') report.probe = probeResult;
   fs.writeFileSync(`${base}.log.json`, JSON.stringify(report, null, 2));
   console.log(`gpu: ${gpu}`);
   const failed = Object.entries(moduleStatus).filter(([, s]) => !s.ok).map(([n]) => n);

@@ -284,10 +284,9 @@ export function update(dt, elapsed) {
     u.uRipple.value = S.rainAmt;
     u.uNight.value = night;
     // what a mirror sees when the ray leaves the screen: the sky, not the diffuse irradiance
-    // p8 audit: night floors measured ~3x darker than the cs2_08 anchor (p01 0.0036-0.0056 vs 0.0126).
-    // The night ambient key lives HERE — the sky radiance the wet-mirror miss fallback and the AO
-    // bounce are resolved to. +60 % on the night sky + a small constant (day frame untouched).
-    u.uSkyColor.value.copy(skyRad).multiplyScalar(1.05 + 0.60 * night).addScalar(0.003 * (1 - night) + 0.004 * night);
+    // p9: the p8 night ambient key is REVERTED — the audit re-measured cs2_08 identically (linear
+    // pipeline): ref ground p10 0.0038 vs our 0.0118-0.0128. We were 3x TOO BRIGHT, not dark.
+    u.uSkyColor.value.copy(skyRad).multiplyScalar(1.05).addScalar(0.003 * (1 - night));
     // analytic emitters for the wet mirror: the nearest lamps / vehicle lights to the camera.
     // Arrays are assigned once and mutated in place — no per-frame allocation.
     if (u.uWetLights.value !== S.wetLights.pos) {
@@ -531,9 +530,9 @@ export function update(dt, elapsed) {
     u.uContrast.value = damp(u.uContrast.value, (1.52 - night * 0.26 - cloud * 0.05 - wet * 0.03 - snowing * 0.08 - snow * 0.06) * gm.contrast, L, dt);
     // Toe: -0.92 crushed a fifth to a third of every daytime frame to pure black. -0.58 keeps the filmic
     // shape; the black FLOOR is now bought by the soft black level and the exposure/ambient key instead.
-    // p8 audit: night floors measured 0.0036-0.0056 linear vs the cs2_08 anchor 0.0126 — ~3x too dark.
-    // The night toe lift goes 0.18 → 0.30 (+~0.35 EV at the toe only; highlights ride the shoulder).
-    u.uToe.value = damp(u.uToe.value, -0.58 * dayA * (1 - 0.15 * cloud) * (1 - 0.12 * wet) * (1 - 0.6 * snow) + 0.30 * night + 0.10 * snow * dayA, L, dt);
+    // p9: night lift back to 0.18 — the p8 0.30 experiment overshot (audit: ref night ground p10 is
+    // 0.0038; ours was already 3x brighter). The p7 "0.0126 anchor" did not reproduce.
+    u.uToe.value = damp(u.uToe.value, -0.58 * dayA * (1 - 0.15 * cloud) * (1 - 0.12 * wet) * (1 - 0.6 * snow) + 0.18 * night + 0.10 * snow * dayA, L, dt);
     u.uShoulder.value = damp(u.uShoulder.value, 0.34 + snow * 0.06 + lowSun * 0.20, L, dt);
     u.uBlack.value = damp(u.uBlack.value, 0.0072 * dayA * (1 - 0.15 * cloud) * (1 - snow * 0.7) + 0.0026 * night, L, dt);
     // white-point anchoring: the bright percentile (p4 power mean) of the ungraded frame is gained so that
@@ -911,6 +910,16 @@ function makeApi() {
       };
     },
     get snowCover() { return S.snowCover; },
+    /** p9 diagnostics: what the ground pass is actually about to upload for the analytic emitters. */
+    get groundDebug() {
+      const u = S.groundFX.uniforms;
+      return {
+        n: u.uWetLightN.value,
+        hasArr: !!u.uWetLights.value,
+        pos3: u.uWetLights.value ? u.uWetLights.value.slice(0, 3).map((v) => v.toArray().map((x) => +x.toFixed(1))) : null,
+        col3: u.uWetLightCol.value ? u.uWetLightCol.value.slice(0, 3).map((c) => [+c.r.toFixed(2), +c.g.toFixed(2), +c.b.toFixed(2)]) : null,
+      };
+    },
     get rain() { return S.rainAmt; },
     get snow() { return S.snowAmt; },
     stats() {

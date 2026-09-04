@@ -1,0 +1,53 @@
+{
+  "module": "effects",
+  "round": "p8",
+  "score": 7.5,
+  "pass": false,
+  "verified": [
+    "Zero console errors across all 7 p8 log.json runs (errors:[] and warningCount:0 everywhere); moduleStatus ok on all shots",
+    "BLOCKER 1 (pools radiance-starved) LARGELY FIXED: the dedicated close view night_road.png now shows visible reflected light on the wet ground — ground p99 0.60 linear and 6.6% of ground pixels >0.3 luma, vs p7 night_puddle's pure-black p99 0.0076 and literally 0 px >0.3. VLM before/after on identical crops: p7 'almost entirely black', p8 'clear, bright reflections of windows on the wet ground', convincingness 7/10 (held back by noise/grain and no colour bleed). The vertical-smear tolerance 3.0 m + night skyglow miss fallback did radiate the pools",
+    "BLOCKER 4 (night floors ~3x dark) RESOLVED — and the p7 anchor itself was wrong: re-measured with the identical srgb→lin Rec.709 method, the actual night reference cs2_08 is full p01 0.0010 / p10 0.0041, ground p10 0.0038 — our p8 night street ground p10 0.0118-0.0128 is ~3x BRIGHTER than cs2_08, not 3x darker. The p7 blocker's 0.0126 anchor does not reproduce on cs2_08 and the LOOK_TARGET 0.010 figure is a DAYTIME black-floor target (median of day beauty frames cs2_02/04/11/12), so the builder's wet-surface rebuttal is directionally right. Whole-frame p01 0.0044-0.0056 vs cs2_08's 0.0010 also means ours is brighter — dark unlit facades are not under-floored. Verdict: stop lifting; the night floor is now in-family (night_street ground p99 0.547 vs cs2_08 0.570 — remarkably matched)",
+    "BLOCKER 5 (only 1-3 columns) PARTIALLY FIXED: readable columns per street frame now 4-6 (VLM, was 1-3 in p7); far-column attenuation softening is visible in the city frame (664 ground columns >4x median vs 197 in the p7 street shot)",
+    "BLOCKER 6 (evidence) MOSTLY FIXED: night_city.png shot WITH buildings+zoning now carries a believable lit-window skyline (13.6k warm px, 'densely packed lit windows, strong city glow' per VLM) — the p7 unrepresentatively-black city evidence is superseded. day rain frames show genuinely wet asphalt (dark damp patches, speculars, no cotton foam, dry-frame regression still clean)",
+    "Night evidence at quality=medium is ACCEPTED: reflection/streak/floor behaviour is a quality-independent effects path and the medium frames measure identically in-family with the close custom view; the OOM constraint on SwiftShader is a legitimate reason",
+    "day_rain_close red px 6866 come from red building/awning signage, not artifacts; red_ground in day frames is negligible and correct"
+  ],
+  "blockers": [
+    "CLAIM 2 (red tail streaks) FAILED FOR A SECOND ROUND: despite luma-normalised emitter colours, there is not one readable red streak on asphalt anywhere. VLM on full frames AND 2x crops of the exact red-cluster regions (night_road x600-800/y200-400, night_corridor x180-540/y330-450): 'no red vertical streaks or smears visible'. Measured red_ground is marginal (night_street 11 px, night_road 82, night_corridor 325) vs cs2_08's 190,559 red ground pixels (26% of its ground band) — and night_street's red_ground actually FELL from p7's 38. The red that exists is dim scatter/dither, not a tail-light river. Whatever the shader does to tail radiance, it is not surviving the mirror path at visible amplitude",
+    "CLAIM 3 (spray) STILL DEAD FOR A SECOND ROUND: VLM scores wheel spray 0/10 on day_rain_street AND on the 2x close-intersection crop — 'no visible spray, mist, or tire wake behind any moving or parked vehicles'. The measured bracket (growth 2.6, day sky 0.95, opacity 1.95, night warm 0.30) has again produced nothing perceivable. Two consecutive measured-bracket retunes have failed to cross the visibility threshold — the tuning parameters are evidently not the bottleneck; the emission/placement/scale path needs rework (puffs likely too small, too transparent after the wet-pass, or emitting behind geometry)"
+  ],
+  "majors": [
+    "Lamp reflection columns are still soft-edged and muddy: VLM calls the 4-6 columns 'blurry/soft, lacking sharp definition' at 2x zoom while cs2_08's dozen-plus light rivers are crisp with colour bleed. Count is no longer the main gap — column CRISPNESS and colour separation now are (a vertical-smear tolerance of 3.0 m trades exactly this: reach for sharpness)",
+    "Reflection grain: the pool reflections in night_road read as heavy dither/noise ('static') rather than smooth mirror gradients — VLM's top single improvement request. The skyglow miss fallback + smear banding needs denoising/temporal accumulation to look AAA"
+  ],
+  "minors": [
+    "night_street.png vs night_street2.png are near-duplicates (mean abs RGB delta 0.86/255) — the p7 'stop re-shooting duplicate street frames' instruction was not followed; one of the evidence slots was again wasted",
+    "night_road.png (the single most important pool evidence) ships WITHOUT a .log.json, so its error-free status could not be verified from the log — every evidence frame must carry its log",
+    "Runtime instrumentation exists in code (effects/index.js:667 '[effects] wetLights=... lamps=... vehicles=... sprayEmitters=...') but shot.mjs only persists errors/warnings arrays — console info lines never reach the .log.json, so harvester/spray counts remain unverified for the third round",
+    "Builder's wet-road p10 0.0108 cited against LOOK_TARGET 'reference lum_p10 ≈ 0.010' mixes anchors: that LOOK_TARGET row is a daytime black-floor target (day beauty frames). Fair night anchor is cs2_08 ground p10 0.0038; our street p10 0.0118 is above it. Numbers are fine — the citation should be corrected so future rounds don't chase a day target at night"
+  ],
+  "measurements": {
+    "console_errors_total": 0,
+    "runs_checked": 7,
+    "method": "srgb→linear, Rec.709 luma; ground band = bottom 35% of frame; red px = R>0.12 lin AND R>1.6G AND R>1.6B; identical method applied to reference/cs2_*.jpg",
+    "p8_night_street": { "full_p01": 0.0044, "full_p10": 0.0066, "full_p50": 0.0205, "ground_p01": 0.0071, "ground_p10": 0.0118, "ground_p50": 0.0202, "ground_p99": 0.5468, "red_px": 47, "red_px_ground": 11, "warm_px": 8799, "ground_cols_gt_4x_median": 219, "ground_frac_gt_0.05": 0.17 },
+    "p8_night_street3": { "ground_p10": 0.0128, "ground_p99": 0.5154, "red_px_ground": 16, "warm_px": 9710 },
+    "p8_night_road": { "ground_p01": 0.0052, "ground_p10": 0.0070, "ground_p50": 0.0091, "ground_p99": 0.6002, "red_px_ground": 82, "warm_px": 17114, "ground_px_gt_0.3": 8289 },
+    "p8_night_corridor": { "ground_p99": 0.1419, "red_px_ground": 325, "warm_px": 7926 },
+    "p8_night_city": { "full_p01": 0.0056, "warm_px": 13559, "ground_cols_gt_4x_median": 664, "note": "buildings+zoning in focus; lit-window skyline present (p7: 56 warm px)" },
+    "p8_day_rain_close": { "ground_p50": 0.1487, "ground_p99": 0.5214, "red_px": 6866, "red_px_ground": 40 },
+    "p7_night_puddle_for_comparison": { "ground_p99": 0.0076, "ground_px_gt_0.3": 0, "red_px_ground": 0 },
+    "p7_night_street_for_comparison": { "ground_p10": 0.0101, "ground_p99": 0.5195, "red_px_ground": 38, "warm_px": 5353, "ground_cols_gt_4x_median": 197 },
+    "reference_cs2_08_night_measured_identically": { "full_p01": 0.0010, "full_p05": 0.0027, "full_p10": 0.0041, "ground_p01": 0.0005, "ground_p10": 0.0038, "ground_p50": 0.0327, "ground_p99": 0.5700, "red_px_ground": 190559, "red_ground_frac": 0.26 },
+    "reference_cs2_02_day_for_contrast": { "full_p01": 0.0058, "full_p10": 0.0101 },
+    "reference_note": "reference/cs2_*.jpg now present in repo; cs2_08 = wet-night street (long red/blue streaks per VLM), cs2_05 = night close with matte road, cs2_01/02 day. LOOK_TARGET.md's lum_p10 0.010 row is derived from DAY beauty frames — not a valid night anchor",
+    "duplicate_check": "night_street vs night_street2 mean abs RGB delta 0.86/255 (near-duplicate); vs night_street3 8.74 (distinct)",
+    "vlm_scores": { "pool_reflections_night_road": "7/10 (clear window reflections, held back by noise/grain)", "columns_night_street": "4-6, muddy/soft", "red_streaks": "none visible in any frame or crop", "spray": "0/10 both day frames", "night_city_skyline": "believable city glow" }
+  },
+  "summary": "p8 verifies ~3 of the 6 p7 blockers as fixed or resolved. The pools no longer radiate-starve: the close-view ground went from pure black (p99 0.0076, 0 px >0.3) to a measured p99 0.60 with 6.6% of ground pixels >0.3 and a VLM-judged 7/10 window-reflection image — the smear-tolerance + skyglow-miss fix is real. The night-floor blocker dissolves under correct measurement: with the identical linear method the actual night reference cs2_08 sits at ground p10 0.0038 / full p01 0.0010, and our frames measure at or above those — the p7 '3x too dark' verdict was anchored on a non-reproducible 0.0126 figure and LOOK_TARGET's 0.010 is a daytime target; night floors are now in-family (ground p99 0.547 vs ref 0.570) and should not be lifted further. Evidence hygiene improved: night_city with buildings shows a believable lit-window skyline, quality=medium night evidence is accepted as quality-independent, and columns rose from 1-3 to 4-6 per frame. But the two most iconic wet-night features are still missing after two rounds: not one readable red tail-light streak exists on any asphalt surface (red_ground 11-325 px vs the reference's 190k, VLM sees zero smears in full frames and dedicated 2x crops), and vehicle spray remains 0/10 in both day frames despite a second measured-bracket retune — at this point the parameter bracket is proven not to be the bottleneck. Columns are also still muddy, and pool reflections carry heavy dither noise. Score 7.5/10 (up from 7.0): fail against the 8.5 bar. Next round must (1) light the red tail path at visible amplitude — verify a tail lamp actually smears ≥40 px vertically on the mirror by measuring a column of red before shipping evidence, (2) rework spray emission/placement rather than re-tuning radiance — a visible-at-2x puff test is mandatory evidence, (3) crisp up the lamp columns and de-noise pool reflections (temporal accumulation or blur-on-mirror), (4) stop re-shooting near-duplicate street frames and attach .log.json to every frame including night_road.",
+  "evidence": {
+    "shots": "shots/p8/ (8 png, 7 log.json all errors:[]; night_road.png missing its log)",
+    "own_shots_taken": 0,
+    "method": "python3/PIL/numpy linear-luma percentile + red/warm cluster analysis on all 8 p8 frames, 4 p7 builder frames and 8 reference/cs2 frames (identical method); z-ai VLM on 4 cs2 refs, 4 p8 night frames, 2 day frames, and 7 2x-LANCZOS zoom crops (red regions, columns, skyline, spray, p7-vs-p8 pool)"
+  }
+}
