@@ -33,6 +33,7 @@ const _q = new THREE.Quaternion();
 const _s = new THREE.Vector3();
 const _c = new THREE.Vector3();
 const _cam = new THREE.Vector3();
+const _fwd = new THREE.Vector3();
 
 /** Centroid of the vertices a material group covers — where the bulb is, in local space. */
 function glowCentroid(geometry) {
@@ -110,11 +111,17 @@ export class WetLights {
     }
 
     camera.getWorldPosition(_cam);
+    // p8 audit major: only 1-3 readable columns per street frame vs CS2's dozen-plus — the nearest-12
+    // rule wasted slots on lamps BEHIND the camera. Deprioritise behind-camera emitters (x4 distance
+    // penalty) so the visible corridor fills the slots first without ever losing a near light.
+    _fwd.setFromMatrixColumn(camera.matrixWorld, 2).negate();   // camera looks down -Z
     const cand = this._candidates;
     cand.length = 0;
     for (const l of this._lamps) {
-      const d2 = (l.x - _cam.x) ** 2 + (l.y - _cam.y) ** 2 + (l.z - _cam.z) ** 2;
+      const dx = l.x - _cam.x, dy = l.y - _cam.y, dz = l.z - _cam.z;
+      let d2 = dx * dx + dy * dy + dz * dz;
       if (d2 > 62500) continue;                       // 250 m: past that the smear is sub-pixel
+      if (dx * _fwd.x + dy * _fwd.y + dz * _fwd.z < 0) d2 *= 4;
       // p7: 2.1 → 3.2 — the p6 audit measured the lamp columns visibly dimmer than the CS2
       // reference; the pool column has to read at a glance.
       cand.push({ x: l.x, y: l.y, z: l.z, r: 1.00, g: 0.80, b: 0.58, i: 3.2, d2 });
@@ -138,8 +145,10 @@ export class WetLights {
         const b = glareAttr.array[i * 3 + 2] || 0;
         const maxC = Math.max(r, g, b);
         if (maxC < 0.02) continue;
-        const d2 = (_p.x - _cam.x) ** 2 + (_p.y - _cam.y) ** 2 + (_p.z - _cam.z) ** 2;
+        let d2 = (_p.x - _cam.x) ** 2 + (_p.y - _cam.y) ** 2 + (_p.z - _cam.z) ** 2;
         if (d2 > 40000) continue;                     // 200 m
+        const dxv = _p.x - _cam.x, dyv = _p.y - _cam.y, dzv = _p.z - _cam.z;
+        if (dxv * _fwd.x + dyv * _fwd.y + dzv * _fwd.z < 0) d2 *= 4;
         cand.push({ x: _p.x, y: _p.y, z: _p.z, r: r / maxC, g: g / maxC, b: b / maxC, i: maxC * 1.5, d2 });
       }
     }

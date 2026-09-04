@@ -231,8 +231,12 @@ void main() {
     // actually above it, and clamping the fallback to 8 % is what left the p6 puddles with no
     // image at all (the analytic smears alone cannot fill a metre-wide pool). Damp tarmac still
     // clamps hard so the road itself never turns back into a pale sheet.
+    // p8: audit measured night ground p99 0.0099 — pools still black. Two levers: the damp clamp
+    // relaxes a little more (0.92 → 0.86) AND an explicit night-skyglow floor is added to the
+    // miss fallback. CS2 night rain frames sit at p01 ≈ 0.0126 linear; ours measured 0.0036-0.0048.
     vec3 miss = mix(uHaze, uSkyColor, smoothstep(0.03, 0.40, Rw.y)) * 0.75
-                * (1.0 - 0.92 * uNight * (1.0 - 0.78 * pool));
+                * (1.0 - 0.86 * uNight * (1.0 - 0.78 * pool));
+    miss += vec3(0.0030, 0.0038, 0.0052) * uNight * (0.35 + 0.65 * pool);
     vec3 refl = miss;
     float conf = 0.0;
     if (R.z < 0.35) {                                   // ray not flying straight at the camera
@@ -304,14 +308,23 @@ void main() {
         float dh2 = dot(diff.xz, diff.xz);
         float dv = abs(diff.y);
         float sh = mix(0.85, 0.32, pool);              // horizontal half-width of the streak (m)
-        float sv = mix(2.0, 0.85, pool);               // vertical smear tolerance (m) — kept tight so a
-                                                       // grazing ray hugging the ground can never sit
-                                                       // ~8 m from a lamp image and still glow (that
-                                                       // read as a horizontal beam across the road)
+        // p8 audit blocker: sv IN A POOL was TIGHTER than on damp tarmac (0.85 vs 2.0 m) — a pool
+        // mirror wobbles with ripples and a light column in water is TALL, so the razor-thin band
+        // caught nothing and every pool read pure black (ground p99 0.0099). Pools now stretch the
+        // image vertically (the classic CS2 light river); damp tarmac keeps the moderate band that
+        // p6 tuned to kill the grazing-ray horizontal beam.
+        float sv = mix(1.9, 3.0, pool);
         float w = exp(-dh2 / (sh * sh)) * exp(-dv * dv / (sv * sv));
         if (w < 0.004) continue;
-        float att = 1.0 / (1.0 + 0.0016 * t * t);
-        acc += uWetLightCol[i] * (Le.w * w * att);
+        // p8: CS2 corridors carry columns from lamps 60-150 m away; 0.0016 cut everything past
+        // ~45 m. 0.0009 keeps the near-field weight identical and doubles the far reach.
+        float att = 1.0 / (1.0 + 0.0009 * t * t);
+        // p8 audit blocker: tail-light radiance (1, 0.075, 0.03) carries only 0.22 luma, so the red
+        // streaks landed ~4x dimmer than white columns and the red rivers never appeared. Equalise
+        // PERCEPTUAL brightness per emitter (red stays red, just not murky): normalise by luma with
+        // a floor so headlights/lamps do not over-boost.
+        vec3 colN = uWetLightCol[i] / max(luma(uWetLightCol[i]), 0.25);
+        acc += colN * (Le.w * w * att);
       }
       // Fresnel keeps the streaks off perpendicular views; pools carry them at nearly full strength
       // p7: amplitude x2-x3 (p6 audit measured the columns a fraction of the CS2 reference) and the

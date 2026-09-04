@@ -40,9 +40,9 @@ void main() {
   p -= dir * (speed * age * 0.55);
   p += side * aSeed.y * (0.55 + 1.9 * u);
   p.y += 0.04 + (0.95 * u - 0.78 * u * u) * (0.40 + 0.055 * speed);
-  // p7: growth 3.2 → 2.0 — at 3.2 a puff ended ~1.4 m across and merged into white cotton sheets
-  // over the carriageway at detail zoom; a mist TRAIL reads at ~0.8 m max.
-  float s = aSeed.z * (0.40 + 2.0 * u) * (0.62 + 0.05 * speed);
+  // p8: the audit bracket is now measured — 3.2 growth read as white cotton foam, 2.0 was
+  // invisible (VLM 0/10). 2.6 sits between: puffs reach ~0.9 m, a mist trail, not a sheet.
+  float s = aSeed.z * (0.42 + 2.6 * u) * (0.62 + 0.05 * speed);
   vAlpha = smoothstep(0.0, 0.08, u) * pow(1.0 - u, 1.5) * strength;
   vUv = aCorner * 0.5 + 0.5;
   vec4 mv = modelViewMatrix * vec4(p, 1.0);

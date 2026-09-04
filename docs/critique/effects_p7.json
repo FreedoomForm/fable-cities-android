@@ -1,0 +1,47 @@
+{
+  "module": "effects",
+  "round": "p7",
+  "score": 7.0,
+  "pass": false,
+  "verified": [
+    "Zero console errors across all 12 runs (8 audit_p7 + 4 builder p7 logs; errors:[] and warningCount:0 in every log.json); all modules ok, effects init 0.9-1.0s",
+    "p6 root cause FIXED: aGlare glare harvest now reaches the wet mirror — warm headlamp/lamp reflection columns exist and are moderately crisp in zoom (brightest ground column ~11-12x median column luma at x≈498, spanning 174-392/450 rows; ground p999 = 1.0 linear)",
+    "p6 issue 5 FIXED: contact now multiplies before the sky bounce — VLM + crops confirm dark, grounded contact shadows under stopped vehicles at night in both night_street and night_puddle",
+    "p6 issue 4 (day half) FIXED: white cotton foam eliminated — day rain ground p99 0.437 linear vs dry-frame 0.797 (no additive blowout), no foam blobs in crops",
+    "Dry-frame regression CLEAN: day_clear_city shows matte dry roads, no fake puddles/specular residue from the wetness path",
+    "Streak amplitude improvement is real (claim 2 partial): x2-3 amp lands as readable vertical structure at street level (2-3 columns/frame per VLM, 'moderately crisp' at 2x zoom)"
+  ],
+  "blockers": [
+    "Claim 3 FAILED — pools do not carry a visible reflected image at night. Builder's dedicated night_puddle.png: ground-band p99 = 0.0099 linear (pure black), red_px_ground = 0, zero ground pixels above 0.3 luma; zoomed crop judged 'pure black (no visible reflections)'. The exemption math exists (GroundFXPass.js:235 `1.0 - 0.92*uNight*(1.0 - 0.78*pool)`) but whatever the mirror falls back to is radiance-starved — a pool reflecting even night sky glow should sit ~5x above what is measured",
+    "Claim 1 FAILED (half-delivered) — red tail-light reflection columns are absent. night_street: the 885-px red cluster is the tail-lamp blob itself (49x29 at x≈370), the other red clusters are 4-7 px lamp cores; NOT ONE red streak on asphalt. night_puddle: 586 red px all in the car's top-half undercarriage, 0 on the road. Warm columns prove the aGlare path works; tails never materialize on the mirror (intensity/elongation/red-path)",
+    "Spray feature effectively dead — VLM scores it 0/10 in day_rain_street, day_rain_close, day_street and reports no mist at night either; 2.0 puff growth + 0.80 day radiance + 1.7 opacity overcorrected p6's foam into invisibility. p7 claim 'visible night mist' is not delivered"
+  ],
+  "majors": [
+    "Residual from p6 UNCHANGED: night floors still ~3x darker than reference — full-frame lum p01 0.0036-0.0048 linear vs cs2 night ref ~0.0126; street ground p01 0.0058-0.0061. Wet night asphalt reads charcoal-black, not damp-grey",
+    "Lamp reflections still 'muddy' at full-frame glance: only 1-3 readable columns per street frame (median ground column luma 0.022); CS2 wet night streets carry a dozen+ crisp light rivers. Streak count/density, not just amplitude, is short"
+  ],
+  "minors": [
+    "Evidence gap (audit-side caveat): focus-trimmed boot excluded the buildings module, so night_city/skyline/aerial frames are near-black (p99 0.046-0.064, aerial has literally 0 warm/red px) — building windows are the dominant night reflector and none were loaded; night city/skyline scores should be re-checked with buildings in focus",
+    "night_street.png and night_pool_close.png are near-duplicate frames (<1% metric delta, same cam=street) — the 'pool close' shot never actually framed a pool; one of 8 evidence slots was wasted",
+    "WetLights instrumentation (wetLights/wetLightsLamps/wetLightsVehicles, effects/index.js:909) is not captured in shot log.json files, so harvester counts could not be verified without a rerun"
+  ],
+  "measurements": {
+    "console_errors_total": 0,
+    "runs_checked": 12,
+    "night_street_audit": { "lum_p01": 0.0040, "lum_p05": 0.0048, "lum_p50": 0.0195, "lum_p99": 0.336, "ground_p01": 0.0061, "ground_p50": 0.021, "ground_p99": 0.483, "ground_p999": 1.0, "red_px": 1073, "red_px_ground": 1065, "red_lamp_blob_px": 885, "warm_px": 5809, "ground_colmax_over_median": 11.3 },
+    "night_street_builder": { "lum_p01": 0.0036, "lum_p50": 0.0186, "ground_p99": 0.508, "ground_colmax_over_median": 12.3, "red_px_ground": 1116 },
+    "night_puddle_builder": { "lum_p01": 0.0039, "ground_p99": 0.0099, "ground_p999": 0.0119, "red_px": 586, "red_px_ground": 0, "ground_bright_px_gt0.3": 0 },
+    "night_city": { "lum_p99": 0.057, "warm_px": 56, "red_px": 10, "note": "buildings module not in focus trim" },
+    "night_aerial": { "lum_p99": 0.047, "warm_px": 0, "red_px": 0 },
+    "day_rain_street_vs_dry": { "wet_ground_p50": 0.0554, "dry_ground_p50": 0.1900, "wet_ground_p99": 0.437, "dry_ground_p99": 0.797 },
+    "reference_cs2_night_p01_linear_recorded_from_p6_audit": 0.0126,
+    "cs2_reference_frames_available": false,
+    "reference_note": "reference/*.jpg deliberately not committed (copyright, see reference/README.md) and the sandbox restart wiped the local copies; used the p6-audit recorded cs2 night p01 ~0.0126 linear as the reference anchor (same lookmeasure.py srgb->linear Rec.709 method)"
+  },
+  "summary": "p7 re-applied fixes verify 3.5/6 claims. The p6 root cause is genuinely dead: aGlare now feeds the mirror and warm lamp/headlamp reflection columns read 'moderately crisp' at zoom (11-12x column contrast), contact shadows ground the cars at night, and the day cotton-foam is gone with a clean dry-frame regression. But the two signature CS2 wet-night moments still don't exist: the dedicated night_puddle shot's ground is pure black (p99 0.0099 linear) with zero reflected imagery in pools, and there is not one red tail-light streak on asphalt anywhere (all red pixels are lamp blobs themselves, 0 on the road in the puddle shot). Meanwhile the spray retune overcorrected — mist is now invisible at day AND night, so the feature is dead weight. Night floors remain ~3x darker than the cs2 reference anchor. Score 7.0/10 (good indie, up from 6.5): fail against the 8.5 bar. Next round must (1) make pool reflections actually radiate (feed the mirror a real miss/scene radiance), (2) light the red tail path on the mirror, (3) bring spray back to visible-without-foam, (4) lift night road floors ~2-3x toward ref, (5) capture next evidence with buildings in focus and stop re-shooting duplicate street frames.",
+  "evidence": {
+    "audit_shots": "shots/audit_p7/ (8 png + log.json, all errors:[])",
+    "builder_shots": "shots/p7/ (4 png + log.json, all errors:[])",
+    "method": "VLM inspection of full frames + 2x zoom crops (lamp column, tail region, puddle ground, day spray) + python3/PIL/numpy linear-luma (srgb->lin, Rec.709) percentile and red/warm pixel cluster analysis; no new screenshots taken"
+  }
+}

@@ -284,7 +284,10 @@ export function update(dt, elapsed) {
     u.uRipple.value = S.rainAmt;
     u.uNight.value = night;
     // what a mirror sees when the ray leaves the screen: the sky, not the diffuse irradiance
-    u.uSkyColor.value.copy(skyRad).multiplyScalar(1.05).addScalar(0.003 * (1 - night));
+    // p8 audit: night floors measured ~3x darker than the cs2_08 anchor (p01 0.0036-0.0056 vs 0.0126).
+    // The night ambient key lives HERE — the sky radiance the wet-mirror miss fallback and the AO
+    // bounce are resolved to. +60 % on the night sky + a small constant (day frame untouched).
+    u.uSkyColor.value.copy(skyRad).multiplyScalar(1.05 + 0.60 * night).addScalar(0.003 * (1 - night) + 0.004 * night);
     // analytic emitters for the wet mirror: the nearest lamps / vehicle lights to the camera.
     // Arrays are assigned once and mutated in place — no per-frame allocation.
     if (u.uWetLights.value !== S.wetLights.pos) {
@@ -494,12 +497,13 @@ export function update(dt, elapsed) {
       // and the spray was invisible in every night frame. The constant term is the street/vehicle light
       // the mist actually catches after dark. p5 major: a 0.1-alpha grey sprite over a 0.13-luminance
       // road is invisible — the plume now carries real radiance (warm at night, sky-lit by day).
-      // p7: day sky term 1.10 → 0.80 — with the smaller puffs the day plume read as bright foam;
-      // the night warm term stays so the headlight-lit mist survives after dark.
-      u.uColor.value.copy(skyRad).multiplyScalar(0.80)
-        .add(tmpC2.setRGB(1.0, 0.88, 0.70).multiplyScalar(0.045 + 0.16 * night))
+      // p8: audit-measured bracket — day radiance 1.10 + opacity 2.1 = cotton foam, 0.80/1.7 =
+      // invisible (VLM 0/10 in every frame). 0.95/1.95 splits it; the night warm term goes up
+      // (0.16 → 0.30) because at night the sky term is ~0 and the mist must read against lamps.
+      u.uColor.value.copy(skyRad).multiplyScalar(0.95)
+        .add(tmpC2.setRGB(1.0, 0.88, 0.70).multiplyScalar(0.045 + 0.30 * night))
         .addScalar(0.012);
-      u.uOpacity.value = 1.7 * (0.45 + 0.55 * S.rainAmt);
+      u.uOpacity.value = 1.95 * (0.45 + 0.55 * S.rainAmt);
       sp.sync(S.world.traffic?.list || S.world.traffic?.vehicles, camera.position, S.wetness, 150);
     } else if (sp.geometry.instanceCount) {
       sp.geometry.instanceCount = 0;
@@ -527,7 +531,9 @@ export function update(dt, elapsed) {
     u.uContrast.value = damp(u.uContrast.value, (1.52 - night * 0.26 - cloud * 0.05 - wet * 0.03 - snowing * 0.08 - snow * 0.06) * gm.contrast, L, dt);
     // Toe: -0.92 crushed a fifth to a third of every daytime frame to pure black. -0.58 keeps the filmic
     // shape; the black FLOOR is now bought by the soft black level and the exposure/ambient key instead.
-    u.uToe.value = damp(u.uToe.value, -0.58 * dayA * (1 - 0.15 * cloud) * (1 - 0.12 * wet) * (1 - 0.6 * snow) + 0.18 * night + 0.10 * snow * dayA, L, dt);
+    // p8 audit: night floors measured 0.0036-0.0056 linear vs the cs2_08 anchor 0.0126 — ~3x too dark.
+    // The night toe lift goes 0.18 → 0.30 (+~0.35 EV at the toe only; highlights ride the shoulder).
+    u.uToe.value = damp(u.uToe.value, -0.58 * dayA * (1 - 0.15 * cloud) * (1 - 0.12 * wet) * (1 - 0.6 * snow) + 0.30 * night + 0.10 * snow * dayA, L, dt);
     u.uShoulder.value = damp(u.uShoulder.value, 0.34 + snow * 0.06 + lowSun * 0.20, L, dt);
     u.uBlack.value = damp(u.uBlack.value, 0.0072 * dayA * (1 - 0.15 * cloud) * (1 - snow * 0.7) + 0.0026 * night, L, dt);
     // white-point anchoring: the bright percentile (p4 power mean) of the ungraded frame is gained so that
@@ -652,6 +658,15 @@ export function update(dt, elapsed) {
   }
 
   S.cpuMs = S.cpuMs * 0.9 + (performance.now() - t0) * 0.1;
+
+  // p8 (audit minor): runtime instrumentation the critics can read straight out of shot/check logs —
+  // every ~5 s emit the wet-mirror emitter count, its provenance, and the particle system totals.
+  S._instTimer = (S._instTimer ?? 0) - dt;
+  if (S._instTimer <= 0) {
+    S._instTimer = 5;
+    console.info(`[effects] wetLights=${S.wetLights.count} lamps=${S.wetLights.stats.lamps} vehicles=${S.wetLights.stats.vehicles}`
+      + ` sprayEmitters=${S.spray.live} puddles=${S.puddleCount ?? 0} wet=${+S.wetness.toFixed(2)} rain=${+S.rainAmt.toFixed(2)}`);
+  }
 }
 
 /**

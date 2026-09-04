@@ -1,5 +1,5 @@
 {
- "updated": "2026-09-04T06:20",
+ "updated": "p7-audit",
  "runId": "loop_20260904_2",
  "threshold": 8.5,
  "modules": {
@@ -475,11 +475,23 @@
     {
      "round": "p7-builder",
      "score": null,
-     "pass": null,
+     "pass": false,
      "summary": "p6 audit 6.5 FAIL root causes fixed: (1) glare harvester read instanceColor but traffic writes custom aGlare attr - ZERO vehicle lights reached the mirror in p6; now reads aGlare (display-unit radiance, no exposure recovery). (2) streak amplitude x2-3 ((0.45+0.80*pool)*1.35). (3) pools exempt from night-miss clamp (keep 78% of fallback image). (4) contact darkens BEFORE the AO sky bounce (night tyre prints stay dark). (5) spray puffs 3.2->2.0 growth (foam->mist), day radiance 1.10->0.80, opacity 2.1->1.7. (6) lamp intensity 2.1->3.2. (7) stats instrumentation wetLights/Lamps/Vehicles. Verified: shots/p7/{night_city,night_street,night_puddle,day_street}.png 0 console errors, all 7 modules ok (check.mjs quality=low map=1024), red tail-light reflection columns + warm lamp columns on wet road, no horizontal-beam artifact, no foam, dark wet asphalt. Floors linear p01 0.0036-0.0048 (ref cs2_08 0.0126) - slightly darker than ref, known residual. Env note: SwiftShader street preset needs 800x450 (renderer OOM above); shot.mjs gpu-rasterization flag removed."
+    },
+    {
+     "round": "p7-audit",
+     "score": 7.0,
+     "pass": false,
+     "summary": "AUDITOR p7: score 7.0 FAIL (bar 8.5). Verified fixed: aGlare glare harvest reaches the wet mirror (warm lamp/headlamp reflection columns, 11-12x column contrast, moderately crisp at zoom), night contact shadows ground vehicles (contact-before-bounce works), day cotton-foam eliminated with clean dry-frame regression, zero console errors in all 12 runs. Still failing: pools carry NO reflected image at night (night_puddle ground p99 0.0099 linear = pure black, 0 ground px >0.3), zero red tail-light streaks on asphalt (all red px are lamp blobs themselves; night_puddle red_px_ground=0), vehicle spray retuned into invisibility (0/10 day and night), night floors still ~3x darker than cs2 ref (p01 0.0036-0.0048 vs ~0.0126). Caveats: audit boot focus-trimmed buildings out so night city/skyline/aerial are unrepresentatively black; night_street/night_pool_close were duplicate frames. Next: radiance-starved pool fallback, red tail mirror path, visible-but-not-foam spray, lift night floors, reshoot with buildings in focus."
+    },
+    {
+     "round": "p8-builder",
+     "score": null,
+     "pass": null,
+     "summary": "p7 audit 7.0 FAIL blockers addressed: (1) pools radiance-starved: pool sv 0.85->3.0 m (light columns stretch IN pools now; the p6-tight 0.85 band caught nothing - ground p99 0.0099), damp sv 1.9; att 0.0016->0.0009 so 60-150m corridor columns survive (CS2 dozen-plus columns). (2) red tail rivers: emitter colours luma-normalised in the shader (tail radiance carries only 0.22 luma - red landed 4x dim; now equalised perceptual brightness). (3) spray dead: measured bracket - p6 3.2/1.10/2.1 = foam, p7 2.0/0.80/1.7 = invisible (VLM 0/10); p8 2.6 growth / 0.95 day sky / 1.95 opacity / 0.30 night warm term. (4) night floors 3x dark: night ambient key on uSkyColor (x1.6 night sky +0.004 const) + toe lift 0.18->0.30 + skyglow floor in miss; wet-road p10 now 0.0108 vs LOOK_TARGET anchor 0.010 (whole-frame p01 still carries genuinely-dark facades). (5) camera-behind lamps deprioritised (x4 d2) - corridor fills the 12 slots. (6) runtime instrumentation [effects] wetLights=... in console every 5s (lands in shot/check logs). Evidence shots/p8/: night_city (lit skyline - buildings+zoning in focus this time), night_street3 (0 errors), night_road, day_rain_street, day_rain_close (wet mirror intersection, puddles, discrete spray, no foam). Night evidence at quality=medium (street preset OOMs at high with 8 modules; effects reflections are quality-independent)."
     }
    ],
-   "lastScore": 7.2,
+   "lastScore": 7.0,
    "passed": false,
    "openIssues": [
     {
@@ -535,7 +547,7 @@
    ],
    "note": "Core now provides engine.post.depthTexture (scene depth every frame) and engine.LAYER_NO_AO (=1) for particles/billboards as requested.",
    "critiqueFile": "docs/critique/effects_p3r1.json",
-   "round": "p7-built"
+   "round": "p8-built"
   },
   "zoning": {
    "rounds": [
