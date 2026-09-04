@@ -66,7 +66,9 @@ const browser = await puppeteer.launch({
     `--window-size=${width},${height + 90}`,
     `--use-angle=${process.platform === 'darwin' ? 'metal' : (process.env.CHOOSE_ANGLE || 'swiftshader')}`,
     '--ignore-gpu-blocklist',
-    '--enable-gpu-rasterization',
+    // '--enable-gpu-rasterization' removed (p7): under SwiftShader the raster cache doubles GPU
+    // memory and the renderer OOM-crashes ("Target closed") on street-level presets; check.mjs
+    // never passes it and boots the same scenes reliably.
     '--enable-unsafe-swiftshader',
     '--hide-scrollbars',
     '--mute-audio',

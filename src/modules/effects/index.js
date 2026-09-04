@@ -494,10 +494,12 @@ export function update(dt, elapsed) {
       // and the spray was invisible in every night frame. The constant term is the street/vehicle light
       // the mist actually catches after dark. p5 major: a 0.1-alpha grey sprite over a 0.13-luminance
       // road is invisible — the plume now carries real radiance (warm at night, sky-lit by day).
-      u.uColor.value.copy(skyRad).multiplyScalar(1.10)
+      // p7: day sky term 1.10 → 0.80 — with the smaller puffs the day plume read as bright foam;
+      // the night warm term stays so the headlight-lit mist survives after dark.
+      u.uColor.value.copy(skyRad).multiplyScalar(0.80)
         .add(tmpC2.setRGB(1.0, 0.88, 0.70).multiplyScalar(0.045 + 0.16 * night))
         .addScalar(0.012);
-      u.uOpacity.value = 2.1 * (0.45 + 0.55 * S.rainAmt);
+      u.uOpacity.value = 1.7 * (0.45 + 0.55 * S.rainAmt);
       sp.sync(S.world.traffic?.list || S.world.traffic?.vehicles, camera.position, S.wetness, 150);
     } else if (sp.geometry.instanceCount) {
       sp.geometry.instanceCount = 0;
@@ -902,6 +904,9 @@ function makeApi() {
         rain: +S.rainAmt.toFixed(2), snow: +S.snowAmt.toFixed(2), wetness: +S.wetness.toFixed(2), snowCover: +S.snowCover.toFixed(2),
         sources: S.sources.size, wetMaterials: S.wet.state.patched, sceneDepth: !!S.fxPass.sceneDepth, localLights: S.localLights,
         splashes: S.splash.mesh.visible ? S.splash.geometry.instanceCount : 0, sprayEmitters: S.spray.live,
+        // p7: the auditor's instrumentation request — how many analytic emitters the wet mirror is
+        // actually carrying (uWetLightN) and where they came from.
+        wetLights: S.wetLights.count, wetLightsLamps: S.wetLights.stats.lamps, wetLightsVehicles: S.wetLights.stats.vehicles,
         puddles: S.puddleCount ?? 0, puddlesVisible: !!(S.puddles.mesh && S.puddles.mesh.visible), puddleBuildMs: S.puddles.buildMs ?? 0,
         reflect: +S.groundFX.uniforms.uWet.value.toFixed(2), contactAO: +S.groundFX.uniforms.uAO.value.x.toFixed(2),
       };

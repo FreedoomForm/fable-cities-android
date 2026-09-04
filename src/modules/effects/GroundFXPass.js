@@ -179,9 +179,12 @@ void main() {
   //    reads deeper *and* bluer than the lit surface (LOOK_TARGET row 13).
   //  - the tight CONTACT band multiplies toward near-black with no sky add — the first 0.3 m under
   //    a wheel must actually go dark below the surrounding asphalt.
+  // p6 audit: at night the bounce was re-lifting the contact patch — the add ran on the pre-contact
+  // colour, so a dark tyre print came back out with sky radiance on top. Contact multiplies FIRST;
+  // the bounce is computed on what is left.
+  c *= 1.0 - (1.0 - shadow) * uContactDark;
   float occAO = (1.0 - ao) * uOcclusion.x;
   c = c * (1.0 - occAO) + uSkyColor * (luma(c) + 0.0015) * occAO * uOcclusion.y;
-  c *= 1.0 - (1.0 - shadow) * uContactDark;
 
   // ---------------- wet reflections ----------------
   float up = dot(N, uUpView);
@@ -224,7 +227,12 @@ void main() {
     // At night a miss must go DARK (p5 blocker: the pale-blue fallback wash is why the night wet
     // road read as flat grey) — the analytic emitters below supply the actual reflected light.
     vec3 Rw = mat3(uViewInv) * reflect(V, N);
-    vec3 miss = mix(uHaze, uSkyColor, smoothstep(0.03, 0.40, Rw.y)) * 0.75 * (1.0 - 0.92 * uNight);
+    // p7: a POOL is exempt from most of the night clamp — its mirror should show whatever is
+    // actually above it, and clamping the fallback to 8 % is what left the p6 puddles with no
+    // image at all (the analytic smears alone cannot fill a metre-wide pool). Damp tarmac still
+    // clamps hard so the road itself never turns back into a pale sheet.
+    vec3 miss = mix(uHaze, uSkyColor, smoothstep(0.03, 0.40, Rw.y)) * 0.75
+                * (1.0 - 0.92 * uNight * (1.0 - 0.78 * pool));
     vec3 refl = miss;
     float conf = 0.0;
     if (R.z < 0.35) {                                   // ray not flying straight at the camera
@@ -306,7 +314,9 @@ void main() {
         acc += uWetLightCol[i] * (Le.w * w * att);
       }
       // Fresnel keeps the streaks off perpendicular views; pools carry them at nearly full strength
-      c += acc * F * wetMask * (0.30 + 0.70 * pool) * 0.55;
+      // p7: amplitude x2-x3 (p6 audit measured the columns a fraction of the CS2 reference) and the
+      // damp-tarmac floor raised so tail-light smears survive off-pool.
+      c += acc * F * wetMask * (0.45 + 0.80 * pool) * 1.35;
     }
   }
 

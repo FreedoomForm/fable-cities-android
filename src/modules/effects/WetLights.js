@@ -15,8 +15,10 @@
  *    material group of the lamp geometry, in instance-local space — computed once per geometry
  *    and transformed by each instance matrix.
  *  - Vehicles: the `traffic-lamp-glare` billboards the traffic renderer already positions at every
- *    lit head- and tail-light each frame, with the radiance packed into the instance colour. We
- *    recover that radiance by un-dividing the exposure the renderer used when it wrote it.
+ *    lit head- and tail-light each frame, with the radiance packed into the custom `aGlare`
+ *    instance attribute (p6 audit: the harvester read `instanceColor`, which traffic never sets —
+ *    so ZERO vehicle lights reached the mirror; aGlare carries the radiance directly in display
+ *    units, no exposure recovery involved).
  */
 import * as THREE from 'three';
 
@@ -113,26 +115,32 @@ export class WetLights {
     for (const l of this._lamps) {
       const d2 = (l.x - _cam.x) ** 2 + (l.y - _cam.y) ** 2 + (l.z - _cam.z) ** 2;
       if (d2 > 62500) continue;                       // 250 m: past that the smear is sub-pixel
-      cand.push({ x: l.x, y: l.y, z: l.z, r: 1.00, g: 0.80, b: 0.58, i: 2.1, d2 });
+      // p7: 2.1 → 3.2 — the p6 audit measured the lamp columns visibly dimmer than the CS2
+      // reference; the pool column has to read at a glance.
+      cand.push({ x: l.x, y: l.y, z: l.z, r: 1.00, g: 0.80, b: 0.58, i: 3.2, d2 });
     }
     const glare = this._glare;
-    if (glare && glare.visible && glare.count > 0 && glare.instanceColor) {
+    // p6 audit root cause: traffic writes radiance into the CUSTOM `aGlare` InstancedBufferAttribute
+    // (Renderer.js: `this.glareC = instAttr(glareGeom, 'aGlare', 3, MAX_GLARE)`) — `instanceColor`
+    // is never allocated on that mesh, so the old read always saw zeros and no vehicle light ever
+    // reached the wet mirror. Read aGlare; its values are already display-unit radiance
+    // (head 1.32·hI / tail 1.0·tI), so no exposure recovery is applied.
+    const glareAttr = glare ? glare.geometry.getAttribute('aGlare') : null;
+    if (glare && glare.visible && glare.count > 0 && glareAttr) {
       const n = Math.min(glare.count, 260);
       for (let i = 0; i < n; i++) {
         glare.getMatrixAt(i, _m);
         // the glare quads face the camera and carry no scale in a fixed 1x1 plane — the position
         // column is what we need; decompose to be safe against future compose() changes
         _m.decompose(_p, _q, _s);
-        const r = glare.instanceColor.array[i * 3] || 0;
-        const g = glare.instanceColor.array[i * 3 + 1] || 0;
-        const b = glare.instanceColor.array[i * 3 + 2] || 0;
+        const r = glareAttr.array[i * 3] || 0;
+        const g = glareAttr.array[i * 3 + 1] || 0;
+        const b = glareAttr.array[i * 3 + 2] || 0;
         const maxC = Math.max(r, g, b);
         if (maxC < 0.02) continue;
         const d2 = (_p.x - _cam.x) ** 2 + (_p.y - _cam.y) ** 2 + (_p.z - _cam.z) ** 2;
         if (d2 > 40000) continue;                     // 200 m
-        // radiance was written divided by exposure — recover the display-unit intensity
-        const k = glareExposure || 1;
-        cand.push({ x: _p.x, y: _p.y, z: _p.z, r: r / maxC, g: g / maxC, b: b / maxC, i: maxC * k * 1.5, d2 });
+        cand.push({ x: _p.x, y: _p.y, z: _p.z, r: r / maxC, g: g / maxC, b: b / maxC, i: maxC * 1.5, d2 });
       }
     }
     this.stats.vehicles = cand.length - this.stats.lamps;
