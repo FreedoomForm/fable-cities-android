@@ -48,7 +48,21 @@ try {
   await page.goto(url.toString(), { waitUntil: 'domcontentloaded', timeout: 150000 });
   const readyTimeout = +args['ready-timeout'] || 150000;
   await page.waitForFunction('window.__game && window.__game.ready === true', { timeout: readyTimeout, polling: 500 });
-  await page.evaluate((f) => window.__game.waitStable(f), frames);
+  // Wait for `frames` stable frames by polling the engine's frame counter from Node with short
+  // evaluates — a single long evaluate (page.waitStable) trips puppeteer's ~180s protocol timeout
+  // under software rendering where each frame can take seconds.
+  const startFrame = await page.evaluate(() => (window.__game && window.__game.engine) ? window.__game.engine.frame : -1);
+  if (startFrame >= 0) {
+    const deadline = Date.now() + readyTimeout;
+    let cur = startFrame;
+    while (Date.now() < deadline && cur - startFrame < frames) {
+      await new Promise((r) => setTimeout(r, 2000));
+      cur = await page.evaluate(() => window.__game.engine.frame);
+    }
+    if (cur - startFrame < frames) throw new Error(`waitStable timed out: ${cur - startFrame}/${frames} frames in ${readyTimeout}ms`);
+  } else {
+    await page.evaluate((f) => window.__game.waitStable(f), frames);
+  }
   const stats = await page.evaluate(() => window.__game.stats());
   const summary = await page.evaluate(() => window.__game.sceneSummary());
   const errors = logs.filter((l) => l.type === 'error' || l.type === 'pageerror');

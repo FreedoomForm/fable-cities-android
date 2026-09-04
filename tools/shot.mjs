@@ -121,7 +121,19 @@ try {
   for (const combo of combos) {
     if (combo.preset) await page.evaluate((p) => window.__game.setCamera(p, true), combo.preset);
     if (combo.time != null) await page.evaluate((t) => window.__game.setTime(parseFloat(t)), combo.time);
-    await page.evaluate((f) => window.__game.waitStable(f), frames);
+    // Poll the frame counter with short evaluates — one long waitStable evaluate trips the
+    // ~180s puppeteer protocol timeout under software rendering.
+    const startFrame = await page.evaluate(() => (window.__game && window.__game.engine) ? window.__game.engine.frame : -1);
+    if (startFrame >= 0) {
+      const deadline = Date.now() + timeout;
+      let cur = startFrame;
+      while (Date.now() < deadline && cur - startFrame < frames) {
+        await new Promise((r) => setTimeout(r, 2000));
+        cur = await page.evaluate(() => window.__game.engine.frame);
+      }
+    } else {
+      await page.evaluate((f) => window.__game.waitStable(f), frames);
+    }
     const file = multi ? `${base}${combo.preset ? '_' + combo.preset : ''}${combo.time != null ? '_' + String(combo.time).replace('.', 'h') : ''}${ext}` : out;
     await page.screenshot({ path: file, type: ext === '.jpg' || ext === '.jpeg' ? 'jpeg' : 'png' });
     const stats = await page.evaluate(() => window.__game.stats());
