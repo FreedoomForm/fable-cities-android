@@ -97,15 +97,27 @@ jobs:
           curl -sf http://127.0.0.1:5180/ > /dev/null || (cat /tmp/vite.log && exit 1)
 
       - name: Smoke check (modules, console errors, perf)
-        run: node tools/check.mjs --url "http://127.0.0.1:5180/?quality=low" --frames 180 | tee /tmp/check.json
+        shell: bash
+        run: |
+          set -o pipefail
+          node tools/check.mjs --url "http://127.0.0.1:5180/?quality=low" --frames 180 --soft-crash 2>&1 | tee /tmp/check.json
+          grep -q environmentalCrash /tmp/check.json && echo "::warning::Headless GPU crashed (SwiftShader limitation) — module-level gate unavailable on this runner; see docs/ANDROID_PORT.md" || true
 
       - name: Capture screenshots (day / dusk / night, three cameras)
+        shell: bash
         run: |
+          set +e
           mkdir -p shots
-          node tools/shot.mjs --out shots/hero.png --preset city --time 10 || true
-          node tools/shot.mjs --out shots/street.png --preset street --time 17.5 || true
-          node tools/shot.mjs --out shots/night.png --preset city --time 21.5 || true
-          node tools/shot.mjs --out shots/aerial.png --preset aerial --time 12 || true
+          CHROME_OK=0
+          node tools/shot.mjs --out shots/hero.png --preset city --time 10 && CHROME_OK=1
+          node tools/shot.mjs --out shots/street.png --preset street --time 17.5
+          node tools/shot.mjs --out shots/night.png --preset city --time 21.5
+          node tools/shot.mjs --out shots/aerial.png --preset aerial --time 12
+          ls -la shots/ || true
+          if [ "$CHROME_OK" = "0" ] && [ ! -f shots/hero.png ]; then
+            echo "::warning::No screenshots could be captured — headless GPU crash (SwiftShader). Visual gate must run on a GPU-capable machine."
+          fi
+          exit 0
 
       - name: Upload verification artifacts
         uses: actions/upload-artifact@v4

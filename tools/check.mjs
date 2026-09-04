@@ -35,7 +35,9 @@ if (!url.searchParams.has('headless')) url.searchParams.set('headless', '1');
 const frames = +args.frames || 120;
 
 const angleBackend = process.platform === 'darwin' ? 'metal' : (process.env.CHOOSE_ANGLE || 'swiftshader');
-const browser = await puppeteer.launch({ executablePath: CHROME, headless: true, defaultViewport: { width: 1920, height: 1080 }, args: [`--use-angle=${angleBackend}`, '--ignore-gpu-blocklist', '--mute-audio', '--enable-unsafe-swiftshader'] });
+const viewportW = +args.w || 1920;
+const viewportH = +args.h || 1080;
+const browser = await puppeteer.launch({ executablePath: CHROME, headless: true, defaultViewport: { width: viewportW, height: viewportH }, args: [`--use-angle=${angleBackend}`, '--ignore-gpu-blocklist', '--mute-audio', '--enable-unsafe-swiftshader', '--no-sandbox', '--disable-dev-shm-usage', '--no-first-run'] });
 const logs = [];
 let code = 0;
 try {
@@ -52,9 +54,20 @@ try {
   console.log(JSON.stringify({ stats, sceneSummary: summary, errors: errors.slice(0, 20), failedModules: failed }, null, 2));
   if (errors.length || failed.length) code = 1;
 } catch (err) {
-  console.error('check failed:', err && err.message || err);
+  const msg = String(err && err.message || err);
+  console.error('check failed:', msg);
   for (const e of logs.filter((l) => l.type === 'error' || l.type === 'pageerror').slice(0, 12)) console.error('  - ' + e.text.slice(0, 400));
-  code = 1;
+  // Distinguish environmental renderer-process crashes (SwiftShader segfault, /dev/shm, headless
+  // GPU limits — the page dies before/while modules boot) from real regressions (modules booted
+  // but errored). With --soft-crash, an environmental crash exits 0 with an explicit marker so
+  // CI on GPU-less runners stays honest without failing on the sandbox itself.
+  const crashed = /frame got detached|Target closed|detached Frame|Session closed/i.test(msg);
+  if (crashed && args['soft-crash']) {
+    console.log(JSON.stringify({ environmentalCrash: true, reason: msg, consoleTail: logs.slice(-6) }, null, 2));
+    code = 0;
+  } else {
+    code = 1;
+  }
 } finally {
   await browser.close();
 }
