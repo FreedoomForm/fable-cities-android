@@ -37,7 +37,7 @@ const frames = +args.frames || 120;
 const angleBackend = process.platform === 'darwin' ? 'metal' : (process.env.CHOOSE_ANGLE || 'swiftshader');
 const viewportW = +args.w || 1920;
 const viewportH = +args.h || 1080;
-const browser = await puppeteer.launch({ executablePath: CHROME, headless: true, defaultViewport: { width: viewportW, height: viewportH }, args: [`--use-angle=${angleBackend}`, '--ignore-gpu-blocklist', '--mute-audio', '--enable-unsafe-swiftshader', '--no-sandbox', '--disable-dev-shm-usage', '--no-first-run'] });
+const browser = await puppeteer.launch({ executablePath: CHROME, headless: true, protocolTimeout: +args['protocol-timeout'] || 600000, defaultViewport: { width: viewportW, height: viewportH }, args: [`--use-angle=${angleBackend}`, '--ignore-gpu-blocklist', '--mute-audio', '--enable-unsafe-swiftshader', '--no-sandbox', '--disable-dev-shm-usage', '--no-first-run'] });
 const logs = [];
 let code = 0;
 try {

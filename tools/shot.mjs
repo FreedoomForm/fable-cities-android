@@ -58,6 +58,7 @@ if (times[0]) url.searchParams.set('time', times[0]);
 fs.mkdirSync(path.dirname(out), { recursive: true });
 
 const browser = await puppeteer.launch({
+  protocolTimeout: timeout,
   executablePath: CHROME,
   headless: !headed,
   defaultViewport: { width, height, deviceScaleFactor: 1 },
