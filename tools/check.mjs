@@ -45,7 +45,8 @@ try {
   page.on('console', (m) => logs.push({ type: m.type(), text: m.text() }));
   page.on('pageerror', (e) => logs.push({ type: 'pageerror', text: String(e && e.message || e) }));
   await page.goto(url.toString(), { waitUntil: 'domcontentloaded', timeout: 150000 });
-  await page.waitForFunction('window.__game && window.__game.ready === true', { timeout: 150000, polling: 200 });
+  const readyTimeout = +args['ready-timeout'] || 150000;
+  await page.waitForFunction('window.__game && window.__game.ready === true', { timeout: readyTimeout, polling: 500 });
   await page.evaluate((f) => window.__game.waitStable(f), frames);
   const stats = await page.evaluate(() => window.__game.stats());
   const summary = await page.evaluate(() => window.__game.sceneSummary());
