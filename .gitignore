@@ -31,3 +31,4 @@ android/app/build/
 android/local.properties
 *.iml
 .idea/
+ci-artifacts/
