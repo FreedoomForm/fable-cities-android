@@ -508,6 +508,13 @@
      "score": 7.5,
      "pass": false,
      "summary": "p9 audit 7.5 FAIL (same as p8, no regression, real progress). CONFIRMED: the p6-p8 wet-mirror mirroring sign error was the real root cause and is now fixed - probe shows 12 analytic emitters live from 189 lamp + 296 vehicle lights; mirrored columns render for the first time; red ground presence +10-15x; night floor back at reference depth; day pools smooth with rain rings. STILL FAILING: red tail rivers not readable (red_ground_frac 0.11-0.26% vs cs2_08 12.76%, red only in small patches under nearest vehicles); spray invisible for a 3rd round (day frames show no mist/wake behind vehicles); lamp columns still soft white smears without colour bleed (promoted to blocker); night pool speculars still dithery; top-end mirror brightness 2-3x dim (ground_p99 0.16-0.29 vs 0.63). Zero console errors in all 10 runs. p10 must change method on spray (probe live emitters during motion, debug render, composite ordering) and attack tail-river amplitude/reach + ranking, not retune."
+    },
+    {
+     "run": "p10",
+     "round": "p10-builder",
+     "score": null,
+     "pass": null,
+     "summary": "p9 audit 7.5 FAIL -> new root causes found and fixed, not retunes: (1) VEHICLE AGLARE NIGHT STARVATION - traffic writes aGlare scaled by 1/max(0.6,exposure); night exposure 3.15 so every vehicle emitter reached the mirror at 0.317x authored radiance (p9 probe tail slot i=1.1 vs authored ~3.4). WetLights now recovers the division. (2) slot ranking evicted tails: >=4 slots reserved for red-dominant emitters. (3) att reach 0.0009->0.00038 + floor 0.10-0.16 (rivers must run 50m+); emitter add 1.35->1.8, F floor 0.25->0.45; tail smear sv x4.2 sh x1.6. (4) SPRAY PROVEN ALIVE via ?sprayDebug=1 red-mist switch - the p6-p9 invisibility was faintness, not a dead path: 22 puffs/vehicle (was 14), growth 3.3, longer life/throw, day radiance 1.30, opacity 2.4, night warm 0.52, depth soft band widened. (5) column crispness: damp sh 0.85->0.66, pool 0.32->0.26. (6) PuddleField buildMs=0 on early returns fixed + lastBuildSegs instrumentation (puddles=0 root cause still unconfirmed - probe crashes at post-ready eval on SwiftShader). Verified: spray_debug (red mist walls render), night corridor red_ground 0.26->0.34%, ground_p99 0.29->0.31, night_spray2 mid-field shows real red tail smears on asphalt (z crop), day spray shows visible grey mist behind vehicles (was nothing). 0 console errors in 7 runs."
     }
    ],
    "lastScore": 7.5,
@@ -566,7 +573,7 @@
    ],
    "note": "Core now provides engine.post.depthTexture (scene depth every frame) and engine.LAYER_NO_AO (=1) for particles/billboards as requested.",
    "critiqueFile": "docs/critique/effects_p8.json",
-   "round": "p9-audited"
+   "round": "p10-built"
   },
   "zoning": {
    "rounds": [
