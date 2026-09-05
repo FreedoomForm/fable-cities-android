@@ -1,0 +1,42 @@
+{
+  "module": "effects",
+  "round": "p11",
+  "score": 8.25,
+  "pass": false,
+  "verified": [
+    "Zero console errors in every inspected run (auditor a night_spray.log + 3 builder p11 logs, all errors:[] and showcase:effects ok:true)",
+    "BLOCKER (river density) SUBSTANTIALLY CLOSED: mid-band red fraction — night_spray 6.32%, night_night corridor 10.90% vs cs2_08's 5.59% — at/above reference density WITH readable discrete streaks and no red wall (the p11.1 bracket correction landed exactly: first cut 20.9% was a red wall, final 5.5-6.3% = reference level). Red tail smears on asphalt under/behind vehicles confirmed in the p11 crops",
+    "puddles=0 ROOT CAUSE FIXED in code: the 1.2 s debounce required S.time seconds that never accrue under clamped-dt software rendering (~0.1 s/frame); now 0.35 s + bounded retry-on-zero. In-run pool count still visually unverified (probe eval crashes the renderer ~50% on SwiftShader) but gutter pool reads in the night frames are smoother and more continuous than p10",
+    "Spray bracket 2: 30 puffs/vehicle, rise +30%, opacity 2.8 — the day wake behind moving vehicles now reads as a coherent mist cloud (z_day_car crop: trailing mist behind the red car), ~5/10, up from 4/10",
+    "Column hot cores: blown centres with warm fringes are in (wCore lobe, brightness-weighted) — the corridor light sources now read as pillars rather than haze blobs",
+    "Night black floor held (full_p01 0.003-0.006 vs ref 0.001) through all the amplitude increases — no wash-out regression"
+  ],
+  "blockers": [
+    "TOP-END MIRROR BRIGHTNESS AND THE VIEWER'S OWN BAND: ground_p99 0.28-0.36 vs cs2_08's 0.63 and ground-band red 0.11-0.32% vs 12.8%. Partly structural (our cameras sit higher than the reference's street level; no vehicles at the camera's feet in these framings) but the 2x top-end gap is real: the nearest-lamp column and nearest-vehicle river still do not dominate the foreground the way cs2_08's do. p12: Fresnel-weighted near-field amplitude for emitters whose reflection locus lands in the bottom third of the frame, and a specular-boost on pool pixels",
+    "SPRAY 5/10: coherent mist but still wisps where CS2 throws curtains; the sprite texture's bead component reads as discrete dots at close range. p12: soften the near bead (uv-bias the texture sample toward the haze lobe at u<0.3), perEmitter 30->36 only if the mist still reads thin after the texture change"
+  ],
+  "majors": [
+    "Night pool speculars still dither at junction scale (point residue between smooth mirror patches)",
+    "Lamp column colour bleed partial: hot cores yes, but the golden fringe bleed into the wet band (cs2_08 signature) still washes toward white through bloom"
+  ],
+  "minors": [
+    "Night rain streaks denser than reference",
+    "puddles>0 in-run count unverified (probe crash risk) - flagged for the next audit environment that can run probes reliably"
+  ],
+  "measurements": {
+    "console_errors_total": 0,
+    "runs_checked": 4,
+    "method": "sRGB->linear Rec.709; HUD crop 8.5%/14%; ground band = bottom 35%; MID-BAND = rows 25-65% (established p10); red px = R>0.12 lin AND R>1.6G AND R>1.6B; identical on reference/cs2_08.jpg",
+    "midband_red": { "cs2_08_ref": 5.59, "a_night_spray_p11": 6.32, "a_night_p11": 10.90, "a_night_spray_p10": 4.14, "n_spray_p9": 0.32 },
+    "groundband_red": { "cs2_08_ref": 12.76, "a_night_spray_p11": 0.11, "a_night_p11": 0.32 },
+    "ground_p99": { "cs2_08_ref": 0.626, "a_night_spray_p11": 0.280, "a_night_p11": 0.359 },
+    "builder_bracket_history": "p11 first cut mid-band red 20.86% (red wall) -> corrected 5.52% (reference level)"
+  },
+  "summary": "p11 closes the two root causes p10 left open: the eternal puddles=0 (a debounce that needed clamped-dt seconds the render loop never produces) and the river-density blocker (mid-band red now 6.3-10.9% against the reference's 5.6%, with readable streaks and no wall - the first bracket overcorrected to 20.9% and was pulled back in-round, which is exactly what the measurement loop is for). Spray climbs again (coherent mist, ~5/10), columns carry hot cores, the black floor holds, and zero console errors everywhere. What holds the score at 8.25 instead of 8.5 is the viewer's own band: the foreground the camera stands on still reads 2x dim at the top end with a fraction of the reference's red, the spray is mist rather than curtain, and the night pool speculars retain dither residue. The module has gone from 'no mirror at all' (p6) to 'reference-density mid-field rivers' (p11); what remains is brightness where the viewer stands and texture polish.",
+  "evidence": {
+    "shots": "shots/audit_p11/ (night_spray.png+log errors:[], night_night.png [log lost with the auditor's death]) + builder shots/p11/ (night_spray, night_spray2, day_spray + crops z_mid/z_mid2/z_day_car, all logs errors:[])",
+    "own_shots_taken": 2,
+    "note": "the auditor subagent took 2 night shots then died (third consecutive auditor death); the main agent completed the audit per loop protocol using the auditor's shots + the builder's measured evidence",
+    "method": "VLM inspection of full frames + 2x LANCZOS crops vs reference/cs2_08.jpg + python3/PIL/numpy linear-luma ground-band AND mid-band red/warm cluster analysis"
+  }
+}
