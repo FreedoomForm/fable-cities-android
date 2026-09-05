@@ -313,34 +313,39 @@ void main() {
         vec3 diff = toM - RwDir * t;
         float dh2 = dot(diff.xz, diff.xz);
         float dv = abs(diff.y);
-        float sh = mix(0.85, 0.32, pool);              // horizontal half-width of the streak (m)
+        float sh = mix(0.66, 0.26, pool);              // horizontal half-width of the streak (m)
         // p8: perceptual brightness per emitter (tail radiance carries only 0.22 luma — unnormalised,
         // the red streaks land 4x dimmer than white and read as murky).
         vec3 colN = uWetLightCol[i] / max(luma(uWetLightCol[i]), 0.25);
         // p8: pools stretch the image vertically (the CS2 light river); damp keeps the moderate
         // band that p6 tuned to kill the grazing-ray horizontal beam.
         // p9 audit: 3.0 m traded reach for crispness → 2.5; the wobble below tightens with it.
-        float sv = mix(1.9, 2.5, pool);
+        float sv = mix(1.8, 2.3, pool);
         // p9 audit blocker (2 rounds): tail-light mirrors can NEVER form a geometric column — a tail
         // sits ~0.6 m above the plane so its mirror is only ~1.2 m away, versus a 9 m lamp's 18 m
         // path. CS2's red rivers are the BLOOM of the emitter smeared vertically by the wet shader.
         // Red-dominant emitters (colN.r ≫ colN.g after normalisation) get a tall, slightly wider
         // smear so queued traffic paints the road behind it.
         float tailish = smoothstep(2.0, 5.0, colN.r / max(colN.g, 0.05));
-        sv *= mix(1.0, 3.6, tailish);
-        sh *= mix(1.0, 1.35, tailish);
+        sv *= mix(1.0, 4.2, tailish);
+        sh *= mix(1.0, 1.6, tailish);
         float w = exp(-dh2 / (sh * sh)) * exp(-dv * dv / (sv * sv));
         if (w < 0.004) continue;
         // p8: CS2 corridors carry columns from lamps 60-150 m away; 0.0016 cut everything past
-        // ~45 m. 0.0009 keeps the near-field weight identical and doubles the far reach.
-        float att = 1.0 / (1.0 + 0.0009 * t * t);
+        // ~45 m. 0.0009 kept the near-field weight and doubled the far reach — but the p9 probe
+        // + measurements show a tail river still dies: at a 120 m emitter att = 0.09, and the
+        // reference's rivers run bright for 50 m+ TOWARD the camera. 0.00038 (≈ 2.4x reach) plus
+        // a floor keeps the near field identical and the far field alive.
+        float att = 1.0 / (1.0 + 0.00038 * t * t);
+        att = max(att, mix(0.10, 0.16, tailish));
         acc += colN * (Le.w * w * att);
       }
       // Fresnel keeps the streaks off perpendicular views; pools carry them at nearly full strength.
-      // p9: emitter term gets a Fresnel FLOOR (0.25) — self-luminous mirrors do not need the sky
-      // Fresnel gate at full strength, and the tail rivers died exactly at the moderate NdV the
-      // street views live at.
-      c += acc * (0.25 + 0.75 * F) * wetMask * (0.45 + 0.80 * pool) * 1.35;
+      // p9: emitter term got a Fresnel FLOOR (0.25) — but the p9 audit measured the top-end mirror
+      // 2-3x dim and the rivers still absent: an emitter's mirror is SELF-LUMINOUS, it should not
+      // be gated by the sky Fresnel as hard as the sky image is. 0.45 floor + softer slope, and the
+      // whole term up 1.35 → 1.8 (ground_p99 0.16-0.29 vs the reference's 0.63).
+      c += acc * (0.45 + 0.55 * F) * wetMask * (0.45 + 0.80 * pool) * 1.8;
     }
   }
 

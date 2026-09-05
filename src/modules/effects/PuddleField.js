@@ -173,6 +173,9 @@ export class PuddleField {
     const segs = roads && roads.segments ? Array.from(roads.segments.values()) : [];
     this._clearMesh();
     this.count = 0;
+    // p10: buildMs stayed 0 on the early returns, so the p9 probe could not distinguish "never
+    // ran" from "ran on an empty network". Always report the timing and the reason.
+    this.buildMs = 0; this.lastBuildSegs = segs.length;
     if (!segs.length) { this.mapXf.w = 0; return 0; }
 
     // ---- 1. bounds ----

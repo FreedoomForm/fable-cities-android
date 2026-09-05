@@ -29,7 +29,9 @@ varying float vViewZ;
 #include <fog_pars_vertex>
 void main() {
   float strength = aVel.z * uWet;
-  float life = 0.42 + aSeed.w * 0.34;
+  // p10: the wake lived and died inside ~0.6 s over ~3 m — a hint of foam, not a plume. Longer life
+  // and a longer throw so the trail reads behind the vehicle at street-view distances.
+  float life = 0.55 + aSeed.w * 0.40;
   float u = fract(uTime / life + aSeed.x);
   float age = u * life;
   vec3 dir = vec3(aEmit.w, 0.0, aVel.x);
@@ -37,12 +39,15 @@ void main() {
   float speed = aVel.y;
   vec3 p = aEmit.xyz;
   // thrown backwards at (roughly) the vehicle's own speed, fanning out and up, then settling
-  p -= dir * (speed * age * 0.55);
-  p += side * aSeed.y * (0.55 + 1.9 * u);
-  p.y += 0.04 + (0.95 * u - 0.78 * u * u) * (0.40 + 0.055 * speed);
+  p -= dir * (speed * age * 0.70);
+  p += side * aSeed.y * (0.70 + 2.5 * u);
+  p.y += 0.04 + (0.95 * u - 0.78 * u * u) * (0.55 + 0.075 * speed);
   // p8: the audit bracket is now measured — 3.2 growth read as white cotton foam, 2.0 was
-  // invisible (VLM 0/10). 2.6 sits between: puffs reach ~0.9 m, a mist trail, not a sheet.
-  float s = aSeed.z * (0.42 + 2.6 * u) * (0.62 + 0.05 * speed);
+  // invisible (VLM 0/10). p9 anchored the CONTENT above the road (below) — but the p9 audit
+  // still scored spray 0/10 in day frames: 44 live emitters confirmed by probe, yet nothing
+  // rasterises to visible density. The wake must VOLUME: bigger puffs (3.3 growth), taller
+  // rise, wider fan — mist that fills the wheel arches instead of hugging the plate.
+  float s = aSeed.z * (0.55 + 3.3 * u) * (0.62 + 0.05 * speed);
   // p9 ROOT CAUSE (audit: "parameter tuning is proven not the bottleneck"): the spray texture's
   // content (drops + haze + bead) lives in the BOTTOM 40 % of the sprite, but the billboard was
   // anchored at the rear axle (road + 0.05 m) — the content projected BELOW the road plane and the
@@ -74,8 +79,9 @@ ${DEPTH_PARS}
 void main() {
   float a = texture2D(uTex, vUv).a * vAlpha * uOpacity;
   // p9: bias +0.15 → +0.35 — puffs hug the road surface; the soft test at +0.15 was killing the
-  // lower half of every puff that leant even slightly away from the camera.
-  if (uHasDepth > 0.5) a *= clamp((vViewZ - effectsSceneViewZ() + 0.35) / 0.5, 0.0, 1.0);
+  // lower half of every puff that leant even slightly away from the camera. p10: the ground-pass
+  // diagnostic showed the wake still erased at the contact line; widen the band (+0.45 / 0.75).
+  if (uHasDepth > 0.5) a *= clamp((vViewZ - effectsSceneViewZ() + 0.45) / 0.75, 0.0, 1.0);
   if (a < 0.003) discard;
   float fogAtt = 1.0;
   #ifdef USE_FOG

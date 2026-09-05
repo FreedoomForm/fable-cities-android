@@ -111,6 +111,13 @@ export class WetLights {
     }
 
     camera.getWorldPosition(_cam);
+    // p10 ROOT CAUSE (why vehicle rivers/columns starve at night): the traffic writer scales aGlare
+    // by gs = 1/max(0.6, toneMappingExposure) — DISPLAY-REFERRED so the billboards look right at the
+    // current eye adaptation. Night exposure is 3.15 (atmosphere.exposureForSun), so every vehicle
+    // emitter reached the mirror at 0.317x of its authored radiance — the p9 probe measured a live
+    // tail slot at i=1.1 where the authored value is ~3.4. The wet mirror is a LIGHT-TRANSPORT term:
+    // it needs the physical radiance, so undo the writer's division here. Lamps stay absolute.
+    const rec = Math.max(0.6, glareExposure || 1);
     // p9 root cause 3: "nearest 12" is fundamentally wrong for any camera above the rooftops. What
     // matters is whether the emitter's REFLECTION LOCUS lands inside the view frustum — and the locus
     // of a lamp 8 m from a 20 m-high camera is ~5 m from the camera footprint, i.e. BEHIND the frame
@@ -165,7 +172,7 @@ export class WetLights {
         // p9: red-dominant (tail) emitters carry a higher mirror intensity — their radiance is
         // genuinely dimmer than headlamps, and the shader stretches rather than brightens the smear.
         const redDom = r > 2.5 * Math.max(g, 0.02);
-        cand.push({ x: _p.x, y: _p.y, z: _p.z, r: r / maxC, g: g / maxC, b: b / maxC, i: maxC * (redDom ? 2.6 : 1.5), d2, cosA });
+        cand.push({ x: _p.x, y: _p.y, z: _p.z, r: r / maxC, g: g / maxC, b: b / maxC, i: maxC * (redDom ? 2.6 : 1.5) * rec, d2, cosA, redDom });
       }
     }
     this.stats.vehicles = cand.length - this.stats.lamps;
@@ -174,6 +181,26 @@ export class WetLights {
     // by distance as a tie-break. cosA < 0.2 (~78° off-axis) is outside any of our framings.
     cand.sort((a, b) => (b.cosA - a.cosA) || (a.d2 - b.d2));
     for (let i = cand.length - 1; i >= 0; i--) if (cand[i].cosA < 0.2) cand.splice(i, 1);
+    // p10: the 12 slots are pure cosA, and a corridor full of on-axis headlamps + high masts evicts
+    // every tail light — the p9 probe showed exactly 1 tail in 12 slots while red_ground stayed at
+    // 0.1-0.26 % of the reference's 12.8 %. Reserve the last 4 slots for red-dominant (tail) emitters:
+    // promote the best-ranked tails that did not make the cut. Lamps and heads keep competing for 8.
+    let tailsIn = 0;
+    for (let i = 0; i < Math.min(cand.length, MAX_LIGHTS); i++) if (cand[i].redDom) tailsIn++;
+    if (tailsIn < 4) {
+      const promoted = [];
+      for (let i = MAX_LIGHTS; i < cand.length && promoted.length < 4 - tailsIn; i++) {
+        if (cand[i].redDom) promoted.push(cand[i]);
+      }
+      for (const p of promoted) {
+        // evict from the back of the top-12, preferring non-tail slots
+        let ev = -1;
+        for (let i = MAX_LIGHTS - 1; i >= 0; i--) if (!cand[i].redDom) { ev = i; break; }
+        if (ev < 0) ev = MAX_LIGHTS - 1;
+        cand.splice(ev, 0, p);
+        cand.splice(MAX_LIGHTS, 1);
+      }
+    }
     this.count = Math.min(cand.length, MAX_LIGHTS);
     for (let i = 0; i < this.count; i++) {
       const s = cand[i];

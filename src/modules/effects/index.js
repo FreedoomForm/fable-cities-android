@@ -59,9 +59,14 @@ export async function init(ctx) {
   const q = engine.quality;
   const pScale = q.particles ?? 1;
   const seed = world.seed;
+  // p10 diagnostic: ?sprayDebug=1 paints the vehicle wake solid red at 9x opacity — separates
+  // "spray system dead" from "spray too faint" in the verification loop without an eval hook.
+  const sprayDebug = typeof location !== 'undefined'
+    && new URLSearchParams(location.search).get('sprayDebug') === '1';
 
   S = {
     ctx, engine, scene, world, events, camera, cameraController,
+    sprayDebug,
     enabled: { smoke: true, rain: true, snow: true, splashes: true, spray: true, grading: true, flare: true, shimmer: true, wet: true, autoExposure: true, reflections: true, contact: true, aerial: true },
     time: 0,
     dirty: true,
@@ -128,7 +133,10 @@ export async function init(ctx) {
   S.splash = new SplashSystem({ count: Math.round(3000 * pScale), crownTexture: sprayTex, ringTexture: ringTex });
   S.splash.fill(makeRng(seed ^ 0x5b7a));
   S.spray = new VehicleSpray({
-    emitters: Math.max(8, Math.round(44 * pScale)), perEmitter: 14, texture: sprayTex,
+    // p10: 14 puffs per vehicle over a ~3 m wake could not fill a wheel arch (44 live emitters
+    // confirmed by the p9 probe, zero visible wake). 22 + the bigger puffs in VehicleSpray give
+    // the plume volume; the cost is still one draw call, vertices animate on the GPU.
+    emitters: Math.max(8, Math.round(44 * pScale)), perEmitter: 22, texture: sprayTex,
   });
   S.systems = [S.smoke, S.rain, S.rainNear, S.rainFar, S.snow, S.splash, S.spray];
   for (const sys of S.systems) {
@@ -497,12 +505,20 @@ export function update(dt, elapsed) {
       // the mist actually catches after dark. p5 major: a 0.1-alpha grey sprite over a 0.13-luminance
       // road is invisible — the plume now carries real radiance (warm at night, sky-lit by day).
       // p8: audit-measured bracket — day radiance 1.10 + opacity 2.1 = cotton foam, 0.80/1.7 =
-      // invisible (VLM 0/10 in every frame). 0.95/1.95 splits it; the night warm term goes up
-      // (0.16 → 0.30) because at night the sky term is ~0 and the mist must read against lamps.
-      u.uColor.value.copy(skyRad).multiplyScalar(0.95)
-        .add(tmpC2.setRGB(1.0, 0.88, 0.70).multiplyScalar(0.045 + 0.30 * night))
-        .addScalar(0.012);
-      u.uOpacity.value = 1.95 * (0.45 + 0.55 * S.rainAmt);
+      // invisible (VLM 0/10 in every frame). p9 kept 0.95/1.95 — still invisible; the p9 probe
+      // proved 44/44 emitters live, so the gap is delivered DENSITY and radiance against a BRIGHT
+      // mirror background (the day road reflects the sky at 0.3-0.6). p10: bigger puffs + 1.30
+      // sky term + 2.4 opacity; night warm 0.30 → 0.52 (the mist must catch lamps/tails).
+      u.uColor.value.copy(skyRad).multiplyScalar(1.30)
+        .add(tmpC2.setRGB(1.0, 0.88, 0.70).multiplyScalar(0.045 + 0.52 * night))
+        .addScalar(0.018);
+      u.uOpacity.value = 2.4 * (0.45 + 0.55 * S.rainAmt);
+      // p10 diagnostic switch: ?sprayDebug=1 floods the wake with unmistakable red mist — used to
+      // separate "system dead" from "system too faint" in the verification loop.
+      if (S.sprayDebug) {
+        u.uColor.value.setRGB(1.9, 0.22, 0.18);
+        u.uOpacity.value = 9.0;
+      }
       sp.sync(S.world.traffic?.list || S.world.traffic?.vehicles, camera.position, S.wetness, 150);
     } else if (sp.geometry.instanceCount) {
       sp.geometry.instanceCount = 0;
@@ -907,6 +923,7 @@ function makeApi() {
       return {
         count: S.puddleCount ?? 0, visible: !!(S.puddles.mesh && S.puddles.mesh.visible),
         map: S.puddles.map, xf: S.puddles.mapXf,
+        buildMs: S.puddles.buildMs ?? 0, lastBuildSegs: S.puddles.lastBuildSegs ?? -1,
       };
     },
     get snowCover() { return S.snowCover; },
