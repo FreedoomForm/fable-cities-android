@@ -95,11 +95,20 @@ jobs:
           emulator-options: -no-window -gpu swiftshader_indirect -no-audio -no-boot-anim -camera-back none -memory 3072
           disable-animations: true
           script: |
-            set -e
-            # upload-artifact v4 strips the common root (android/app) from the artifact paths,
-            # so glob for the APK instead of hard-coding the original tree
-            APK=$(find artifact -name "*.apk" -type f | head -1)
-            echo "Installing $APK"
+            # upload-artifact v4 strips the common root (android/app/build) from artifact paths;
+            # locate the APK robustly (emulator-runner script cwd is not guaranteed to be the
+            # workspace root - the previous run's find artifact returned empty from it)
+            echo "PWD=$(pwd)"
+            ls -la "$GITHUB_WORKSPACE/artifact" 2>/dev/null || true
+            APK=$(find "$GITHUB_WORKSPACE/artifact" -name "*.apk" -type f 2>/dev/null | head -1)
+            if [ -z "$APK" ]; then
+              APK=$(find "$GITHUB_WORKSPACE" -maxdepth 6 -name "*.apk" -type f 2>/dev/null | grep -v "/gradle/" | head -1)
+            fi
+            echo "APK=$APK"
+            if [ -z "$APK" ]; then
+              echo "::error::no .apk found in the downloaded artifact"
+              exit 1
+            fi
             adb install -r "$APK"
 
             # clear logcat so every line below is from this launch
