@@ -1,0 +1,48 @@
+{
+  "module": "effects",
+  "round": "p9",
+  "score": 7.5,
+  "pass": false,
+  "verified": [
+    "Zero console errors across all 10 inspected runs (4 auditor night shots n_night/n_street/n_puddles/n_spray, night_road smoke, night_street smoke, d_spray, d_spray2, d_closeup; errors:[] and warningCount:0 everywhere; showcase:effects ok:true and all 13 modules ok in every log)",
+    "p9 root-cause claim 1 CONFIRMED REAL: the wet-mirror emitter mirroring was genuinely broken in p6-p8 and is now fixed. Probe on n_night reports wetLights=12 analytic emitters actually carried into the uniform array (from wetLightsLamps=189 and wetLightsVehicles=296 seen), wetness=1, wetMaterials=98. Mirrored columns are now visible above vehicles in n_puddles (2x crop) and n_night, which was geometrically impossible before p9",
+    "Red ground presence improved ~10-15x vs p8 (red_ground px: n_street 70 / night_road 135 / n_puddles 146 / n_night 164 / n_spray 72 vs p8's night_street 11 / night_road 82) and tail lights now leave small local red patches on the asphalt under the nearest vehicles (z_spray_tail 2x crop)",
+    "p8 night-ambient revert verified: night black floor is back at reference depth (our full_p01 0.0028-0.0066 / ground_p01 0.0028-0.0058 vs cs2_08 0.0010 / 0.0005) - no more washed navy floor",
+    "Day wet look is the strongest surface in the module: d_spray avenue reads convincingly wet with a coherent sky mirror; d_closeup gutter pool is a smooth discrete mirror with readable rain rings - the p8 'static/dither' major is substantially fixed for day pools",
+    "Rain layering (near streaks + far haze) reads well on both day and night frames; night rain is visible against lit backgrounds without whiting out the frame"
+  ],
+  "blockers": [
+    "CLAIM (red tail rivers) FAILED FOR A THIRD ROUND despite the genuine root-cause fix: mirrored tail contribution still never reads as a river on asphalt. Measured red_ground_frac: n_night 0.26%, n_puddles 0.23%, night_road 0.22%, n_spray 0.12%, n_street 0.11% vs cs2_08's 12.76% (~50-100x gap; and p8's absolute counts vs p9's show only ~2-15x gain). The red that exists is a small local patch directly under/near the vehicle (z_spray_tail) plus a faint vertical red bloom smear against the backdrop (z_night_red) - not a stretched river toward the camera. The bloom smear (sv x3.6) and luma-normalised colour are applied to a contribution whose mirrored amplitude/reach is still ~2 orders of magnitude short: likely causes to attack in p10: (a) the 12-slot ranked array (glare cap 900 + mirrored-camera frustum ranking) may be dropping the tail emitters that matter for long rivers - far tail lights down the corridor must outrank near headlights for river formation; (b) streak length scaling with distance is too short (a 150 m corridor needs multi-metre vertical streaks from far emitters; att 0.0009 still kills them); (c) red-dominant mirrored radiance needs its own amplitude boost in the ground pass, not only in bloom. Verify end-to-end with the groundDebug getter and a dedicated camera BEHIND moving traffic looking along the avenue",
+    "CLAIM (spray) FAILED FOR A THIRD ROUND: day frames show no readable spray/mist/tire wake. z_d_spray_van (2x) behind the foreground white van: no wake; z_d_spray_red (2x): scattered white dots around the red car that read as splash/rain particles, not a coherent tire mist; night n_spray: nothing. The p9 sprite re-anchoring (above road plane) may be correct engineering but visible output is still ~0 at the threshold a player perceives. This is no longer a tuning problem - p10 must change method: probe sprayEmitters live count while traffic is actually moving (the effects_spray junction vehicles may be speed-gated off), render a debug/false-colour spray-only frame to prove the emission path, check per-emitter world-unit size at 640x360 FOV 42 vs pixel coverage, and check the composite ordering (are sprites drawn before the wet-pass grade that crushes them?)",
+    "MAJOR PROMOTED: lamp reflection column crispness. p8 named it a major and p9 did not move it: our columns are soft white smears (z_night_red, z_puddles_cars) while cs2_08 shows a golden pillar with sharp core and colour bleed (z_ref_columns). With the mirroring fix now proven live, crispness is achievable: tighter horizontal sigma + warm colour for lamp emitters. Promoted to blocker because columns ARE the night wet-look signature"
+  ],
+  "majors": [
+    "Night pool reflections still read as point speculars / dither dots rather than continuous mirrored columns (z_puddles_cars 2x) - the day pools are smooth (fixed) but the night pool path still breaks up; consider the same temporal/denoise treatment the day path got",
+    "Top-end mirror brightness ~2-3x dim: night ground_p99 0.16-0.29 across all four views vs cs2_08's 0.63, and ground_gt03_frac 0.45-0.91% vs 9.0% - the brightest parts of our wet ground never reach the reference's highlight level, which flattens the night look even where reflections exist"
+  ],
+  "minors": [
+    "Night rain streaks read denser/heavier than the reference's rain at similar conditions",
+    "Traffic density in the showcase corridor is lower than cs2_08's downtown - a scene-density context that makes the red_ground_frac comparison harsher than reality, but even corridor views with 8+ vehicles in frame show no rivers, so the blocker stands",
+    "d_spray2 captured as a consistency frame (same view as d_spray): spray absence confirmed twice"
+  ],
+  "measurements": {
+    "console_errors_total": 0,
+    "runs_checked": 10,
+    "method": "sRGB->linear, Rec.709 luma; ground band = bottom 35% after HUD crop (top 8.5%, bottom 14%); red px = R>0.12 lin AND R>1.6G AND R>1.6B; warm px = R>0.12 AND R>1.3G AND G>B; identical method on reference/cs2_08.jpg",
+    "cs2_08_reference": { "ground_p99": 0.6261, "ground_gt03_frac": 0.0899, "red_ground_frac": 0.12761, "warm_ground_frac": 0.10819 },
+    "n_night": { "full_p01": 0.0066, "ground_p01": 0.0058, "ground_p50": 0.0282, "ground_p99": 0.2909, "ground_gt03_frac": 0.00914, "red_ground_px": 164, "red_ground_frac": 0.00261 },
+    "n_street": { "full_p01": 0.0028, "ground_p01": 0.0028, "ground_p50": 0.0101, "ground_p99": 0.1636, "ground_gt03_frac": 0.00453, "red_ground_px": 70, "red_ground_frac": 0.00112 },
+    "n_puddles": { "full_p01": 0.0032, "ground_p01": 0.0045, "ground_p50": 0.0188, "ground_p99": 0.2731, "ground_gt03_frac": 0.00555, "red_ground_px": 146, "red_ground_frac": 0.00233, "warm_ground_frac": 0.04777 },
+    "n_spray": { "full_p01": 0.0043, "ground_p01": 0.0039, "ground_p50": 0.0174, "ground_p99": 0.2588, "ground_gt03_frac": 0.00674, "red_ground_px": 72, "red_ground_frac": 0.00115 },
+    "night_road_smoke": { "ground_p99": 0.231, "red_ground_px": 135, "red_ground_frac": 0.00215 },
+    "probe_n_night": { "wetLights": 12, "wetLightsLamps": 189, "wetLightsVehicles": 296, "emitters": 40, "wetness": 1, "wetMaterials": 98, "smokeParticles": 6471 }
+  },
+  "summary": "p9 is the round where the true root cause was finally found and fixed: the wet-mirror emitter mirroring had a sign error that made analytic emitter reflection geometrically impossible in p6-p8, and the probe proves the harvester now carries 12 real emitters from 189 lamp + 296 vehicle lights. Mirrored columns exist for the first time, red ground presence rose 10-15x, the night floor is back at reference depth, and the day wet look with smooth pools and rain rings is genuinely good. But the two headline blockers that have defined this module since p7 both fail again: tail lights still do not read as red rivers on asphalt (0.11-0.26% red ground fraction vs the reference's 12.8%, red confined to small patches under the nearest vehicles) and spray remains invisible in day and night (third consecutive round). Lamp columns remain soft white smears without the reference's crisp colour bleed, and night pool speculars still dither. Score stays at 7.5 - real engineering progress, but the visible wet-night signature the module is judged on is still not there.",
+  "evidence": {
+    "shots": "shots/audit_p9/ (7 png + 7 log.json: n_night, n_street, n_puddles, n_spray, d_spray, d_spray2, d_closeup - all errors:[]) + smoke shots/p9smoke/{night_street,night_road} errors:[] + 6 analysis crops z_*.png (2x LANCZOS)",
+    "own_shots_taken": 9,
+    "note": "the first auditor subagent took the 4 night shots and the n_night probe, then died; the main agent completed the audit per loop protocol (day shots, crops, measurements, verdict)",
+    "probe_attempts": "d_spray3 probe timed out twice at 570s (SwiftShader boot variance); the n_night probe from the first auditor session is the wetLights evidence",
+    "method": "VLM inspection of full frames + 2x LANCZOS crops (red region, puddle cars, tail region, day spray van/red car, puddle rings) vs reference/cs2_08 crops + python3/PIL/numpy linear-luma percentile and red/warm cluster analysis, identical method on reference"
+  }
+}

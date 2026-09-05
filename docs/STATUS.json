@@ -501,6 +501,13 @@
      "score": null,
      "pass": null,
      "summary": "p8 audit 7.5 FAIL -> root causes (not parameter tuning) fixed: (1) WET-MIRROR EMITTERS NEVER RENDERED in p6/p7/p8 - GroundFXPass mirrored the emitter BELOW the water plane (M.y=2W.y-Le.y) while marching the reflected ray UPWARD, so dot(toM,RwDir)<0 for every pixel and the t<=0.5 guard skipped every emitter; all columns the critics saw were SSR hits + the roads module lamp pools. The marched ray is now tested against the TRUE emitter position. (2) Tail rivers are BLOOM, not geometry: a tail sits ~0.6 m above the plane (mirror path ~1.2 m vs a 9 m lamp's 18 m), so red-dominant emitters (colN.r/g after luma-normalisation) get sv x3.6 / sh x1.35 vertical smear; red-dominant glare emitters get mirror intensity 2.6 vs 1.5. (3) 'Nearest 12' slot ranking replaced by angular deviation from the MIRRORED-camera view direction (in-frustum reflected emitters win at any camera height; cosA>=0.2 gate); glare read cap 260->900 (writer filled in traffic order - mostly far vehicles; the near queue was never read). (4) Emitter term Fresnel floor 0.25 (tail rivers died at the moderate NdV street views live at); pool roughness 0.16->0.10, pool sv 3.0->2.5 (p8 audit: traded reach for crispness). (5) SPRAY ROOT CAUSE (0/10 two rounds): sprite content lives in the BOTTOM 40% of the texture while the billboard was anchored at road+0.05 m - content projected BELOW the road plane and the depth soft-test erased it (growth 3.2 accidentally lifted it = p6 foam, 2.0 sank it = p7/p8 invisible). Sprite centre now raised by 45% of puff size (mist fans UP from the contact patch) + depth bias 0.15->0.35. (6) p8 night ambient lifts REVERTED - the audit re-measured cs2_08 with the identical linear pipeline: ref ground p10 0.0038 vs our 0.0118-0.0128 (3x TOO BRIGHT, not dark; the p7 '0.0126 anchor' was a measurement artefact). uSkyColor night key back to 1.05, toe night 0.30->0.18. (7) Diagnostics: effects.groundDebug API (what the ground pass uploads for emitters) + shot.mjs --probe flag (persists JSON eval results in the .log.json). Evidence status: shots/p9 night_street x3 captured MID-ROUND (after the spray fix, BEFORE the 15:35 WetLights/GroundFXPass emitter fixes): 0 console errors, ground p99 0.56 (window reflections hold), red_px_ground 1-2 (red streaks expected absent there - decisive fix is later). POST-FIX evidence NOT yet captured; round NOT yet audited (next: p9-audit with dedicated tail-queue framing + day spray re-shot)."
+    },
+    {
+     "run": "p9",
+     "round": "p9-audit",
+     "score": 7.5,
+     "pass": false,
+     "summary": "p9 audit 7.5 FAIL (same as p8, no regression, real progress). CONFIRMED: the p6-p8 wet-mirror mirroring sign error was the real root cause and is now fixed - probe shows 12 analytic emitters live from 189 lamp + 296 vehicle lights; mirrored columns render for the first time; red ground presence +10-15x; night floor back at reference depth; day pools smooth with rain rings. STILL FAILING: red tail rivers not readable (red_ground_frac 0.11-0.26% vs cs2_08 12.76%, red only in small patches under nearest vehicles); spray invisible for a 3rd round (day frames show no mist/wake behind vehicles); lamp columns still soft white smears without colour bleed (promoted to blocker); night pool speculars still dithery; top-end mirror brightness 2-3x dim (ground_p99 0.16-0.29 vs 0.63). Zero console errors in all 10 runs. p10 must change method on spray (probe live emitters during motion, debug render, composite ordering) and attack tail-river amplitude/reach + ranking, not retune."
     }
    ],
    "lastScore": 7.5,
@@ -559,7 +566,7 @@
    ],
    "note": "Core now provides engine.post.depthTexture (scene depth every frame) and engine.LAYER_NO_AO (=1) for particles/billboards as requested.",
    "critiqueFile": "docs/critique/effects_p8.json",
-   "round": "p9-built"
+   "round": "p9-audited"
   },
   "zoning": {
    "rounds": [
