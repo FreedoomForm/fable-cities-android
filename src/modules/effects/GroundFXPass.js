@@ -327,25 +327,30 @@ void main() {
         // Red-dominant emitters (colN.r ≫ colN.g after normalisation) get a tall, slightly wider
         // smear so queued traffic paints the road behind it.
         float tailish = smoothstep(2.0, 5.0, colN.r / max(colN.g, 0.05));
-        sv *= mix(1.0, 4.2, tailish);
-        sh *= mix(1.0, 1.6, tailish);
+        sv *= mix(1.0, 3.2, tailish);
+        sh *= mix(1.0, 1.2, tailish);
         float w = exp(-dh2 / (sh * sh)) * exp(-dv * dv / (sv * sv));
         if (w < 0.004) continue;
-        // p8: CS2 corridors carry columns from lamps 60-150 m away; 0.0016 cut everything past
-        // ~45 m. 0.0009 kept the near-field weight and doubled the far reach — but the p9 probe
-        // + measurements show a tail river still dies: at a 120 m emitter att = 0.09, and the
-        // reference's rivers run bright for 50 m+ TOWARD the camera. 0.00038 (≈ 2.4x reach) plus
-        // a floor keeps the near field identical and the far field alive.
-        float att = 1.0 / (1.0 + 0.00038 * t * t);
-        att = max(att, mix(0.10, 0.16, tailish));
-        acc += colN * (Le.w * w * att);
+        // p11: hot core — the reference pillars are blown at the centre with warm fringes; a single
+        // Gaussian spreads the energy into haze. A tighter second lobe carries the core, weighted
+        // by emitter brightness so dim tails keep a soft core while lamps get a hot one.
+        float wCore = exp(-dh2 / (sh * sh * 0.30)) * exp(-dv * dv / (sv * sv * 0.45));
+        // p11.1 bracket correction: the first cut (core x1.5, att flat to 80 m, add 1.8) blew the
+        // mid-band red to 20.9% (ref 5.6%) — a red wall. Core x0.7, haze from 30 m, add 1.3.
+        float amp = w + wCore * min(1.0, Le.w / 2.5) * 0.7;
+        // p8: CS2 corridors carry columns from lamps 60-150 m away. The 1/(1+k·t²) form was the
+        // wrong physics for a mirror (p10 probe + p10 audit): a reflected IMAGE does not decay with
+        // the pixel-to-emitter distance — the Gaussian overlap already dilutes it as the streak
+        // stretches. What remains is atmospheric haze over the path length.
+        float att = mix(1.0, 0.30, smoothstep(30.0, 160.0, t));
+        acc += colN * (Le.w * amp * att);
       }
       // Fresnel keeps the streaks off perpendicular views; pools carry them at nearly full strength.
       // p9: emitter term got a Fresnel FLOOR (0.25) — but the p9 audit measured the top-end mirror
       // 2-3x dim and the rivers still absent: an emitter's mirror is SELF-LUMINOUS, it should not
       // be gated by the sky Fresnel as hard as the sky image is. 0.45 floor + softer slope, and the
       // whole term up 1.35 → 1.8 (ground_p99 0.16-0.29 vs the reference's 0.63).
-      c += acc * (0.45 + 0.55 * F) * wetMask * (0.45 + 0.80 * pool) * 1.8;
+      c += acc * (0.45 + 0.55 * F) * wetMask * (0.45 + 0.80 * pool) * 1.3;
     }
   }
 

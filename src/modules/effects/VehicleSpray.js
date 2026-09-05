@@ -39,9 +39,10 @@ void main() {
   float speed = aVel.y;
   vec3 p = aEmit.xyz;
   // thrown backwards at (roughly) the vehicle's own speed, fanning out and up, then settling
+  // p11 audit bracket 2: taller rise (+30%) so the wake fills the wheel arches at street view
   p -= dir * (speed * age * 0.70);
-  p += side * aSeed.y * (0.70 + 2.5 * u);
-  p.y += 0.04 + (0.95 * u - 0.78 * u * u) * (0.55 + 0.075 * speed);
+  p += side * aSeed.y * (0.85 + 3.0 * u);
+  p.y += 0.04 + (1.15 * u - 0.90 * u * u) * (0.75 + 0.09 * speed);
   // p8: the audit bracket is now measured — 3.2 growth read as white cotton foam, 2.0 was
   // invisible (VLM 0/10). p9 anchored the CONTENT above the road (below) — but the p9 audit
   // still scored spray 0/10 in day frames: 44 live emitters confirmed by probe, yet nothing

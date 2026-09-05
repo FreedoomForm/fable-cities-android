@@ -134,9 +134,10 @@ export async function init(ctx) {
   S.splash.fill(makeRng(seed ^ 0x5b7a));
   S.spray = new VehicleSpray({
     // p10: 14 puffs per vehicle over a ~3 m wake could not fill a wheel arch (44 live emitters
-    // confirmed by the p9 probe, zero visible wake). 22 + the bigger puffs in VehicleSpray give
-    // the plume volume; the cost is still one draw call, vertices animate on the GPU.
-    emitters: Math.max(8, Math.round(44 * pScale)), perEmitter: 22, texture: sprayTex,
+    // confirmed by the p9 probe, zero visible wake). p11 audit bracket 2: 22 read as thin wisps
+    // (4/10) — 30 with a taller rise is the last density step before the p8 'cotton foam' cliff;
+    // the puffs are bigger and softer now, so density reads as mist, not beads.
+    emitters: Math.max(8, Math.round(44 * pScale)), perEmitter: 30, texture: sprayTex,
   });
   S.systems = [S.smoke, S.rain, S.rainNear, S.rainFar, S.snow, S.splash, S.spray];
   for (const sys of S.systems) {
@@ -264,11 +265,22 @@ export function update(dt, elapsed) {
   // ---------- standing water (geometry pools in the camber + the shared drainage map) ----------
   {
     const rv = world.roads ? world.roads.version ?? 0 : -1;
-    // debounce: the demo city rebuilds roads dozens of times while it lays the grid
-    if (rv !== S.puddleVersion && S.time - (S.puddleBuiltAt ?? -9) > 1.2) {
+    // debounce: the demo city rebuilds roads dozens of times while it lays the grid.
+    // p11 ROOT CAUSE of the eternal puddles=0: dt is clamped under software rendering, so S.time
+    // advances ~0.1 s per FRAME — the 1.2 s wait needed a dozen post-build frames that the shot
+    // loop never renders before screenshotting. 0.35 s + a bounded retry-on-zero (the first build
+    // legitimately sees an empty network) closes it without reopening the rebuild storm.
+    if (rv !== S.puddleVersion && (S.time - (S.puddleBuiltAt ?? -9) > 0.35 || !(S.puddleCount > 0))) {
       S.puddleVersion = rv;
       S.puddleBuiltAt = S.time;
       S.puddleCount = S.puddles.build();
+      if (!(S.puddleCount > 0)) S.puddleRetries = (S.puddleRetries ?? 0) + 1;
+      else S.puddleRetries = 0;
+    } else if (!(S.puddleCount > 0) && (S.puddleRetries ?? 0) < 3 && S.time - (S.puddleBuiltAt ?? -9) > 2.0) {
+      // version unchanged (or first build raced the road grid) but the network has segments now
+      S.puddleBuiltAt = S.time;
+      S.puddleCount = S.puddles.build();
+      if (S.puddleCount > 0) S.puddleRetries = 0; else S.puddleRetries = (S.puddleRetries ?? 0) + 1;
     }
     S.puddles.update(wetOn ? S.wetness : 0, wetOn ? S.rainAmt : 0, S.time, engine.quality.drawDistance);
   }
@@ -512,7 +524,7 @@ export function update(dt, elapsed) {
       u.uColor.value.copy(skyRad).multiplyScalar(1.30)
         .add(tmpC2.setRGB(1.0, 0.88, 0.70).multiplyScalar(0.045 + 0.52 * night))
         .addScalar(0.018);
-      u.uOpacity.value = 2.4 * (0.45 + 0.55 * S.rainAmt);
+      u.uOpacity.value = 2.8 * (0.45 + 0.55 * S.rainAmt);
       // p10 diagnostic switch: ?sprayDebug=1 floods the wake with unmistakable red mist — used to
       // separate "system dead" from "system too faint" in the verification loop.
       if (S.sprayDebug) {
