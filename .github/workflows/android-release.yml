@@ -96,7 +96,9 @@ jobs:
           disable-animations: true
           script: |
             set -e
-            APK=$(ls artifact/android/app/build/outputs/apk/debug/*.apk | head -1)
+            # upload-artifact v4 strips the common root (android/app) from the artifact paths,
+            # so glob for the APK instead of hard-coding the original tree
+            APK=$(find artifact -name "*.apk" -type f | head -1)
             echo "Installing $APK"
             adb install -r "$APK"
 
@@ -154,9 +156,10 @@ jobs:
         run: |
           short_sha="${GITHUB_SHA::7}"
           tag="android-build-${short_sha}"
+          APK=$(find artifact -name "*.apk" -type f | head -1)
           gh release delete "$tag" --yes --cleanup-tag 2>/dev/null || true
           gh release create "$tag" \
-            artifact/android/app/build/outputs/apk/debug/app-debug.apk \
+            "$APK" \
             --target "$GITHUB_SHA" \
             --title "Android build ${short_sha}" \
             --notes "Automated native Android APK for commit ${GITHUB_SHA}. Build, unit tests, AND emulator boot gate passed (process alive, no fatal exceptions, GL renderer drawing, screenshot captured)." \
