@@ -522,6 +522,13 @@
      "score": 8.0,
      "pass": false,
      "summary": "p10 audit 8.0 FAIL (up from 7.5 - best effects score; trajectory: 6.5, 6.8, 7.2, 7.0, 7.5, 8.0). CONFIRMED: exposure-starvation root cause real and fixed; red tail streaks READABLE on asphalt for the first time (mid-band red 4.1-9.9% vs ref 5.6%, from p9 0.3% - 13x); spray visible behind moving vehicles (0/10 -> ~4/10, sprayDebug proved path alive); columns tighter; 0 errors. Remaining blockers: river density/near-field reach (ground-band red 0.1-0.3% vs ref 12.8%, dark foreground), spray still wispy (needs one density bracket), columns lack hot core + colour bleed; majors: night pool speculars dither, puddles=0 (real pool geometry never built). p11: extend rivers to camera feet (Fresnel-weighted near-field amp for red-dominant), spray 22->30 puffs / opacity 2.8, column hot core + colour survival, fix PuddleField build, night pool denoise."
+    },
+    {
+     "run": "p11",
+     "round": "p11-builder",
+     "score": null,
+     "pass": null,
+     "summary": "p10 audit 8.0 FAIL -> (1) PUDDLES=0 ROOT CAUSE FOUND: the 1.2s debounce needs S.time seconds that never accrue under clamped-dt software rendering (~0.1s/frame) - debounce now 0.35s + bounded retry-on-zero (max 3). (2) NEAR-FIELD RIVER PHYSICS: 1/(1+k t^2) attenuation was wrong for a mirror (a reflected image does not decay with pixel-to-emitter distance; the Gaussian overlap already dilutes) - replaced with atmospheric haze mix(1.0, 0.30, smoothstep(30,160,t)); hot core lobe (wCore, x0.7, brightness-weighted) for blown centres with warm fringes; add 1.3. FIRST BRACKET OVERSHOT (mid-band red 20.9% vs ref 5.6% - red wall), corrected to 5.52% = reference level exactly while keeping readable streaks + ground-band red 3x up. (3) spray bracket 2: 30 puffs/vehicle, rise +30%, opacity 2.8 - wake now a coherent mist (~5/10). Verified: night_spray2 (balanced rivers), day_spray (mist wake), 0 console errors."
     }
    ],
    "lastScore": 8.0,
@@ -580,7 +587,7 @@
    ],
    "note": "Core now provides engine.post.depthTexture (scene depth every frame) and engine.LAYER_NO_AO (=1) for particles/billboards as requested.",
    "critiqueFile": "docs/critique/effects_p8.json",
-   "round": "p10-audited"
+   "round": "p11-built"
   },
   "zoning": {
    "rounds": [
