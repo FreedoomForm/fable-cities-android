@@ -515,9 +515,16 @@
      "score": null,
      "pass": null,
      "summary": "p9 audit 7.5 FAIL -> new root causes found and fixed, not retunes: (1) VEHICLE AGLARE NIGHT STARVATION - traffic writes aGlare scaled by 1/max(0.6,exposure); night exposure 3.15 so every vehicle emitter reached the mirror at 0.317x authored radiance (p9 probe tail slot i=1.1 vs authored ~3.4). WetLights now recovers the division. (2) slot ranking evicted tails: >=4 slots reserved for red-dominant emitters. (3) att reach 0.0009->0.00038 + floor 0.10-0.16 (rivers must run 50m+); emitter add 1.35->1.8, F floor 0.25->0.45; tail smear sv x4.2 sh x1.6. (4) SPRAY PROVEN ALIVE via ?sprayDebug=1 red-mist switch - the p6-p9 invisibility was faintness, not a dead path: 22 puffs/vehicle (was 14), growth 3.3, longer life/throw, day radiance 1.30, opacity 2.4, night warm 0.52, depth soft band widened. (5) column crispness: damp sh 0.85->0.66, pool 0.32->0.26. (6) PuddleField buildMs=0 on early returns fixed + lastBuildSegs instrumentation (puddles=0 root cause still unconfirmed - probe crashes at post-ready eval on SwiftShader). Verified: spray_debug (red mist walls render), night corridor red_ground 0.26->0.34%, ground_p99 0.29->0.31, night_spray2 mid-field shows real red tail smears on asphalt (z crop), day spray shows visible grey mist behind vehicles (was nothing). 0 console errors in 7 runs."
+    },
+    {
+     "run": "p10",
+     "round": "p10-audit",
+     "score": 8.0,
+     "pass": false,
+     "summary": "p10 audit 8.0 FAIL (up from 7.5 - best effects score; trajectory: 6.5, 6.8, 7.2, 7.0, 7.5, 8.0). CONFIRMED: exposure-starvation root cause real and fixed; red tail streaks READABLE on asphalt for the first time (mid-band red 4.1-9.9% vs ref 5.6%, from p9 0.3% - 13x); spray visible behind moving vehicles (0/10 -> ~4/10, sprayDebug proved path alive); columns tighter; 0 errors. Remaining blockers: river density/near-field reach (ground-band red 0.1-0.3% vs ref 12.8%, dark foreground), spray still wispy (needs one density bracket), columns lack hot core + colour bleed; majors: night pool speculars dither, puddles=0 (real pool geometry never built). p11: extend rivers to camera feet (Fresnel-weighted near-field amp for red-dominant), spray 22->30 puffs / opacity 2.8, column hot core + colour survival, fix PuddleField build, night pool denoise."
     }
    ],
-   "lastScore": 7.5,
+   "lastScore": 8.0,
    "passed": false,
    "openIssues": [
     {
@@ -573,7 +580,7 @@
    ],
    "note": "Core now provides engine.post.depthTexture (scene depth every frame) and engine.LAYER_NO_AO (=1) for particles/billboards as requested.",
    "critiqueFile": "docs/critique/effects_p8.json",
-   "round": "p10-built"
+   "round": "p10-audited"
   },
   "zoning": {
    "rounds": [

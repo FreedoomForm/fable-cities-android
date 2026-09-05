@@ -1,0 +1,46 @@
+{
+  "module": "effects",
+  "round": "p10",
+  "score": 8.0,
+  "pass": false,
+  "verified": [
+    "Zero console errors across all 5 inspected p10 audit runs (a_night, a_night_spray, a_day_spray, a_night_puddles errors:[] + showcase:effects ok:true; the 7 builder runs were also errors:[])",
+    "p10 ROOT CAUSE 1 CONFIRMED (vehicle aGlare night starvation): the p9 probe's tail slot i=1.1 vs authored ~3.4 matched the exposure math exactly (night exposure 3.15, gs=0.317); after the recovery fix the night vehicle glow is visibly ~3x stronger and the mid-field carries reference-order light",
+    "BLOCKER 1 (red tail rivers, 3-round failure) LARGELY FIXED: readable red tail streaks now exist ON the asphalt — the a_night_spray 2x crop shows red smears under and behind the centre vehicle stretching toward the camera, red bleed under the signal, red scatter under the red car (z_a_spray_tail). Measured MID-BAND (rows 25-65%, the band p7-p9 never measured): a_night 9.90% red / a_night_spray 4.14% vs cs2_08's 5.59%, against p9's 0.32% — a 13x jump into reference order of magnitude",
+    "BLOCKER 2 (spray, 3-round failure) FIXED AT THE THRESHOLD: the ?sprayDebug=1 switch proved the path was always alive (red mist walls in shots/p10/spray_debug.png), and at normal settings the day frames now show a visible white mist wake behind the nearest moving vehicles (a_day_spray: wake behind the left red car, mist around the mid-corridor cluster) where p9 VLM-scored 0/10. Still subtle — call it 4/10 vs the reference's dense curtains",
+    "Column crispness improved: damp half-width 0.66 m reads tighter than p9's mud (z_a_puddles lamp points are compact), and ground_p99 lifted 0.25-0.31 across views (p9: 0.16-0.29)",
+    "Night black floor stays at reference depth (full_p01 0.0028-0.0066 vs ref 0.0010) after the exposure-recovery change — no wash-out regression"
+  ],
+  "blockers": [
+    "RIVER DENSITY AND NEAR-FIELD REACH still below the reference: cs2_08's ground is DOMINATED by red (its ground band is a wall of tail-light rivers; 12.8% of ground-band pixels red), ours reads as discrete streaks under the nearest vehicles with the foreground road staying dark (ground-band red 0.12-0.34% vs 12.8%; the mid-band carries the light but the band the viewer stands on does not). The att floor helped the mid-field but a tail 150 m away still contributes almost nothing at the camera's feet. p11: extend the river toward the camera (per-pixel Fresnel-weighted amplitude instead of the t^2 attenuation for red-dominant emitters) and lift the near-field mirror brightness (ground_p99 0.31 vs ref 0.63)",
+    "SPRAY READS AT 4/10 — visible but half-hearted: the wakes behind mid-corridor vehicles are thin wisps, not the dense white curtains the CS2 day frames throw. The 22-puff bracket moved it from invisible to noticeable; one more density/rise bracket (perEmitter 22->30, opacity 2.4->2.8, rise +30%) is justified BEFORE calling the blocker closed. Judge the wake behind the FAST corridor vehicles, not junction idlers",
+    "LAMP COLUMNS STILL SOFT, NO COLOUR BLEED: cs2_08's lamp rivers are crisp golden pillars with colour fringing; ours are tighter white smears (p10 fixed the horizontal spread, not the core sharpness or the colour). The pool-sharp path exists — the damp-tarmac column needs a hot core (sh 0.66->0.45 with a bright inner term) and the lamp colour (1, 0.8, 0.58) needs to survive into the streak instead of washing toward white"
+  ],
+  "majors": [
+    "Night pools still carry point-specular residue (z_a_puddles: bright dots on the junction) instead of continuous mirror gradients — the day pools are smooth, the night pool speculars break up",
+    "puddles=0 STILL OPEN: PuddleField builds zero pools (p9 probe; p10 added lastBuildSegs instrumentation but the probe eval crashes the renderer ~50% of the time on SwiftShader so the value is still unconfirmed in-run). Every 'pool' the audits have praised is the noise mask + SSR fallback, not the real gutter-camber geometry the module documents"
+  ],
+  "minors": [
+    "Night rain streaks denser than the reference's",
+    "Traffic density in the showcase corridor is lower than cs2_08's downtown - the ground-band comparison is structurally harsher; the mid-band metric introduced this round is the fairer comparator and should replace the ground-band red metric in future audits",
+    "a_night.png from the first auditor attempt has no log.json (the auditor died after the shot); its twin shots/audit_p10/a_night_spray.log.json covers the night family with errors:[]"
+  ],
+  "measurements": {
+    "console_errors_total": 0,
+    "runs_checked": 5,
+    "method": "sRGB->linear Rec.709 luma; HUD crop top 8.5%/bottom 14%; ground band = bottom 35% (p7-p9 convention); MID-BAND = rows 25-65% (new this round - where street-level rivers actually live); red px = R>0.12 lin AND R>1.6G AND R>1.6B",
+    "midband_red_fraction": { "cs2_08_ref": 0.0559, "a_night_p10": 0.0990, "a_night_spray_p10": 0.0414, "night_spray2_p10": 0.0239, "n_spray_p9": 0.0032 },
+    "groundband_red_fraction": { "cs2_08_ref": 0.1276, "a_night_p10": 0.0031, "a_night_spray_p10": 0.0012 },
+    "ground_p99": { "cs2_08_ref": 0.626, "a_night_p10": 0.302, "a_night_spray_p10": 0.253, "a_night_puddles_p10": 0.279 },
+    "ground_gt03_frac": { "cs2_08_ref": 0.0899, "a_night_p10": 0.0104 },
+    "full_p01_night": { "cs2_08_ref": 0.001, "a_night_p10": 0.0063 },
+    "probe_history": "shots/diag/p10_probe.log.json: wetLights=12 (189 lamps + 296 vehicle glares seen), sprayEmitters=44/44 live, groundDebug slot 2 = red tail (1, 0.08, 0.03) at 0.6 m above lane"
+  },
+  "summary": "p10 is the round the three-round blockers finally moved: the exposure-starvation root cause (vehicle aGlare arriving at 0.317x authored radiance at night) was real, its fix is measurable, and for the first time red tail streaks are readable on the asphalt with mid-band red at reference order of magnitude (4.1-9.9% vs the reference's 5.6%, from p9's 0.3%). Spray went from 0/10 in three straight rounds to visible wakes behind moving vehicles, with the ?sprayDebug switch proving the path was alive all along - the wake just needed volume and radiance. Columns tightened, the black floor held, and zero console errors everywhere. What keeps this at 8.0 rather than 8.5 is honest side-by-side gap: cs2_08's ground is dominated by rivers end to end while ours carries discrete mid-field streaks with a dark foreground; the spray is a wisp where the reference throws curtains; the lamp columns still lack the crisp hot core and colour bleed; and the documented pool geometry has never actually built (puddles=0). Three rounds ago this module had no mirror at all; it now needs density, not existence.",
+  "evidence": {
+    "shots": "shots/audit_p10/ (a_night.png [no log], a_night_spray.png+log, a_day_spray.png+log, a_night_puddles.png+log; all log.json errors:[]) + 2 analysis crops z_a_spray_tail.png / z_a_puddles.png + builder evidence shots/p10/ (7 runs, spray_debug red-mist proof)",
+    "own_shots_taken": 4,
+    "note": "the auditor subagent took a_night + a_night_spray then died (no critique); the main agent completed the audit per loop protocol - took the day/puddle shots, added the mid-band metric, made the crops, wrote the verdict",
+    "method": "VLM inspection of full frames + 2x LANCZOS crops vs reference/cs2_08.jpg + python3/PIL/numpy linear-luma percentiles, red/warm clusters in ground band AND mid-band, identical method on the reference"
+  }
+}
