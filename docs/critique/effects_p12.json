@@ -1,0 +1,55 @@
+{
+  "module": "effects",
+  "round": "p12",
+  "score": 8.4,
+  "pass": false,
+  "verified": [
+    "Zero console errors across all 5 audit runs (4 log.json errors:[] + 1 in-session stdout 'errors 0'; SwiftShader teardown ate one log.json but its stats line printed errors 0)",
+    "SPRAY BLOCKER PARTIALLY CLOSED (5/10 -> ~6/10): the p12 bead->haze change (young puffs sample the haze lobe via life-biased vU/uv) reads on screen - day wake behind the red car is a coherent soft mist arc (z_day_spray_car crop), no cotton-ball discrete puffs at the wake core; night spray puffs merge into grey mist at the crosswalk",
+    "Lamp colour bleed major CLOSED in the closeup framing: warm_ground_frac 19.5% vs cs2_08's 10.8% - the golden fringe now bleeds into the wet band around the crosswalk stripes (z_closeup_wetband crop reads warm brown + golden sheen, the cs2 signature) and no longer washes to white",
+    "River density HELD at reference in the stable comparator: spray-cam mid-band red 6.33% vs ref 5.59% (p11: 6.32%) - readable discrete red tail streaks under/behind vehicles persist; corridor run read 2.40% but that framing was 40% occluded by a rooftop this run (RNG variance, not regression - same camera, same method)",
+    "Night black floor held through both amp rounds: full_p01 0.003-0.005 vs ref 0.001 - the scene stays night-dark, no wash-out"
+  ],
+  "blockers": [
+    "TOP-END VIEWER-BAND MIRROR UNMOVED (2 rounds of attack, no numeric gain): ground_p99 0.17-0.34 across 4 night views vs cs2_08's 0.63; ground-band red 0.11-0.26% vs ref 12.76%. The p12 pool boost (miss exemption 0.85, darkening 0.12) moved puddles-view p99 to 0.339 - inside p11's 0.28-0.36 band, i.e. noise. STRUCTURAL HYPOTHESIS the audit must now test: in ALL our framings the nearest emitter is 20-60m away and the bottom third is empty asphalt/rooftop, while cs2_08 has vehicles and lamp posts AT the camera's feet throwing full-height reflections into the bottom third. p13 must FIRST shoot a near-vehicle framing (wait-for-traffic at effects_closeup/effects_puddles) before further shader amplification - if a near emitter still fails to dominate the foreground, THEN the shader is at fault",
+    "SPRAY TRAIL BEADS: young-puff mist is in, but the mid-life trail still reads as discrete bright dots strung in an arc (z_day_spray_car right half) where CS2 throws continuous curtains; also the mist mass hugs the car roof like a shell rather than rolling behind the wheels"
+  ],
+  "majors": [
+    "Pool/near-field specular still granular: the wet band sparkle reads as per-pixel dither noise at close range (z_closeup_wetband, z_puddles_foreground) instead of cs2's smooth micro-mirror",
+    "Corridor framing river presence is RNG-unstable (2.4% this run vs 10.9% in p11): rivers exist only where the mid-band happens to contain braking vehicles; the road itself carries no residual streak memory"
+  ],
+  "minors": [
+    "Night rain streaks remain denser than reference",
+    "Corridor run this time framed a rooftop in the left third - audit framing note, not a code issue"
+  ],
+  "measurements": {
+    "console_errors_total": 0,
+    "runs_checked": 5,
+    "method": "sRGB->linear Rec.709; HUD crop 8.5%/14%; ground band = bottom 35% of cropped; MID-BAND = rows 25-65%; red px = R>0.12 lin AND R>1.6G AND R>1.6B; warm px = R>0.12 AND R>1.3G AND G>B; re-validated this session on a fresh cs2_08.jpg Steam fetch - ref numbers reproduce exactly (5.59 / 12.76 / 0.626)",
+    "midband_red_pct": {
+      "cs2_08_ref": 5.59,
+      "a_night_spray_p12": 6.33,
+      "a_night_spray_p11": 6.32,
+      "a_night_corridor_p12": 2.4,
+      "a_night_corridor_p11": 10.9
+    },
+    "ground_p99": {
+      "cs2_08_ref": 0.6261,
+      "a_night_p12": 0.1678,
+      "a_night_spray_p12": 0.2797,
+      "a_night_puddles_p12": 0.3394,
+      "a_night_closeup_p12": 0.3109
+    },
+    "groundband_red_frac": {
+      "cs2_08_ref": 0.1276,
+      "p12_night_views": "0.0011-0.0026"
+    },
+    "warm_ground_frac": {
+      "cs2_08_ref": 0.1082,
+      "a_night_closeup_p12": 0.1954
+    },
+    "full_p01_night": { "cs2_08_ref": 0.001, "p12_views": "0.0028-0.0048" }
+  },
+  "score_history": [6.5, 6.8, 7.2, 7.0, 7.5, 8.0, 8.25, 8.4],
+  "next": "p13: (1) near-vehicle framing experiment FIRST - resolve structural-vs-shader for the top-end blocker; (2) if shader at fault: pool specular core brightness on lamp-lit pools, else re-frame audit cams; (3) spray: extend haze-lobe sampling across full puff life + 30->36 puffs; (4) pool dither smoothing"
+}
