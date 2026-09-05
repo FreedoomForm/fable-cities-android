@@ -82,8 +82,11 @@ varying float vU;
 ${DEPTH_PARS}
 void main() {
   // p12: young puffs sampled the bead/drop band (sprite bottom) and read as discrete dots at close
-  // range — the 'beads not mist' audit note. Bias the sample toward the haze lobe while young.
-  vec2 uvS = mix(vec2(vUv.x, vUv.y * 0.72 + 0.24), vUv, clamp(vU * 2.5, 0.0, 1.0));
+  // range — the 'beads not mist' audit note. p13 (audit: mid-life trail still beads): the old bias
+  // released to the full sprite by u≈0.4, so mid-life puffs re-exposed the bead dots. Keep every
+  // age sampling a haze-weighted window that only partially opens over life (0.62 → 0.95).
+  float openU = mix(0.62, 0.95, smoothstep(0.0, 0.9, vU));
+  vec2 uvS = vec2(vUv.x, vUv.y * openU + (1.0 - openU) * 0.30);
   float a = texture2D(uTex, uvS).a * vAlpha * uOpacity;
   // p9: bias +0.15 → +0.35 — puffs hug the road surface; the soft test at +0.15 was killing the
   // lower half of every puff that leant even slightly away from the camera. p10: the ground-pass

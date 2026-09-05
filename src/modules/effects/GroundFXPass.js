@@ -329,8 +329,8 @@ void main() {
         // Red-dominant emitters (colN.r ≫ colN.g after normalisation) get a tall, slightly wider
         // smear so queued traffic paints the road behind it.
         float tailish = smoothstep(2.0, 5.0, colN.r / max(colN.g, 0.05));
-        sv *= mix(1.0, 3.2, tailish);
-        sh *= mix(1.0, 1.2, tailish);
+        sv *= mix(1.0, 2.2, tailish);   // p13 bracket: 3.2 stacked near-field rivers into a wall
+        sh *= mix(1.0, 1.05, tailish);
         float w = exp(-dh2 / (sh * sh)) * exp(-dv * dv / (sv * sv));
         if (w < 0.004) continue;
         // p11: hot core — the reference pillars are blown at the centre with warm fringes; a single
@@ -345,6 +345,10 @@ void main() {
         // the pixel-to-emitter distance — the Gaussian overlap already dilutes it as the streak
         // stretches. What remains is atmospheric haze over the path length.
         float att = mix(1.0, 0.30, smoothstep(30.0, 160.0, t));
+        // p13 bracket: planeY ranking now lets NEAR emitters win slots (the p10-p12 mixes were far
+        // emitters only), and their full-amplitude streaks stacked into a red wall (mid-band 55-63%
+        // vs ref 5.6%). Dilute the closest loci: full amplitude from 30 m out, 0.40 at the nearest.
+        att *= mix(0.22, 1.0, smoothstep(6.0, 40.0, t));
         acc += colN * (Le.w * amp * att);
       }
       // Fresnel keeps the streaks off perpendicular views; pools carry them at nearly full strength.

@@ -97,7 +97,7 @@ export class WetLights {
    * divided its glare radiance by when it wrote the instance colours.
    * @returns {number} how many emitters were published
    */
-  update(dt, scene, camera, roadsVersion, glareExposure) {
+  update(dt, scene, camera, roadsVersion, glareExposure, planeY = 0) {
     // lamps only change with the network; re-scan at most ~2x/s and on version bumps
     this._lampTimer -= dt;
     if (this._lampTimer < 0 || roadsVersion !== this._lampVersion) {
@@ -125,9 +125,24 @@ export class WetLights {
     // emitter seen from the camera MIRRORED about the road plane: that is exactly the direction the
     // reflected view ray travels, so in-frustum emitters win no matter the camera height.
     _fwd.setFromMatrixColumn(camera.matrixWorld, 2).negate();   // camera looks down -Z
-    const mcY = -_cam.y;                                        // mirrored camera height
+    // p13 ROOT CAUSE (the near-field blocker that survived p11+p12 amplification): the mirror
+    // plane is the ROAD under the camera, not world y=0. The probe (shots/audit_p12/exp_probe)
+    // froze a live tail 5 m behind a 0.6 m-above-asphalt camera on a hill (road y≈8.65, cam
+    // y=9.3): mirrored about y=0 the reflected ray climbs 18 m over 5 m -> cosA≈0.17 -> culled
+    // by the <0.2 gate, red_ground flat 0.1 %. Plane-relative (0.65 m cam, 0.15 m emitter) the
+    // same ray rises 0.8 m over 5 m -> cosA≈0.93, slot #1. All mirror geometry below is now
+    // relative to the road plane height planeY (terrain under the camera; roads conform).
+    planeY = Number.isFinite(planeY) ? planeY : 0;
+    const camY = _cam.y - planeY;                               // camera height ABOVE the road plane
+    const mcY = planeY - camY;                                  // mirrored camera (absolute y)
     const cand = this._candidates;
     cand.length = 0;
+    const locusProm = (h, d2) => {
+      const d = Math.sqrt(Math.max(d2, 1));
+      // locus = where the mirrored-ray family touches the plane, measured from the camera footprint
+      const locusD = (Math.max(camY, 0.05) / (Math.max(camY, 0.05) + Math.max(h - planeY, 0.15))) * d;
+      return 0.30 + 0.70 * Math.exp(-locusD / 40);
+    };
     for (const l of this._lamps) {
       const dx = l.x - _cam.x, dy = l.y - _cam.y, dz = l.z - _cam.z;
       const d2 = dx * dx + dy * dy + dz * dz;
@@ -138,7 +153,7 @@ export class WetLights {
       const cosA = (rx * _fwd.x + ry * _fwd.y + rz * _fwd.z) / rl;   // 1 = dead-centre of the view
       // p7: 2.1 → 3.2 — the p6 audit measured the lamp columns visibly dimmer than the CS2
       // reference; the pool column has to read at a glance.
-      cand.push({ x: l.x, y: l.y, z: l.z, r: 1.00, g: 0.80, b: 0.58, i: 3.2, d2, cosA });
+      cand.push({ x: l.x, y: l.y, z: l.z, r: 1.00, g: 0.80, b: 0.58, i: 3.2, d2, cosA, prom: locusProm(l.y, d2) });
     }
     const glare = this._glare;
     // p6 audit root cause: traffic writes radiance into the CUSTOM `aGlare` InstancedBufferAttribute
@@ -172,14 +187,15 @@ export class WetLights {
         // p9: red-dominant (tail) emitters carry a higher mirror intensity — their radiance is
         // genuinely dimmer than headlamps, and the shader stretches rather than brightens the smear.
         const redDom = r > 2.5 * Math.max(g, 0.02);
-        cand.push({ x: _p.x, y: _p.y, z: _p.z, r: r / maxC, g: g / maxC, b: b / maxC, i: maxC * (redDom ? 2.6 : 1.5) * rec, d2, cosA, redDom });
+        cand.push({ x: _p.x, y: _p.y, z: _p.z, r: r / maxC, g: g / maxC, b: b / maxC, i: maxC * (redDom ? 2.6 : 1.5) * rec, d2, cosA, redDom, prom: locusProm(_p.y, d2) });
       }
     }
     this.stats.vehicles = cand.length - this.stats.lamps;
 
-    // p9: in-frustum wins — rank by angular deviation from the mirrored-camera view direction, then
-    // by distance as a tie-break. cosA < 0.2 (~78° off-axis) is outside any of our framings.
-    cand.sort((a, b) => (b.cosA - a.cosA) || (a.d2 - b.d2));
+    // p9: in-frustum wins — rank by the mirrored-camera angular deviation x p13 near-field
+    // prominence (a 5 m tail whose locus is under the camera now beats a dead-centre signal at
+    // 160 m: scores 0.87 vs 0.31). cosA < 0.2 (~78° off-axis) stays outside any framing.
+    cand.sort((a, b) => (b.cosA * b.prom - a.cosA * a.prom) || (a.d2 - b.d2));
     for (let i = cand.length - 1; i >= 0; i--) if (cand[i].cosA < 0.2) cand.splice(i, 1);
     // p10: the 12 slots are pure cosA, and a corridor full of on-axis headlamps + high masts evicts
     // every tail light — the p9 probe showed exactly 1 tail in 12 slots while red_ground stayed at

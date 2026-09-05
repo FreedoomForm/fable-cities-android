@@ -550,9 +550,16 @@
           "score": 8.4,
           "pass": false,
           "summary": "p12 audit 8.4 FAIL (from 8.25; trajectory 6.5,6.8,7.2,7.0,7.5,8.0,8.25,8.4). CONFIRMED: spray bead->haze landed (day wake = coherent mist ~6/10), lamp golden bleed into wet band closed (closeup warm 19.5% vs ref 10.8%), river density held at ref (6.33% vs 5.59%), 0 errors. NOT MOVED: top-end viewer-band mirror (ground_p99 0.17-0.34 vs 0.63) - pool boost landed inside noise; 2 rounds of shader amplification failed to close it -> p13 must test the structural hypothesis FIRST (near-vehicle framing: cs2_08 has emitters at the camera's feet, ours are 20-60m away). Spray trail still beads mid-life; pool dither. p13: framing experiment -> shader only if near emitter still fails; spray full-life haze sampling 30->36; dither smoothing."
+        },
+        {
+          "run": "p13",
+          "round": "p13-build+audit",
+          "score": 8.45,
+          "pass": false,
+          "summary": "p13 build+audit 8.45 FAIL (from 8.4; trajectory 6.5,6.8,7.2,7.0,7.5,8.0,8.25,8.4,8.45). TOP-END BLOCKER (2 rounds) CLOSED WITH MARGIN: ground_p99 0.77-0.93 vs ref 0.63 (was 0.17-0.34). Root causes fixed: (1) WetLights mirrored the camera about world y=0 - on hills every near emitter was culled (cosA gate); now plane-relative (planeY = terrain under camera) + locus-prominence ranking (probe-verified: 5-42 m emitters in slots). (2) traffic ground pools near-field gain x1.8@5m. Spray: full-life haze window + 36 puffs (~6/10). New blockers: mid-band red 16.75% vs ref 5.59 (3x, bracketed from 63%), close glare blowout, black floor 0.005-0.010. 0 console errors. p14: attNear 0.15, sv 1.9, glare attenuation <25m, black floor."
         }
       ],
-      "lastScore": 8.4,
+      "lastScore": 8.45,
       "passed": false,
       "openIssues": [
         {
@@ -608,7 +615,7 @@
       ],
       "note": "Core now provides engine.post.depthTexture (scene depth every frame) and engine.LAYER_NO_AO (=1) for particles/billboards as requested.",
       "critiqueFile": "docs/critique/effects_p8.json",
-      "round": "p12-audited"
+      "round": "p13-audited"
     },
     "zoning": {
       "rounds": [

@@ -471,6 +471,12 @@ export class TrafficRenderer {
     for (let i = 0; i < list.length; i++) {
       const { veh, d } = list[i];
       const fade = 1 - Math.min(1, Math.max(0, (d - 195) / 165));
+      // p13 (street-level bottom third, the p10-p12 audit blocker): the ground pools were tuned for
+      // aerial framings — at street level the pool under/near a car 3-10 m away must DOMINATE the
+      // foreground the way cs2_08's do (ground_p99 ref 0.63 vs our 0.17-0.34). Near-field gain:
+      // x1.8 at 5 m fading to x1.0 by ~80 m. BRACKET 2: the first cut (x3.2) red-walled the spray
+      // corridor (mid-band 55% vs ref 5.6%) — a queue of 10-60 m cars all gained at once.
+      const nearG = 1 + 0.8 * Math.exp(-d / 22);
       const fx = Math.sin(veh.yaw), fz = Math.cos(veh.yaw);
       // ground pool ahead of the car
       if (bi < MAX_BEAMS && d < 250) {
@@ -484,7 +490,7 @@ export class TrafficRenderer {
         _sc.set(wide, long, 1);
         _m.compose(_v, _q, _sc);
         this.beams.setMatrixAt(bi, _m);
-        beamArr[bi] = lightsOn * 0.150 * fade * gs;
+        beamArr[bi] = lightsOn * 0.150 * nearG * fade * gs; // p13 near-field gain
         beamCol[bi * 3] = 1.00; beamCol[bi * 3 + 1] = 0.86; beamCol[bi * 3 + 2] = 0.66;
         beamShape[bi] = 0;
         bi++;
@@ -502,7 +508,7 @@ export class TrafficRenderer {
         _sc.set(wide, long, 1);
         _m.compose(_v, _q, _sc);
         this.beams.setMatrixAt(bi, _m);
-        beamArr[bi] = rearI * 0.17 * gs;
+        beamArr[bi] = rearI * 0.16 * nearG * gs; // p13: 0.17→0.16 + near-field gain (bracket 3)
         beamCol[bi * 3] = 1.00; beamCol[bi * 3 + 1] = 0.065; beamCol[bi * 3 + 2] = 0.030;
         beamShape[bi] = 1;
         bi++;

@@ -137,7 +137,7 @@ export async function init(ctx) {
     // confirmed by the p9 probe, zero visible wake). p11 audit bracket 2: 22 read as thin wisps
     // (4/10) — 30 with a taller rise is the last density step before the p8 'cotton foam' cliff;
     // the puffs are bigger and softer now, so density reads as mist, not beads.
-    emitters: Math.max(8, Math.round(44 * pScale)), perEmitter: 30, texture: sprayTex,
+    emitters: Math.max(8, Math.round(44 * pScale)), perEmitter: 36, texture: sprayTex, // p13: 30→36 (mist still read thin mid-life)
   });
   S.systems = [S.smoke, S.rain, S.rainNear, S.rainFar, S.snow, S.splash, S.spray];
   for (const sys of S.systems) {
@@ -314,7 +314,11 @@ export function update(dt, elapsed) {
       u.uWetLightCol.value = S.wetLights.col;
     }
     const exposure = engine.renderer.toneMappingExposure || 1;
-    u.uWetLightN.value = S.wetLights.update(dt, S.scene, camera, world.roads ? world.roads.version ?? -1 : -1, exposure);
+    // p13: the wet-mirror plane is the ROAD under the camera — pass its height so the mirrored-ray
+    // ranking works at street level on hills (y=0 assumption culled every near emitter, probe
+    // shots/audit_p12/exp_probe).
+    const planeY = world.terrain ? world.terrain.getHeight(camera.position.x, camera.position.z) : 0;
+    u.uWetLightN.value = S.wetLights.update(dt, S.scene, camera, world.roads ? world.roads.version ?? -1 : -1, exposure, planeY);
     // aerial perspective: lifts distant blacks toward the sky colour and drains chroma (LOOK_TARGET 11/12)
     const hazeC = fogC || skyRad;
     u.uHaze.value.copy(hazeC);
@@ -945,8 +949,10 @@ function makeApi() {
       return {
         n: u.uWetLightN.value,
         hasArr: !!u.uWetLights.value,
-        pos3: u.uWetLights.value ? u.uWetLights.value.slice(0, 3).map((v) => v.toArray().map((x) => +x.toFixed(1))) : null,
-        col3: u.uWetLightCol.value ? u.uWetLightCol.value.slice(0, 3).map((c) => [+c.r.toFixed(2), +c.g.toFixed(2), +c.b.toFixed(2)]) : null,
+        // p13: dump ALL 12 slots (pos xyz + intensity i in w) — the first-3 slice hid where the
+        // near-field emitters actually ranked.
+        pos3: u.uWetLights.value ? u.uWetLights.value.map((v) => v.toArray().map((x) => +x.toFixed(1))) : null,
+        col3: u.uWetLightCol.value ? u.uWetLightCol.value.map((c) => [+c.r.toFixed(2), +c.g.toFixed(2), +c.b.toFixed(2)]) : null,
       };
     },
     get rain() { return S.rainAmt; },

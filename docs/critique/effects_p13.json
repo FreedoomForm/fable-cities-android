@@ -1,0 +1,37 @@
+{
+  "module": "effects",
+  "round": "p13",
+  "score": 8.45,
+  "pass": false,
+  "verified": [
+    "Zero console errors in every logged run of the final p13 code (spray4/puddles/day logs clean; corridor PNG written before the known SwiftShader teardown flake ate its log)",
+    "TOP-END BLOCKER (2 rounds unsolved) CLOSED WITH MARGIN: ground_p99 spray 0.767, corridor 0.86, puddles 0.925 vs cs2_08's 0.626 (p12: 0.17-0.34). The wet mirror now dominates the foreground the way the reference does - the puddles frame shows bright lamp speculars and a red pool mirror on the asphalt",
+    "ROOT-CAUSE CHAIN of the old blocker found and fixed: (1) the WetLights ranking mirrored the camera about world y=0 - on hills (roads at y 7.4-8.6) every near emitter was culled by the cosA<0.2 gate (frozen-vehicle probe: camera 0.65 m above asphalt, reflected ray climbed 18 m over 5 m). Now plane-relative (planeY = terrain under camera). (2) prominence ranking (locus proximity) so a 5 m tail beats a dead-centre signal at 160 m - probe-verified: slots now carry 5/5/6/19/42 m emitters",
+    "Carrier of the closed top-end: traffic ground pools got a near-field gain (x1.8 at 5 m -> x1.0 by 80 m) + rear wash 0.17->0.16 base retune - physically anchored road quads, no new shader math",
+    "SPRAY p12 blocker response in: full-life haze-window sampling (mid-life trail no longer re-exposes the bead dots) + 30->36 puffs - day wake reads as softer coherent mist ~6/10",
+    "Streak bracket discipline held: the near-field slots initially red-walled the spray corridor (mid-band 55-63% vs ref 5.6%, p11's failure mode) - bracketed back down through 3 cuts to 16.75%"
+  ],
+  "blockers": [
+    "MID-BAND RED DENSITY 3X REFERENCE in the hero framing: spray-cam mid-band 16.75% vs cs2_08's 5.59% (puddles view 7.0% is at reference; the braking-cluster column + stacked near streaks over-paint). p14: one more attenuation step in the 10-30 m att zone (floor 0.22->~0.15) and/or tailish stretch 2.2->1.9",
+    "CLOSE-RANGE GLARE/PILLAR BLOWOUT: oncoming headlight glares at 10-20 m bloom into large white blobs (corridor bottom-centre, spray-cam cluster) - the near-field gain applies to glare sprites too indirectly via exposure. p14: distance-attenuate glare sprite size/intensity below ~25 m"
+  ],
+  "majors": [
+    "Night black floor lifted: full_p01 0.005-0.010 vs ref 0.001 (p12: 0.003-0.005) - the scene-wide red/orange veil raises the floor; recover via the mid-band cut + a night-miss clamp check",
+    "Ground-band red under reference in most framings (0.004-0.014 vs 0.128): rivers still live mid-frame; the near-camera road only lights up when traffic actually stops near the camera (rare in the 3-frame audit timing)"
+  ],
+  "minors": [
+    "Corridor framing RNG: this run's mid-band carried no braking cluster (0.84%) - single-shot traffic variance is +-8pp at these densities; audit should average 2 runs per framing going forward",
+    "Frozen-vehicle street experiment (cam 1.65 m behind an SUV) remains unfixable-by-framing: the car body occludes its own tail wash - matches CS2 (their street cameras are higher/farther); not a code defect"
+  ],
+  "measurements": {
+    "console_errors_total": 0,
+    "runs_checked": 4,
+    "method": "sRGB->linear Rec.709; HUD crop 8.5%/14%; ground band = bottom 35%; MID-BAND = rows 25-65%; red px = R>0.12 lin AND R>1.6G AND R>1.6B; cs2_08 ref re-fetched from Steam this session and reproduced exactly (5.59 / 12.76 / 0.626)",
+    "midband_red_pct": { "cs2_08_ref": 5.59, "p13_spray": 16.75, "p13_puddles": 7.01, "p13_corridor": 0.84, "p13_day": 3.73, "p12_spray": 6.33 },
+    "ground_p99": { "cs2_08_ref": 0.626, "p13_spray": 0.767, "p13_puddles": 0.925, "p13_corridor": 0.86, "p12_range": "0.17-0.34" },
+    "groundband_red_frac": { "cs2_08_ref": 0.1276, "p13_views": "0.004-0.014" },
+    "full_p01_night": { "cs2_08_ref": 0.001, "p13_views": "0.005-0.010" }
+  },
+  "score_history": [6.5, 6.8, 7.2, 7.0, 7.5, 8.0, 8.25, 8.4, 8.45],
+  "next": "p14: (1) mid-band cut: attNear floor 0.22->0.15 in the 10-30 m zone, tailish sv 2.2->1.9 - target mid-band 8-12%; (2) glare sprite distance-attenuation <25 m; (3) black floor recovery (night-miss clamp); (4) re-audit with 2 runs per night framing (RNG averaging)"
+}
