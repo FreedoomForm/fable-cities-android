@@ -235,7 +235,7 @@ void main() {
     // re-measured cs2_08 with the identical linear pipeline: ref ground p10 is 0.0038, ours was
     // 0.0118-0.0128 (3x TOO BRIGHT, not dark — the p7 "0.0126 anchor" was a measurement artefact).
     vec3 miss = mix(uHaze, uSkyColor, smoothstep(0.03, 0.40, Rw.y)) * 0.75
-                * (1.0 - 0.92 * uNight * (1.0 - 0.78 * pool));
+                * (1.0 - 0.92 * uNight * (1.0 - 0.85 * pool));
     vec3 refl = miss;
     float conf = 0.0;
     if (R.z < 0.35) {                                   // ray not flying straight at the camera
@@ -283,7 +283,9 @@ void main() {
     float k = clamp(F * wetMask * (0.18 + 0.82 * pool) * mix(0.18, 1.0, conf), 0.0, 0.82);
     c = mix(c, refl, k);
     // a pool is water, not paint: extra darkening under it keeps the mirror readable
-    c *= 1.0 - 0.20 * pool * uWet;
+    // p12: 0.20 -> 0.12 — the audit's top-end gap (ground_p99 0.28-0.36 vs ref 0.63) lives in the
+    // pools; the mirror must not lose a fifth of its light exactly where the water stands.
+    c *= 1.0 - 0.12 * pool * uWet;
 
     // ---------------- analytic emitter smears (lamps, head- and tail-lights) ----------------
     // The mirror image of a point emitter across the (wobbled) water plane is a streak: tight

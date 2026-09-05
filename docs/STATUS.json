@@ -536,6 +536,13 @@
      "score": 8.25,
      "pass": false,
      "summary": "p11 audit 8.25 FAIL (from 8.0; trajectory 6.5, 6.8, 7.2, 7.0, 7.5, 8.0, 8.25). CONFIRMED: river density at/above reference (mid-band red 6.3-10.9% vs ref 5.6%, readable streaks, no wall - first bracket 20.9% corrected in-round); puddles=0 root cause fixed (debounce vs clamped-dt); spray coherent mist ~5/10; hot column cores; 0 errors. Remaining: top-end/viewer-band brightness (ground_p99 0.28-0.36 vs 0.63), spray wisps-not-curtains, night pool dither, colour bleed partial. p12: Fresnel near-field emitter amp for bottom-frame loci + pool specular boost, spray texture bead->haze softening at birth, night pool denoise, column colour bleed."
+    },
+    {
+     "run": "p12",
+     "round": "p12-builder",
+     "score": null,
+     "pass": null,
+     "summary": "p11 audit 8.25 FAIL -> (1) pool mirror light: night-miss pool exemption 0.78->0.85, pool darkening 0.20->0.12 (top-end gap ground_p99 lives in pools). (2) spray bead->haze: young puffs sample the haze lobe (uv bias by life vU) - wake reads as soft coherent mist (~5.5/10), verified in shots/p12. Needs p12 audit (next session: shots/audit recipe in worklog; 4-6 shots + measure_p9.py + mid-band snippet)."
     }
    ],
    "lastScore": 8.25,
@@ -594,7 +601,7 @@
    ],
    "note": "Core now provides engine.post.depthTexture (scene depth every frame) and engine.LAYER_NO_AO (=1) for particles/billboards as requested.",
    "critiqueFile": "docs/critique/effects_p8.json",
-   "round": "p11-audited"
+   "round": "p12-built"
   },
   "zoning": {
    "rounds": [

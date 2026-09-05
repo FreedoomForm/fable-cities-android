@@ -26,6 +26,7 @@ uniform float uWet;
 varying vec2 vUv;
 varying float vAlpha;
 varying float vViewZ;
+varying float vU;
 #include <fog_pars_vertex>
 void main() {
   float strength = aVel.z * uWet;
@@ -58,6 +59,7 @@ void main() {
   p.y += s * 0.45;
   vAlpha = smoothstep(0.0, 0.08, u) * pow(1.0 - u, 1.5) * strength;
   vUv = aCorner * 0.5 + 0.5;
+  vU = u;
   vec4 mv = modelViewMatrix * vec4(p, 1.0);
   mv.xy += aCorner * s * 0.5;
   vViewZ = mv.z;
@@ -75,10 +77,14 @@ uniform float uOpacity;
 varying vec2 vUv;
 varying float vAlpha;
 varying float vViewZ;
+varying float vU;
 #include <fog_pars_fragment>
 ${DEPTH_PARS}
 void main() {
-  float a = texture2D(uTex, vUv).a * vAlpha * uOpacity;
+  // p12: young puffs sampled the bead/drop band (sprite bottom) and read as discrete dots at close
+  // range — the 'beads not mist' audit note. Bias the sample toward the haze lobe while young.
+  vec2 uvS = mix(vec2(vUv.x, vUv.y * 0.72 + 0.24), vUv, clamp(vU * 2.5, 0.0, 1.0));
+  float a = texture2D(uTex, uvS).a * vAlpha * uOpacity;
   // p9: bias +0.15 → +0.35 — puffs hug the road surface; the soft test at +0.15 was killing the
   // lower half of every puff that leant even slightly away from the camera. p10: the ground-pass
   // diagnostic showed the wake still erased at the contact line; widen the band (+0.45 / 0.75).
