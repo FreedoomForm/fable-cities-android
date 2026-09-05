@@ -14,7 +14,7 @@ This is intentionally a redesign rather than a pixel-for-pixel port. A desktop l
 
 ## Next port slices
 
-1. Exercise the renderer on an emulator/device: cold start, rotation policy, background/resume, frame pacing, and automated on-device screenshot capture (the machine used for this milestone has no Android SDK, so these gates remain open).
+1. Exercise the renderer on an emulator/device: cold start, background/resume, frame pacing, and automated on-device screenshot capture. CI now runs an `emulator-smoke` job on every push (API 34 x86_64, KVM, swiftshader GPU): it installs the APK, launches `MainActivity`, and gates the GitHub release on (a) the process surviving a 20s soak, (b) zero `FATAL EXCEPTION`/`AndroidRuntime` lines in logcat, (c) the GL thread rendering >30 frames in 15s (`dumpsys gfxinfo`), plus it captures a screenshot + full logcat as artifacts. An APK that fails the boot gate is never published. Still open: rotation policy, background/resume stress, real-device frame pacing.
 2. Replace the procedural vertical-slice scene with the browser game's deterministic simulation data model (weekly economy, milestones, service coverage).
 3. Add PBR material tiers and shadow mapping to the native renderer, then quality fallbacks for low-end devices.
 4. Couple traffic to a lane network with routing instead of decorative lane driving.
@@ -22,4 +22,4 @@ This is intentionally a redesign rather than a pixel-for-pixel port. A desktop l
 
 ## Verification status
 
-This environment has no Android SDK, Gradle executable, or ADB/emulator. The GLES 3.0 renderer, GLSurfaceView conversion, HUD overlay, gesture handling, and persistence were reviewed line-by-line for API and Kotlin consistency, and the browser modules continue to pass `npx vite build`. Android compilation is verified by the GitHub Actions workflow on every push, which also publishes the APK as a commit-linked prerelease. Installation, on-device screenshots, lifecycle exercise, and frame-time measurement remain explicit follow-up gates and must not be reported as passed until an SDK and target device are available.
+This environment has no Android SDK, Gradle executable, or ADB/emulator. The GLES 3.0 renderer, GLSurfaceView conversion, HUD overlay, gesture handling, and persistence were reviewed line-by-line for API and Kotlin consistency, and the browser modules continue to pass `npx vite build`. Android compilation is verified by the GitHub Actions workflow on every push, which also publishes the APK as a commit-linked prerelease. Installation, on-device screenshots, frame-count verification, and crash monitoring now run in CI on every push via the emulator gate; rotation/background-resume stress and real-device frame pacing remain explicit follow-up gates and must not be reported as passed until exercised.

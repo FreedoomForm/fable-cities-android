@@ -9,8 +9,8 @@ permissions:
   contents: write
 
 jobs:
-  build-test-release:
-    name: Build, test, and publish APK
+  build-test:
+    name: Build APK + unit tests
     runs-on: ubuntu-latest
     env:
       GRADLE_OPTS: -Dorg.gradle.daemon=false -Dorg.gradle.jvmargs=-Xmx3g
@@ -56,17 +56,110 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      - name: Publish commit-linked prerelease
+  emulator-smoke:
+    name: Boot APK on emulator (crash + render + screenshot gate)
+    runs-on: ubuntu-latest
+    needs: build-test
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out commit
+        uses: actions/checkout@v4
+
+      - name: Enable KVM group perms
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -la /dev/kvm || echo "::warning::/dev/kvm missing — emulator will run without acceleration (slow)"
+
+      - name: Download APK artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: fable-cities-${{ github.sha }}
+          path: artifact
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Run emulator boot test
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          target: google_apis
+          arch: x86_64
+          profile: pixel_5
+          emulator-options: -no-window -gpu swiftshader_indirect -no-audio -no-boot-anim -camera-back none -memory 3072
+          disable-animations: true
+          script: |
+            set -e
+            APK=$(ls artifact/android/app/build/outputs/apk/debug/*.apk | head -1)
+            echo "Installing $APK"
+            adb install -r "$APK"
+
+            # clear logcat so every line below is from this launch
+            adb logcat -c
+            adb shell am start -W -n com.fablecities.android/.MainActivity
+            sleep 20
+
+            # GATE 1: process must survive boot + 20s soak
+            PID=$(adb shell pidof com.fablecities.android | tr -d '\r' | tr -d ' ')
+            echo "process pid=$PID"
+            if [ -z "$PID" ]; then
+              echo "::error::APK process died during launch — this is the gate that used to be missing"
+              adb logcat -d -t 500
+              exit 1
+            fi
+
+            # GATE 2: no fatal exceptions from the app (crash, GLES init failure, Kotlin NPE...)
+            if adb logcat -d | grep -E "FATAL EXCEPTION|AndroidRuntime" | grep -q .; then
+              echo "::error::Fatal exception in logcat during boot"
+              adb logcat -d | grep -A 30 -B 5 "FATAL EXCEPTION" | head -80
+              exit 1
+            fi
+
+            # GATE 3: renderer must actually draw frames (GLSurfaceView, continuous mode)
+            adb shell dumpsys gfxinfo com.fablecities.android reset > /dev/null || true
+            sleep 15
+            FRAMES=$(adb shell dumpsys gfxinfo com.fablecities.android | grep "Total frames rendered" | grep -oE "[0-9]+" | head -1)
+            echo "frames rendered in 15s soak: ${FRAMES:-0}"
+            if [ -z "$FRAMES" ] || [ "$FRAMES" -lt 30 ]; then
+              echo "::error::Renderer produced ${FRAMES:-0} frames in 15s — GL thread is not drawing"
+              adb logcat -d -t 300
+              exit 1
+            fi
+
+            # evidence: screenshot + full logcat for the release notes / audit
+            adb exec-out screencap -p > emulator_screen.png
+            adb logcat -d > full_logcat.txt
+            echo "Emulator gate PASSED: process alive, no fatal, $FRAMES frames in 15s"
+
+      - name: Upload emulator evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: emulator-${{ github.sha }}
+          path: |
+            emulator_screen.png
+            full_logcat.txt
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Publish commit-linked prerelease (only after boot gate)
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           short_sha="${GITHUB_SHA::7}"
           tag="android-build-${short_sha}"
+          gh release delete "$tag" --yes --cleanup-tag 2>/dev/null || true
           gh release create "$tag" \
-            android/app/build/outputs/apk/debug/app-debug.apk \
+            artifact/android/app/build/outputs/apk/debug/app-debug.apk \
             --target "$GITHUB_SHA" \
             --title "Android build ${short_sha}" \
-            --notes "Automated native Android APK for commit ${GITHUB_SHA}. Build and unit tests passed in GitHub Actions." \
+            --notes "Automated native Android APK for commit ${GITHUB_SHA}. Build, unit tests, AND emulator boot gate passed (process alive, no fatal exceptions, GL renderer drawing, screenshot captured)." \
             --prerelease
 
   web-check:
