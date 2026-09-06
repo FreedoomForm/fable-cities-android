@@ -190,6 +190,7 @@ object Traffic {
         var approach: Approach? = null  // lanes: the approach this lane feeds at its end node
         var junction: NetNode? = null   // lanes: the node at the end
         var junctionRef: NetNode? = null // connectors: the node the connector crosses
+        var crossing = false            // pedestrian connectors: crosses a carriageway
     }
 
     /** One approach arm at a junction (all lanes of one segment arriving). */
@@ -240,6 +241,7 @@ object Traffic {
         val connections: LinkedHashMap<String, List<String>>,
         val nodePos: Map<String, DoubleArray>,
         val segType: Map<String, String>,
+        val pedestrian: LaneGraphIn? = null,
     )
 
     private class HeapItem(val node: Int, val f: Double)
@@ -344,7 +346,8 @@ object Traffic {
     class LaneNetwork {
         val elements = ArrayList<LElement>()
         val laneElems = ArrayList<Int>()
-        val pedElements = ArrayList<LElement>() // the pedestrian network is a later slice
+        val pedElements = ArrayList<LElement>() // sidewalk network (kind 0 lanes + crossing connectors)
+        val pedLaneElems = ArrayList<Int>()
         val nodes = LinkedHashMap<String, NetNode>()
         var spawnCum = FloatArray(0)
             private set
@@ -428,6 +431,7 @@ object Traffic {
 
             buildJunctions(graph)
             buildSpawnTable()
+            buildPedestrians(graph.pedestrian)
             g = FloatArray(elements.size)
             from = IntArray(elements.size)
             stamp = IntArray(elements.size)
@@ -562,6 +566,55 @@ object Traffic {
             return laneElems[lo]
         }
 
+        /** Sidewalk network (LaneNetwork.js _buildPedestrians) — 1.45 m/s walk speed. */
+        private fun buildPedestrians(ped: LaneGraphIn?) {
+            pedElements.clear()
+            pedLaneElems.clear()
+            if (ped == null) { pedCum = FloatArray(0); pedTotal = 0.0; return }
+            val byId = HashMap<String, Int>()
+            for (lane in ped.lanes) {
+                if (lane.points.size < 2) continue
+                val poly = makePoly(lane.points, 1.45)
+                if (!(poly.len > 1.0)) continue
+                val idx = pedElements.size
+                val el = LElement(idx, 0, poly, 1.45, id = lane.id, to = lane.to, from = lane.from)
+                pedElements.add(el)
+                pedLaneElems.add(idx)
+                byId[lane.id] = idx
+            }
+            for ((laneId, outs) in ped.connections) {
+                val ai = byId[laneId] ?: continue
+                if (outs.isEmpty()) continue
+                val A = pedElements[ai]
+                val pa = doubleArrayOf(A.poly.x[A.poly.n - 1].toDouble(), A.poly.y[A.poly.n - 1].toDouble(), A.poly.z[A.poly.n - 1].toDouble())
+                val ta = tangentEnd(A.poly)
+                for (outId in outs) {
+                    val bi = byId[outId] ?: continue
+                    if (bi == ai) continue
+                    val B = pedElements[bi]
+                    val pb = doubleArrayOf(B.poly.x[0].toDouble(), B.poly.y[0].toDouble(), B.poly.z[0].toDouble())
+                    val gap = hypot(pb[0] - pa[0], pb[2] - pa[2])
+                    if (gap > 34.0) continue
+                    val poly = bezierConnector(pa, ta, pb, tangentStart(B.poly), 1.45)
+                    val idx = pedElements.size
+                    val el = LElement(idx, 1, poly, 1.45, id = "${laneId}>${outId}", to = B.to, from = A.to)
+                    el.crossing = gap > 5.5
+                    el.outs.add(bi)
+                    el.node = A.to
+                    pedElements.add(el)
+                    A.outs.add(idx)
+                }
+            }
+            var total = 0.0
+            val cum = FloatArray(pedLaneElems.size)
+            for (i in pedLaneElems.indices) {
+                total += pedElements[pedLaneElems[i]].poly.len
+                cum[i] = total.toFloat()
+            }
+            pedCum = cum
+            pedTotal = total
+        }
+
         fun randomPedLane(r: Double): Int {
             val cum = pedCum
             if (cum.isEmpty()) return -1
@@ -572,7 +625,7 @@ object Traffic {
                 val mid = (lo + hi) shr 1
                 if (cum[mid].toDouble() < target) lo = mid + 1 else hi = mid
             }
-            return laneElems[lo]
+            return pedLaneElems[lo]
         }
 
         /**
@@ -691,10 +744,27 @@ object Traffic {
     }
 
     private fun cmpS(a: Vehicle, b: Vehicle): Int = if (a.s < b.s) -1 else if (a.s > b.s) 1 else 0
+    private fun cmpPed(a: Ped, b: Ped): Int = if (a.s < b.s) -1 else if (a.s > b.s) 1 else 0
+
+    class Ped {
+        var id = 0
+        var elem = 0
+        var s = 0.0
+        var v = 0.0
+        var vmax = 1.0
+        var phase = 0.0
+        var x = 0.0; var y = 0.0; var z = 0.0; var yaw = 0.0
+        var shirt = 0; var pants = 0
+        var seed = 0.0
+        var bidx = -1
+        var dist = 0.0
+        var nextElem: Int? = null
+    }
 
     class TrafficSim(private val net: LaneNetwork, seed: Int, salt: Int) {
         private val rng = Rng(seed).fork(salt)
         val vehicles = ArrayList<Vehicle>()
+        val peds = ArrayList<Ped>()
         var target = 0
         var pedTarget = 0
         var frame = 0
@@ -712,6 +782,9 @@ object Traffic {
         private var bucket = Array<ArrayList<Vehicle>>(0) { ArrayList() }
         private var bstamp = IntArray(0)
         private val touched = ArrayList<Int>()
+        private var pbucket = Array<ArrayList<Ped>>(0) { ArrayList() }
+        private var pstamp = IntArray(0)
+        private val ptouched = ArrayList<Int>()
         private val sample = PolySample(0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 10.0)
 
         /** The web forks world.rng with hashString('traffic'). */
@@ -721,10 +794,15 @@ object Traffic {
 
         fun onNetwork() {
             vehicles.clear()
+            peds.clear()
             val n = net.elements.size
             bucket = Array(n) { ArrayList() }
             bstamp = IntArray(n)
             touched.clear()
+            val p = net.pedElements.size
+            pbucket = Array(p) { ArrayList() }
+            pstamp = IntArray(p)
+            ptouched.clear()
             for (node in net.nodes.values) node.claims.clear()
         }
 
@@ -769,6 +847,31 @@ object Traffic {
                     made++
                     placed = true
                 }
+            }
+            return made
+        }
+
+        /** Sidewalk agents (web spawnPeds). */
+        fun spawnPeds(count: Int): Int {
+            if (net.pedLaneElems.isEmpty()) return 0
+            var made = 0
+            for (i in 0 until count) {
+                val li = net.randomPedLane(rng.next())
+                if (li < 0) break
+                val el = net.pedElements.getOrNull(li)
+                if (el == null || el.poly.len < 3.0) continue
+                val ped = Ped()
+                ped.id = nextId++
+                ped.elem = li
+                ped.s = rng.next() * el.poly.len
+                ped.v = 1.0 + rng.next() * 0.45
+                ped.vmax = 1.05 + rng.next() * 0.55
+                ped.phase = rng.next() * 6.283
+                ped.shirt = (rng.next() * 1e6).toInt()
+                ped.pants = (rng.next() * 1e6).toInt()
+                ped.seed = rng.next()
+                peds.add(ped)
+                made++
             }
             return made
         }
@@ -858,6 +961,7 @@ object Traffic {
             for (v in vehicles) intent(v)
             resolveClaims()
             for (v in vehicles) stepVehicle(v, dt)
+            for (p in peds) stepPed(p, dt)
             for (i in vehicles.size - 1 downTo 0) {
                 if (vehicles[i].dead) { release(vehicles[i]); vehicles.removeAt(i) }
             }
@@ -875,6 +979,19 @@ object Traffic {
             for (e in touched) {
                 val b = bucket[e]
                 b.sortWith { a, c -> cmpS(a, c) }
+                for (i in b.indices) b[i].bidx = i
+            }
+            // pedestrian buckets (same method in the web)
+            for (e in ptouched) pbucket[e].clear()
+            ptouched.clear()
+            for (p in peds) {
+                val e = p.elem
+                if (pstamp[e] != f) { pstamp[e] = f; pbucket[e].clear(); ptouched.add(e) }
+                pbucket[e].add(p)
+            }
+            for (e in ptouched) {
+                val b = pbucket[e]
+                b.sortWith { a, c -> cmpPed(a, c) }
                 for (i in b.indices) b[i].bidx = i
             }
         }
@@ -991,6 +1108,86 @@ object Traffic {
                 if (ahead > LOOKAHEAD) break
             }
             return null
+        }
+
+        /** Walk the sidewalk lanes; wait at the kerb until the crossing is clear (web _stepPed). */
+        private fun stepPed(ped: Ped, dt: Double) {
+            val els = net.pedElements
+            val el0 = els.getOrNull(ped.elem)
+            if (el0 == null) { ped.elem = net.randomPedLane(rng.next()); ped.s = 0.0; ped.nextElem = null; return }
+            var el: LElement = el0
+            var target = ped.vmax
+            // personal space
+            val b = pbucket[ped.elem]
+            if (pstamp[ped.elem] == frame && ped.bidx >= 0) {
+                val nb = b.getOrNull(ped.bidx + 1)
+                if (nb != null) {
+                    val gap = nb.s - ped.s
+                    if (gap < 1.5) target = min(target, max(0.0, nb.v * 0.85 + (gap - 0.7) * 0.9))
+                }
+            }
+            // wait at the kerb
+            val remain = el.poly.len - ped.s
+            if (el.kind == 0 && remain < 1.4) {
+                if (ped.nextElem == null) ped.nextElem = pickPedNext(el)
+                val nx = ped.nextElem?.let { els.getOrNull(it) }
+                if (nx != null && nx.crossing && !crossingClear(nx)) target = 0.0
+            }
+            ped.v += (target - ped.v) * min(1.0, dt * 3.5)
+            if (ped.v < 0.02) ped.v = 0.0
+            ped.s += ped.v * dt
+            ped.phase += ped.v * dt * 4.6
+            ped.dist += ped.v * dt
+            var guard = 0
+            while (ped.s > el.poly.len && guard++ < 4) {
+                ped.s -= el.poly.len
+                var nxt = ped.nextElem
+                ped.nextElem = null
+                if (nxt == null) nxt = pickPedNext(el)
+                val nxE = nxt?.let { els.getOrNull(it) }
+                if (nxE == null) { ped.elem = net.randomPedLane(rng.next()); ped.s = 0.0; ped.nextElem = null; return }
+                ped.elem = nxt!!
+                el = nxE
+            }
+            val q = polyAt(el.poly, ped.s, sample)
+            ped.x = q.x; ped.y = q.y; ped.z = q.z
+            ped.yaw = atan2(q.tx, q.tz)
+        }
+
+        /** Avoid immediately turning back the way we came (web _pickPedNext). */
+        private fun pickPedNext(el: LElement): Int? {
+            if (el.kind == 1) return if (el.outs.isNotEmpty()) el.outs[0] else null
+            if (el.outs.isEmpty()) return null
+            val els = net.pedElements
+            var pick: Int? = null
+            var tries = 0
+            while (tries++ < 4) {
+                val c = el.outs[(rng.next() * el.outs.size).toInt()]
+                val conn = els.getOrNull(c) ?: continue
+                val back = conn.outs.isNotEmpty() && els.getOrNull(conn.outs[0])?.to == el.from
+                if (!back || rng.next() < 0.2) { pick = c; break }
+                pick = c
+            }
+            return pick
+        }
+
+        /** A crossing is clear when no vehicle is entering the junction below 26 m out (web _crossingClear). */
+        private fun crossingClear(conn: LElement): Boolean {
+            val node = conn.node?.let { net.nodes[it] } ?: return true
+            val els = net.elements
+            for (li in node.inLanes) {
+                val b = bucket[li]
+                if (bstamp[li] != frame || b.isEmpty()) continue
+                val el = els.getOrNull(li) ?: continue
+                for (i in b.indices.reversed()) {
+                    val v = b[i]
+                    val d = el.poly.len - v.s
+                    if (d > 26.0) break
+                    if (v.v > 1.2) return false
+                }
+            }
+            for (c in node.claims.values) if (c.state == 1) return false
+            return true
         }
 
         private fun stepVehicle(veh: Vehicle, dt: Double) {

@@ -24,13 +24,13 @@ import kotlin.math.hypot
  */
 object RoadNetBuilder {
 
-    private class TypeDef(val lanes: Int, val offsets: DoubleArray, val speed: Double, val width: Double, val rank: Int)
+    private class TypeDef(val lanes: Int, val offsets: DoubleArray, val speed: Double, val width: Double, val rank: Int, val pedOffsets: DoubleArray)
 
     // src/modules/roads/RoadTypes.js cross-sections (per-direction offsets, inner → outer)
     private val TYPES = mapOf(
-        "local" to TypeDef(1, doubleArrayOf(1.9), 50.0, 3.8, 2),
-        "avenue" to TypeDef(2, doubleArrayOf(3.375, 7.125), 60.0, 3.75, 3),
-        "highway" to TypeDef(3, doubleArrayOf(3.35, 6.85, 10.35), 110.0, 3.5, 4),
+        "local" to TypeDef(1, doubleArrayOf(1.9), 50.0, 3.8, 2, doubleArrayOf(5.0)),
+        "avenue" to TypeDef(2, doubleArrayOf(3.375, 7.125), 60.0, 3.75, 3, doubleArrayOf(10.6)),
+        "highway" to TypeDef(3, doubleArrayOf(3.35, 6.85, 10.35), 110.0, 3.5, 4, doubleArrayOf()),
     )
 
     private class Pt(val x: Double, val z: Double)
@@ -255,7 +255,55 @@ object RoadNetBuilder {
         }
         val graphConns = LinkedHashMap<String, List<String>>()
         for (l in lanes) graphConns[l.id] = connections[l.id] ?: emptyList()
-        return Traffic.LaneGraphIn(graphLanes, graphConns, nodePos, segType)
+
+        // ---- pedestrian sidewalks (roads/RoadNetwork.js pedestrian block):
+        //      one lane per side at the type's pedestrianOffsets, any-in -> any-out at nodes
+        val pedLanes = ArrayList<Traffic.GraphLane>()
+        val pedConns = LinkedHashMap<String, List<String>>()
+        for ((ei, e) in edges.withIndex()) {
+            val td = TYPES[e.type] ?: TYPES["local"]!!
+            if (td.pedOffsets.isEmpty()) continue
+            val segId = "e$ei"
+            for (dir in intArrayOf(1, -1)) {
+                for (rank in td.pedOffsets.indices) {
+                    val lat = td.pedOffsets[rank] * dir
+                    val pts = ArrayList<DoubleArray>(e.pts.size)
+                    for (v in 0 until e.pts.size) {
+                        val p0 = e.pts[maxOf(0, v - 1)]
+                        val p1 = e.pts[minOf(e.pts.size - 1, v + 1)]
+                        val dx = p1.x - p0.x
+                        val dz = p1.z - p0.z
+                        val l = hypot(dx, dz)
+                        val ln = if (l < 1e-6) 1.0 else l
+                        val rx = -dz / ln
+                        val rz = dx / ln
+                        pts.add(doubleArrayOf(e.pts[v].x + rx * lat, 0.2, e.pts[v].z + rz * lat))
+                    }
+                    pedLanes.add(Traffic.GraphLane(
+                        "${segId}:p${if (dir == 1) "f" else "r"}$rank", pts, 5.0, segId, dir,
+                        if (dir == 1) "n${e.a}" else "n${e.b}",
+                        if (dir == 1) "n${e.b}" else "n${e.a}", 1.5,
+                    ))
+                }
+            }
+        }
+        for (l in pedLanes) pedConns[l.id] = emptyList()
+        val nodePed = HashMap<String?, ArrayList<Traffic.GraphLane>>()
+        for (l in pedLanes) {
+            nodePed.getOrPut(l.from) { ArrayList() }.add(l)
+            if (l.to != l.from) nodePed.getOrPut(l.to) { ArrayList() }.add(l)
+        }
+        for ((nodeId, list) in nodePed) {
+            val pIn = list.filter { it.to == nodeId }
+            val pOut = list.filter { it.from == nodeId }
+            for (l in pIn) pedConns[l.id] = pOut.map { it.id }
+        }
+        val graphPedLanes = pedLanes.map { l -> Traffic.GraphLane(l.id, l.points, l.speed, l.segmentId, l.dir, l.from, l.to, l.width) }
+        val graphPedConns = LinkedHashMap<String, List<String>>()
+        for (l in pedLanes) graphPedConns[l.id] = pedConns[l.id] ?: emptyList()
+
+        return Traffic.LaneGraphIn(graphLanes, graphConns, nodePos, segType,
+            Traffic.LaneGraphIn(graphPedLanes, graphPedConns, nodePos, segType))
     }
 
     // ------------------------------------------------------------------ polyline helpers

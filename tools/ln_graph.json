@@ -862,6 +862,600 @@
    "locEW_w:-1:0"
   ]
  },
+ "pedestrian": {
+  "lanes": [
+   {
+    "id": "avEW_w:pf0",
+    "segmentId": "avEW_w",
+    "dir": 1,
+    "rank": 0,
+    "points": [
+     {
+      "x": -90,
+      "y": 0.2,
+      "z": 0
+     },
+     {
+      "x": -67.5,
+      "y": 1,
+      "z": 0
+     },
+     {
+      "x": -45,
+      "y": 0.2,
+      "z": 0
+     }
+    ],
+    "speed": 5,
+    "width": 1.5,
+    "from": "W",
+    "to": "C",
+    "kind": "pedestrian"
+   },
+   {
+    "id": "avEW_w:pr0",
+    "segmentId": "avEW_w",
+    "dir": -1,
+    "rank": 0,
+    "points": [
+     {
+      "x": -90,
+      "y": 0.2,
+      "z": 0
+     },
+     {
+      "x": -67.5,
+      "y": 1,
+      "z": 0
+     },
+     {
+      "x": -45,
+      "y": 0.2,
+      "z": 0
+     }
+    ],
+    "speed": 5,
+    "width": 1.5,
+    "from": "C",
+    "to": "W",
+    "kind": "pedestrian"
+   },
+   {
+    "id": "avEW_m:pf0",
+    "segmentId": "avEW_m",
+    "dir": 1,
+    "rank": 0,
+    "points": [
+     {
+      "x": -45,
+      "y": 0.2,
+      "z": 0
+     },
+     {
+      "x": -22.5,
+      "y": 0.2,
+      "z": 0
+     },
+     {
+      "x": 0,
+      "y": 0.2,
+      "z": 0
+     }
+    ],
+    "speed": 5,
+    "width": 1.5,
+    "from": "C",
+    "to": "A",
+    "kind": "pedestrian"
+   },
+   {
+    "id": "avEW_m:pr0",
+    "segmentId": "avEW_m",
+    "dir": -1,
+    "rank": 0,
+    "points": [
+     {
+      "x": -45,
+      "y": 0.2,
+      "z": 0
+     },
+     {
+      "x": -22.5,
+      "y": 0.2,
+      "z": 0
+     },
+     {
+      "x": 0,
+      "y": 0.2,
+      "z": 0
+     }
+    ],
+    "speed": 5,
+    "width": 1.5,
+    "from": "A",
+    "to": "C",
+    "kind": "pedestrian"
+   },
+   {
+    "id": "avEW_e:pf0",
+    "segmentId": "avEW_e",
+    "dir": 1,
+    "rank": 0,
+    "points": [
+     {
+      "x": 0,
+      "y": 0.2,
+      "z": 0
+     },
+     {
+      "x": 45,
+      "y": 0.8,
+      "z": 0
+     },
+     {
+      "x": 90,
+      "y": 0.2,
+      "z": 0
+     }
+    ],
+    "speed": 5,
+    "width": 1.5,
+    "from": "A",
+    "to": "E",
+    "kind": "pedestrian"
+   },
+   {
+    "id": "avEW_e:pr0",
+    "segmentId": "avEW_e",
+    "dir": -1,
+    "rank": 0,
+    "points": [
+     {
+      "x": 0,
+      "y": 0.2,
+      "z": 0
+     },
+     {
+      "x": 45,
+      "y": 0.8,
+      "z": 0
+     },
+     {
+      "x": 90,
+      "y": 0.2,
+      "z": 0
+     }
+    ],
+    "speed": 5,
+    "width": 1.5,
+    "from": "E",
+    "to": "A",
+    "kind": "pedestrian"
+   },
+   {
+    "id": "avNS_s:pf0",
+    "segmentId": "avNS_s",
+    "dir": 1,
+    "rank": 0,
+    "points": [
+     {
+      "x": -10.6,
+      "y": -89.8,
+      "z": 0
+     },
+     {
+      "x": -10.6,
+      "y": -44.8,
+      "z": 0
+     },
+     {
+      "x": -10.6,
+      "y": 0.2,
+      "z": 0
+     }
+    ],
+    "speed": 5,
+    "width": 1.5,
+    "from": "S",
+    "to": "A",
+    "kind": "pedestrian"
+   },
+   {
+    "id": "avNS_s:pr0",
+    "segmentId": "avNS_s",
+    "dir": -1,
+    "rank": 0,
+    "points": [
+     {
+      "x": 10.6,
+      "y": -89.8,
+      "z": 0
+     },
+     {
+      "x": 10.6,
+      "y": -44.8,
+      "z": 0
+     },
+     {
+      "x": 10.6,
+      "y": 0.2,
+      "z": 0
+     }
+    ],
+    "speed": 5,
+    "width": 1.5,
+    "from": "A",
+    "to": "S",
+    "kind": "pedestrian"
+   },
+   {
+    "id": "avNS_n:pf0",
+    "segmentId": "avNS_n",
+    "dir": 1,
+    "rank": 0,
+    "points": [
+     {
+      "x": -10.6,
+      "y": 0.2,
+      "z": 0
+     },
+     {
+      "x": -10.6,
+      "y": 45.2,
+      "z": 0
+     },
+     {
+      "x": -10.6,
+      "y": 90.2,
+      "z": 0
+     }
+    ],
+    "speed": 5,
+    "width": 1.5,
+    "from": "A",
+    "to": "N",
+    "kind": "pedestrian"
+   },
+   {
+    "id": "avNS_n:pr0",
+    "segmentId": "avNS_n",
+    "dir": -1,
+    "rank": 0,
+    "points": [
+     {
+      "x": 10.6,
+      "y": 0.2,
+      "z": 0
+     },
+     {
+      "x": 10.6,
+      "y": 45.2,
+      "z": 0
+     },
+     {
+      "x": 10.6,
+      "y": 90.2,
+      "z": 0
+     }
+    ],
+    "speed": 5,
+    "width": 1.5,
+    "from": "N",
+    "to": "A",
+    "kind": "pedestrian"
+   },
+   {
+    "id": "locNS_s:pf0",
+    "segmentId": "locNS_s",
+    "dir": 1,
+    "rank": 0,
+    "points": [
+     {
+      "x": -50,
+      "y": -89.8,
+      "z": 0
+     },
+     {
+      "x": -50,
+      "y": -67.3,
+      "z": 0
+     },
+     {
+      "x": -50,
+      "y": -44.8,
+      "z": 0
+     }
+    ],
+    "speed": 5,
+    "width": 1.5,
+    "from": "P",
+    "to": "K",
+    "kind": "pedestrian"
+   },
+   {
+    "id": "locNS_s:pr0",
+    "segmentId": "locNS_s",
+    "dir": -1,
+    "rank": 0,
+    "points": [
+     {
+      "x": -40,
+      "y": -89.8,
+      "z": 0
+     },
+     {
+      "x": -40,
+      "y": -67.3,
+      "z": 0
+     },
+     {
+      "x": -40,
+      "y": -44.8,
+      "z": 0
+     }
+    ],
+    "speed": 5,
+    "width": 1.5,
+    "from": "K",
+    "to": "P",
+    "kind": "pedestrian"
+   },
+   {
+    "id": "locNS_n:pf0",
+    "segmentId": "locNS_n",
+    "dir": 1,
+    "rank": 0,
+    "points": [
+     {
+      "x": -50,
+      "y": -44.8,
+      "z": 0
+     },
+     {
+      "x": -50,
+      "y": -22.3,
+      "z": 0
+     },
+     {
+      "x": -50,
+      "y": 0.2,
+      "z": 0
+     }
+    ],
+    "speed": 5,
+    "width": 1.5,
+    "from": "K",
+    "to": "C",
+    "kind": "pedestrian"
+   },
+   {
+    "id": "locNS_n:pr0",
+    "segmentId": "locNS_n",
+    "dir": -1,
+    "rank": 0,
+    "points": [
+     {
+      "x": -40,
+      "y": -44.8,
+      "z": 0
+     },
+     {
+      "x": -40,
+      "y": -22.3,
+      "z": 0
+     },
+     {
+      "x": -40,
+      "y": 0.2,
+      "z": 0
+     }
+    ],
+    "speed": 5,
+    "width": 1.5,
+    "from": "C",
+    "to": "K",
+    "kind": "pedestrian"
+   },
+   {
+    "id": "locEW_w:pf0",
+    "segmentId": "locEW_w",
+    "dir": 1,
+    "rank": 0,
+    "points": [
+     {
+      "x": -90,
+      "y": -44.8,
+      "z": 0
+     },
+     {
+      "x": -67.5,
+      "y": -45.5,
+      "z": 0
+     },
+     {
+      "x": -45,
+      "y": -44.8,
+      "z": 0
+     }
+    ],
+    "speed": 5,
+    "width": 1.5,
+    "from": "L",
+    "to": "K",
+    "kind": "pedestrian"
+   },
+   {
+    "id": "locEW_w:pr0",
+    "segmentId": "locEW_w",
+    "dir": -1,
+    "rank": 0,
+    "points": [
+     {
+      "x": -90,
+      "y": -44.8,
+      "z": 0
+     },
+     {
+      "x": -67.5,
+      "y": -45.5,
+      "z": 0
+     },
+     {
+      "x": -45,
+      "y": -44.8,
+      "z": 0
+     }
+    ],
+    "speed": 5,
+    "width": 1.5,
+    "from": "K",
+    "to": "L",
+    "kind": "pedestrian"
+   },
+   {
+    "id": "locEW_e:pf0",
+    "segmentId": "locEW_e",
+    "dir": 1,
+    "rank": 0,
+    "points": [
+     {
+      "x": -45,
+      "y": -44.8,
+      "z": 0
+     },
+     {
+      "x": -22.5,
+      "y": -44.8,
+      "z": 0
+     },
+     {
+      "x": 0,
+      "y": -44.8,
+      "z": 0
+     }
+    ],
+    "speed": 5,
+    "width": 1.5,
+    "from": "K",
+    "to": "R",
+    "kind": "pedestrian"
+   },
+   {
+    "id": "locEW_e:pr0",
+    "segmentId": "locEW_e",
+    "dir": -1,
+    "rank": 0,
+    "points": [
+     {
+      "x": -45,
+      "y": -44.8,
+      "z": 0
+     },
+     {
+      "x": -22.5,
+      "y": -44.8,
+      "z": 0
+     },
+     {
+      "x": 0,
+      "y": -44.8,
+      "z": 0
+     }
+    ],
+    "speed": 5,
+    "width": 1.5,
+    "from": "R",
+    "to": "K",
+    "kind": "pedestrian"
+   }
+  ],
+  "connections": {
+   "avEW_w:pf0": [
+    "avEW_w:pr0",
+    "avEW_m:pf0",
+    "locNS_n:pr0"
+   ],
+   "avEW_w:pr0": [
+    "avEW_w:pf0"
+   ],
+   "avEW_m:pf0": [
+    "avEW_m:pr0",
+    "avEW_e:pf0",
+    "avNS_s:pr0",
+    "avNS_n:pf0"
+   ],
+   "avEW_m:pr0": [
+    "avEW_w:pr0",
+    "avEW_m:pf0",
+    "locNS_n:pr0"
+   ],
+   "avEW_e:pf0": [
+    "avEW_e:pr0"
+   ],
+   "avEW_e:pr0": [
+    "avEW_m:pr0",
+    "avEW_e:pf0",
+    "avNS_s:pr0",
+    "avNS_n:pf0"
+   ],
+   "avNS_s:pf0": [
+    "avEW_m:pr0",
+    "avEW_e:pf0",
+    "avNS_s:pr0",
+    "avNS_n:pf0"
+   ],
+   "avNS_s:pr0": [
+    "avNS_s:pf0"
+   ],
+   "avNS_n:pf0": [
+    "avNS_n:pr0"
+   ],
+   "avNS_n:pr0": [
+    "avEW_m:pr0",
+    "avEW_e:pf0",
+    "avNS_s:pr0",
+    "avNS_n:pf0"
+   ],
+   "locNS_s:pf0": [
+    "locNS_s:pr0",
+    "locNS_n:pf0",
+    "locEW_w:pr0",
+    "locEW_e:pf0"
+   ],
+   "locNS_s:pr0": [
+    "locNS_s:pf0"
+   ],
+   "locNS_n:pf0": [
+    "avEW_w:pr0",
+    "avEW_m:pf0",
+    "locNS_n:pr0"
+   ],
+   "locNS_n:pr0": [
+    "locNS_s:pr0",
+    "locNS_n:pf0",
+    "locEW_w:pr0",
+    "locEW_e:pf0"
+   ],
+   "locEW_w:pf0": [
+    "locNS_s:pr0",
+    "locNS_n:pf0",
+    "locEW_w:pr0",
+    "locEW_e:pf0"
+   ],
+   "locEW_w:pr0": [
+    "locEW_w:pf0"
+   ],
+   "locEW_e:pf0": [
+    "locEW_e:pr0"
+   ],
+   "locEW_e:pr0": [
+    "locNS_s:pr0",
+    "locNS_n:pf0",
+    "locEW_w:pr0",
+    "locEW_e:pf0"
+   ]
+  }
+ },
  "nodePos": {
   "W": [
    -90,

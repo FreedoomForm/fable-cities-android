@@ -109,6 +109,8 @@ class GlCityRenderer : GLSurfaceView.Renderer {
     private var cubeVbo = 0
     private var carVbo = 0
     private var carCount = 0
+    private var pedVbo = 0
+    private var pedCount = 0
     private var skyVbo = 0
     private var editRoadVbo = 0
     private var editRoadCount = 0
@@ -135,6 +137,7 @@ class GlCityRenderer : GLSurfaceView.Renderer {
     private var trafficNet: Traffic.LaneNetwork? = null
     private var trafficSim: Traffic.TrafficSim? = null
     private val MAX_VEHICLES = 96
+    private val MAX_PEDS = 64
     private val roadSegs = ArrayList<RoadSeg>()
     private var cityYaw = 0f
     private lateinit var demo: DemoCity
@@ -196,6 +199,7 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         buildStars()
         buildCube()
         buildCar()
+        buildPed()
         buildSky()
         rebuildEditMeshes()
         generateVehicles()
@@ -803,9 +807,32 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         val dv = t - sim.vehicles.size
         if (dv > 0) sim.spawn(minOf(26, dv))
         else if (dv < -3) sim.despawnFar(minOf(6, -dv))
+        // pedestrian fleet: the web's targetCounts() p-curve, capped for the native renderer
+        val p = targetPedCount()
+        sim.pedTarget = p
+        val dp = p - sim.peds.size
+        if (dp > 0) sim.spawnPeds(minOf(34, dp))
+        else if (dp < -4) { val kill = minOf(8, -dp); repeat(kill) { if (sim.peds.isNotEmpty()) sim.peds.removeAt(sim.peds.size - 1) } }
         // web passes the camera position; the native camera orbits 300+ m out, so the look-at
         // target is the despawn anchor (vehicles stay alive where the player is actually looking)
         sim.update(min(0.05, dt.toDouble()), camTarget[0].toDouble(), camTarget[2].toDouble())
+    }
+
+    /** traffic/index.js targetCounts() pedestrian branch (density 1). */
+    private fun targetPedCount(): Int {
+        val net = trafficNet ?: return 0
+        val pedLen = net.pedTotal
+        if (pedLen <= 0.0) return 0
+        val byWalk = pedLen / 26.0
+        val pop = if (simReady()) simEconomy.e.population else 0
+        val h = hour.toDouble()
+        val rush = 0.50 + 0.50 * maxOf(
+            exp(-Math.pow((h - 8.2) / 2.8, 2.0)),
+            maxOf(exp(-Math.pow((h - 17.6) / 3.6, 2.0)), exp(-Math.pow((h - 12.5) / 3.4, 2.0)) * 0.85),
+        )
+        val night = if (h < 5.2 || h > 22.6) 0.42 else 1.0
+        val p = minOf(byWalk, maxOf(45.0 + pop * 0.085, byWalk * 0.80)) * (night * 0.7 + 0.3) * (0.55 + 0.45 * rush)
+        return maxOf(0, minOf(MAX_PEDS, Math.round(p).toInt()))
     }
 
     private fun vehiclePaint(paint: Int, out: FloatArray) {
@@ -1062,6 +1089,16 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         o = pushBox(data, o, 0f, 0.28f, 0f, 4.5f, 0.36f, 2.0f, 2f) // chassis/wheels hint
         carCount = o / 8
         carVbo = upload(data.copyOf(o))
+    }
+
+    private fun buildPed() {
+        // two-box pedestrian: torso + head (vehicle-shader vertex layout, part 1 = head tint)
+        val data = FloatArray(36 * 8 * 2)
+        var o = 0
+        o = pushBox(data, o, 0f, 0.55f, 0f, 0.38f, 1.1f, 0.26f, 0f) // torso
+        o = pushBox(data, o, 0f, 1.32f, 0f, 0.24f, 0.24f, 0.22f, 1f) // head
+        pedCount = o / 8
+        pedVbo = upload(data.copyOf(o))
     }
 
     private fun buildSky() {
@@ -1626,6 +1663,26 @@ class GlCityRenderer : GLSurfaceView.Renderer {
                 GLES30.glUniform3f(u(progBuilding, "uColor"), hueF[0], hueF[1], hueF[2])
                 GLES30.glUniform1f(u(progBuilding, "uSeed"), v.seed.toFloat())
                 GLES30.glDrawArrays(GLES30.GL_TRIANGLES, 0, carCount)
+            }
+            // pedestrians: the sim's sidewalk agents (spawnPeds/_stepPed port) as two-box walkers
+            if (pedVbo != 0) {
+                GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, pedVbo)
+                bindAttribs(32)
+                for (p in sim.peds) {
+                    val hue = (p.shirt % 1000) / 1000.0
+                    when {
+                        hue < 0.25 -> { hueF[0] = 0.72f; hueF[1] = 0.20f; hueF[2] = 0.18f }
+                        hue < 0.5 -> { hueF[0] = 0.22f; hueF[1] = 0.36f; hueF[2] = 0.60f }
+                        hue < 0.75 -> { hueF[0] = 0.85f; hueF[1] = 0.83f; hueF[2] = 0.78f }
+                        else -> { hueF[0] = 0.30f; hueF[1] = 0.28f; hueF[2] = 0.26f }
+                    }
+                    GLES30.glUniform3f(u(progBuilding, "uPos"), p.x.toFloat(), terrainHeight(p.x.toFloat(), p.z.toFloat()) + 0.05f, p.z.toFloat())
+                    GLES30.glUniform3f(u(progBuilding, "uScale"), 1f, 1f, 1f)
+                    GLES30.glUniform1f(u(progBuilding, "uYaw"), p.yaw.toFloat())
+                    GLES30.glUniform3f(u(progBuilding, "uColor"), hueF[0], hueF[1], hueF[2])
+                    GLES30.glUniform1f(u(progBuilding, "uSeed"), p.seed.toFloat())
+                    GLES30.glDrawArrays(GLES30.GL_TRIANGLES, 0, pedCount)
+                }
             }
         }
         GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, 0)

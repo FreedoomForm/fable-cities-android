@@ -28,6 +28,14 @@ class LaneNetworkParityTest {
     }
 
     private fun buildNet(): Traffic.LaneNetwork {
+        val pedGraph = Traffic.LaneGraphIn(
+            lanes = LaneNetGoldens.graphPedLanes.map { l ->
+                Traffic.GraphLane(l.id, l.points, l.speed, l.segmentId, l.dir, l.from, l.to, l.width)
+            },
+            connections = LaneNetGoldens.graphPedConnections,
+            nodePos = LaneNetGoldens.graphNodePos,
+            segType = LaneNetGoldens.graphSegType,
+        )
         val graph = Traffic.LaneGraphIn(
             lanes = LaneNetGoldens.graphLanes.map { l ->
                 Traffic.GraphLane(l.id, l.points, l.speed, l.segmentId, l.dir, l.from, l.to, l.width)
@@ -35,6 +43,7 @@ class LaneNetworkParityTest {
             connections = LaneNetGoldens.graphConnections,
             nodePos = LaneNetGoldens.graphNodePos,
             segType = LaneNetGoldens.graphSegType,
+            pedestrian = pedGraph,
         )
         val net = Traffic.LaneNetwork()
         assertTrue(net.rebuild(graph, LaneNetGoldens.graphVersion))
@@ -110,6 +119,25 @@ class LaneNetworkParityTest {
             val g = LaneNetGoldens.routeProbes[i]
             assertEquals("route[$i]", if (g == null) "null-path" else g.joinToString(","), p?.joinToString(",") ?: "null-path")
         }
+        // pedestrian network structure
+        assertEquals("pedElements", LaneNetGoldens.pedElementCount.toLong(), net.pedElements.size.toLong())
+        assertEquals("pedLaneElems", LaneNetGoldens.pedLaneElemCount.toLong(), net.pedLaneElems.size.toLong())
+        assertEquals("pedLaneElemList", LaneNetGoldens.pedLaneElemList.joinToString(","), net.pedLaneElems.joinToString(","))
+        for ((i, g) in LaneNetGoldens.pedG.withIndex()) {
+            val el = net.pedElements[i]
+            assertEquals("ped[$i].kind", g.kind.toLong(), el.kind.toLong())
+            assertEquals("ped[$i].id", g.id, el.id)
+            assertEquals("ped[$i].crossing", g.crossing == 1, el.crossing)
+            near(el.poly.len, g.len, 1e-6, "ped[$i].len")
+            assertEquals("ped[$i].node", g.node, el.node ?: "")
+            assertEquals("ped[$i].outs", g.outs.joinToString(","), el.outs.joinToString(","))
+        }
+        for ((i, r) in listOf(0.0, 0.17, 0.34, 0.51, 0.68, 0.85, 0.99).withIndex()) {
+            assertEquals("randomPedLane[$i]", LaneNetGoldens.randomPedLaneProbes[i].toLong(), net.randomPedLane(r).toLong())
+        }
+        assertEquals(LaneNetGoldens.pedCum.size, net.pedCum.size)
+        for (i in net.pedCum.indices) near(net.pedCum[i].toDouble(), LaneNetGoldens.pedCum[i].toDouble(), 1e-6, "pedCum[$i]")
+        near(net.pedTotal, LaneNetGoldens.pedTotal, 1e-6, "pedTotal")
     }
 
     @Test
@@ -135,13 +163,22 @@ class LaneNetworkParityTest {
         val bl: Int, val speedRatio: Double, val dist: Double,
     )
 
+    private class PedSnap(
+        val id: Int, val e: Int, val s: Double, val v: Double, val x: Double, val y: Double,
+        val z: Double, val yaw: Double, val ph: Double, val d: Double,
+    )
+
     private data class ClaimS(val id: Int, val state: Int, val go: Boolean, val local: Int)
 
-    private data class Snap(val f: Int, val fleet: Int, val veh: List<VehSnap>, val claims: Map<String, List<ClaimS>>)
+    private data class Snap(val f: Int, val fleet: Int, val veh: List<VehSnap>, val claims: Map<String, List<ClaimS>>, val peds: List<PedSnap>)
 
     private fun snapVeh(v: Traffic.Vehicle) = VehSnap(
         v.id, v.typeId, v.elem, v.ri, v.s, v.v, v.x, v.y, v.z, v.yaw, v.brake, v.wait,
         v.blinkSide, v.speedRatio, v.dist,
+    )
+
+    private fun snapPed(p: Traffic.Ped) = PedSnap(
+        p.id, p.elem, p.s, p.v, p.x, p.y, p.z, p.yaw, p.phase, p.dist,
     )
 
     @Test
@@ -152,6 +189,8 @@ class LaneNetworkParityTest {
         sim.onNetwork()
         val made = sim.spawn(14)
         assertEquals("spawned", LaneNetGoldens.spawned.toLong(), made.toLong())
+        val pedsMade = sim.spawnPeds(10)
+        assertEquals("pedsSpawned", LaneNetGoldens.pedsSpawned.toLong(), pedsMade.toLong())
         var despawned = -1
         val snaps = ArrayList<Snap>()
         for (f in 1..900) {
@@ -162,11 +201,11 @@ class LaneNetworkParityTest {
                 val claims = net.nodes.values.filter { it.claims.isNotEmpty() }.associate { n ->
                     n.id to n.claims.values.map { c -> ClaimS(c.id, c.state, c.go, c.local) }
                 }
-                snaps.add(Snap(f, sim.vehicles.size, sim.vehicles.map { snapVeh(it) }, claims))
+                snaps.add(Snap(f, sim.vehicles.size, sim.vehicles.map { snapVeh(it) }, claims, sim.peds.map { snapPed(it) }))
             }
         }
         for ((i, g) in LaneNetGoldens.checkpoints.withIndex()) {
-            val (f, fleet, veh, claims) = snaps[i]
+            val (f, fleet, veh, claims, peds) = snaps[i]
             assertEquals("cp[$i].f", g.f.toLong(), f.toLong())
             assertEquals("cp[$i].despawned", (if (g.despawned >= 0) g.despawned else despawned).toLong(), despawned.toLong())
             assertEquals("cp[$i].fleet", g.fleet.toLong(), fleet.toLong())
@@ -200,6 +239,20 @@ class LaneNetworkParityTest {
                     assertEquals("cp[$i].claims[$nodeId][$k].go", gc.go, c.go)
                     assertEquals("cp[$i].claims[$nodeId][$k].local", gc.local.toLong(), c.local.toLong())
                 }
+            }
+            assertEquals("cp[$i].npeds", g.peds.size.toLong(), peds.size.toLong())
+            for ((j, gp) in g.peds.withIndex()) {
+                val p = peds[j]
+                assertEquals("cp[$i].ped[$j].id", gp.id.toLong(), p.id.toLong())
+                assertEquals("cp[$i].ped[$j].elem", gp.e.toLong(), p.e.toLong())
+                near(p.s, gp.s, 1e-6, "cp[$i].ped[$j].s")
+                near(p.v, gp.v, 1e-6, "cp[$i].ped[$j].v")
+                near(p.x, gp.x, 1e-6, "cp[$i].ped[$j].x")
+                near(p.y, gp.y, 1e-6, "cp[$i].ped[$j].y")
+                near(p.z, gp.z, 1e-6, "cp[$i].ped[$j].z")
+                near(p.yaw, gp.yaw, 1e-6, "cp[$i].ped[$j].yaw")
+                near(p.ph, gp.ph, 1e-6, "cp[$i].ped[$j].phase")
+                near(p.d, gp.d, 1e-6, "cp[$i].ped[$j].dist")
             }
         }
     }
