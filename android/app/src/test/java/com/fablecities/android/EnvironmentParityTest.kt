@@ -58,7 +58,7 @@ class EnvironmentParityTest {
         val doy = 121
         val st = Environment.EnvState()
         for ((h, g) in EnvGoldens.hours) {
-            Environment.compute(h, doy, Environment.LATITUDE, 24.0, 0.0, -1.0, st)
+            Environment.compute(h.toDouble(), doy, Environment.LATITUDE, 24.0, 0.0, -1.0, st)
             near(st.sunAltDeg, g.sunAltDeg, 1e-9, "sunAltDeg@$h")
             near(st.sunIntensity, g.sunIntensity, 1e-9, "sunIntensity@$h")
             near3(st.sunColor, g.sunColor, 1e-9, "sunColor@$h")
