@@ -95,57 +95,29 @@ jobs:
           emulator-options: -no-window -gpu swiftshader_indirect -no-audio -no-boot-anim -camera-back none -memory 3072
           disable-animations: true
           script: |
-            # upload-artifact v4 strips the common root (android/app/build) from artifact paths;
-            # locate the APK robustly (emulator-runner script cwd is not guaranteed to be the
-            # workspace root - the previous run's find artifact returned empty from it)
+            # NOTE: android-emulator-runner executes this script LINE BY LINE (one sh -c per line) -
+            # multi-line if/for blocks are a syntax error here. Keep every statement on one line.
             echo "PWD=$(pwd)"
-            ls -la "$GITHUB_WORKSPACE/artifact" 2>/dev/null || true
+            ls -la "$GITHUB_WORKSPACE/artifact" || true
             APK=$(find "$GITHUB_WORKSPACE/artifact" -name "*.apk" -type f 2>/dev/null | head -1)
-            if [ -z "$APK" ]; then
-              APK=$(find "$GITHUB_WORKSPACE" -maxdepth 6 -name "*.apk" -type f 2>/dev/null | grep -v "/gradle/" | head -1)
-            fi
             echo "APK=$APK"
-            if [ -z "$APK" ]; then
-              echo "::error::no .apk found in the downloaded artifact"
-              exit 1
-            fi
+            [ -n "$APK" ] || { echo "::error::no .apk in the downloaded artifact"; exit 1; }
             adb install -r "$APK"
-
-            # clear logcat so every line below is from this launch
             adb logcat -c
             adb shell am start -W -n com.fablecities.android/.MainActivity
             sleep 20
-
-            # GATE 1: process must survive boot + 20s soak
             PID=$(adb shell pidof com.fablecities.android | tr -d '\r' | tr -d ' ')
             echo "process pid=$PID"
-            if [ -z "$PID" ]; then
-              echo "::error::APK process died during launch — this is the gate that used to be missing"
-              adb logcat -d -t 500
-              exit 1
-            fi
-
-            # GATE 2: no fatal exceptions from the app (crash, GLES init failure, Kotlin NPE...)
-            if adb logcat -d | grep -E "FATAL EXCEPTION|AndroidRuntime" | grep -q .; then
-              echo "::error::Fatal exception in logcat during boot"
-              adb logcat -d | grep -A 30 -B 5 "FATAL EXCEPTION" | head -80
-              exit 1
-            fi
-
-            # GATE 3: renderer must actually draw frames (GLSurfaceView, continuous mode)
+            [ -n "$PID" ] || { echo "::error::APK process died during launch (the gate that used to be missing)"; adb logcat -d -t 500; exit 1; }
+            adb logcat -d > full_bootcat.txt || true
+            grep -E "FATAL EXCEPTION|AndroidRuntime" full_bootcat.txt && { echo "::error::Fatal exception in logcat during boot"; grep -A 30 -B 5 "FATAL EXCEPTION" full_bootcat.txt | head -80; exit 1; } || true
             adb shell dumpsys gfxinfo com.fablecities.android reset > /dev/null || true
             sleep 15
             FRAMES=$(adb shell dumpsys gfxinfo com.fablecities.android | grep "Total frames rendered" | grep -oE "[0-9]+" | head -1)
             echo "frames rendered in 15s soak: ${FRAMES:-0}"
-            if [ -z "$FRAMES" ] || [ "$FRAMES" -lt 30 ]; then
-              echo "::error::Renderer produced ${FRAMES:-0} frames in 15s — GL thread is not drawing"
-              adb logcat -d -t 300
-              exit 1
-            fi
-
-            # evidence: screenshot + full logcat for the release notes / audit
+            [ -n "$FRAMES" ] && [ "$FRAMES" -ge 30 ] || { echo "::error::Renderer produced ${FRAMES:-0} frames in 15s - GL thread not drawing"; adb logcat -d -t 300; exit 1; }
             adb exec-out screencap -p > emulator_screen.png
-            adb logcat -d > full_logcat.txt
+            cp full_bootcat.txt full_logcat.txt
             echo "Emulator gate PASSED: process alive, no fatal, $FRAMES frames in 15s"
 
       - name: Upload emulator evidence
