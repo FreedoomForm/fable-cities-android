@@ -10,6 +10,7 @@ import com.fablecities.android.worldgen.Heightmap
 import com.fablecities.android.worldgen.Rng
 import com.fablecities.android.worldgen.SimBuilding
 import com.fablecities.android.worldgen.Stars
+import com.fablecities.android.worldgen.Traffic
 import com.fablecities.android.worldgen.WaterMath
 import com.fablecities.android.worldgen.SimEconomy
 import com.fablecities.android.worldgen.SimMilestones
@@ -124,11 +125,11 @@ class GlCityRenderer : GLSurfaceView.Renderer {
     private val buildings = ArrayList<Building>()
     private var selectedBuilding: Building? = null
 
-    private class Vehicle(val route: Int, val lane: Float, var s: Float, val speed: Float, val dir: Float, val seed: Int, val color: FloatArray)
-
     private class RoadSeg(val x0: Float, val z0: Float, val x1: Float, val z1: Float, val hw: Float)
 
-    private val vehicles = ArrayList<Vehicle>()
+    // --- traffic: the site's real IDM car-following sim (traffic/TrafficSim.js port) ---
+    private var trafficNet: Traffic.MiniNet? = null
+    private var trafficSim: Traffic.TrafficSim? = null
     private val roadSegs = ArrayList<RoadSeg>()
     private var cityYaw = 0f
     private lateinit var demo: DemoCity
@@ -757,32 +758,37 @@ class GlCityRenderer : GLSurfaceView.Renderer {
     }
 
     private fun generateVehicles() {
-        val rng = Random(77123L)
-        vehicles.clear()
-        for (i in 0 until 26) {
-            val route = i % max(demo.routes.size, 1)
-            val dir = if (rng.nextBoolean()) 1f else -1f
-            val lane = if (rng.nextBoolean()) 3.6f else -3.6f
-            val speed = 9f + rng.nextFloat() * 8f
-            val hue = rng.nextFloat()
-            val body = when {
-                hue < 0.25f -> floatArrayOf(0.75f, 0.16f, 0.14f)
-                hue < 0.5f -> floatArrayOf(0.16f, 0.32f, 0.62f)
-                hue < 0.78f -> floatArrayOf(0.88f, 0.86f, 0.84f)
-                hue < 0.9f -> floatArrayOf(0.22f, 0.22f, 0.24f)
-                else -> floatArrayOf(0.80f, 0.55f, 0.12f)
+        // the demo routes become the lane network; the site's traffic sim drives them
+        val els = ArrayList<Traffic.LaneEl>()
+        for (r in demo.routes.indices) {
+            val route = demo.routes[r]
+            val pts = ArrayList<DoubleArray>()
+            for (i in 0 until route.count) {
+                pts.add(doubleArrayOf(
+                    route.samples[i * 3].toDouble(), route.samples[i * 3 + 1].toDouble(), route.samples[i * 3 + 2].toDouble()))
             }
-            val len = demo.routes[route].length()
-            vehicles.add(Vehicle(route, lane, rng.nextFloat() * len, speed, dir, rng.nextInt(10000), body))
+            // 50 km/h lane limit; the curvature limiter slows the bends exactly like the web
+            els.add(Traffic.LaneEl(r, 0, Traffic.makePoly(pts, 50.0 * Traffic.KMH), 50.0 * Traffic.KMH, 2, intArrayOf(r)))
         }
+        trafficNet = Traffic.MiniNet(els)
+        val sim = Traffic.TrafficSim(trafficNet!!, 1337, simHashString("traffic"))
+        sim.onNetwork()
+        sim.spawn(40)
+        trafficSim = sim
     }
 
     private fun updateVehicles(dt: Float) {
-        for (v in vehicles) {
-            val len = demo.routes[v.route].length()
-            v.s += v.speed * v.dir * dt
-            if (v.s > len) v.s = 0f
-            if (v.s < 0f) v.s = len
+        trafficSim?.update(min(0.05, dt.toDouble()))
+    }
+
+    private fun vehiclePaint(paint: Int, out: FloatArray) {
+        val hue = (paint % 1000) / 1000.0
+        when {
+            hue < 0.22 -> { out[0] = 0.75f; out[1] = 0.16f; out[2] = 0.14f }
+            hue < 0.45 -> { out[0] = 0.16f; out[1] = 0.32f; out[2] = 0.62f }
+            hue < 0.72 -> { out[0] = 0.88f; out[1] = 0.86f; out[2] = 0.84f }
+            hue < 0.88 -> { out[0] = 0.22f; out[1] = 0.22f; out[2] = 0.24f }
+            else -> { out[0] = 0.80f; out[1] = 0.55f; out[2] = 0.12f }
         }
     }
 
@@ -1574,22 +1580,26 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         GLES30.glUniform1f(u(progBuilding, "uDayFactor"), sun.dayFactor)
         GLES30.glUniform1f(u(progBuilding, "uSelected"), 0f)
         GLES30.glUniform1f(u(progBuilding, "uKind"), 9f) // vehicle mode
-        val out5 = FloatArray(5)
-        for (v in vehicles) {
-            val route = demo.routes[v.route]
-            route.at(v.s, out5)
-            // tangent flipped to the driving direction; right-hand lane offset
-            val tl = sqrt(out5[3] * out5[3] + out5[4] * out5[4]) + 1e-6f
-            val ndx = out5[3] / tl * v.dir
-            val ndz = out5[4] / tl * v.dir
-            val x = out5[0] - ndz * v.lane
-            val z = out5[1] + ndx * v.lane
-            GLES30.glUniform3f(u(progBuilding, "uPos"), x, terrainHeight(x, z) + 0.05f, z)
-            GLES30.glUniform3f(u(progBuilding, "uScale"), 4.4f, 1f, 1.9f)
-            GLES30.glUniform1f(u(progBuilding, "uYaw"), atan2(ndz, ndx))
-            GLES30.glUniform3f(u(progBuilding, "uColor"), v.color[0], v.color[1], v.color[2])
-            GLES30.glUniform1f(u(progBuilding, "uSeed"), v.seed.toFloat())
-            GLES30.glDrawArrays(GLES30.GL_TRIANGLES, 0, carCount)
+        val sim = trafficSim
+        if (sim != null) {
+            val hueF = FloatArray(3)
+            for (v in sim.vehicles) {
+                // dims by type (VehicleModels.js VEHICLE_SPECS); box approximation of the body
+                val spec = v.spec
+                val h = when (spec.kind) {
+                    "truck" -> 3.6f; "bus" -> 3.1f; "box" -> 2.3f
+                    "car" -> if (spec.id == "suv") 1.8f else 1.45f
+                    else -> 1.5f
+                }
+                // deterministic paint from the sim's per-vehicle paint int (web palette spirit)
+                vehiclePaint(v.paint, hueF)
+                GLES30.glUniform3f(u(progBuilding, "uPos"), v.x.toFloat(), terrainHeight(v.x.toFloat(), v.z.toFloat()) + 0.05f, v.z.toFloat())
+                GLES30.glUniform3f(u(progBuilding, "uScale"), spec.len.toFloat(), h, spec.wid.toFloat())
+                GLES30.glUniform1f(u(progBuilding, "uYaw"), v.yaw.toFloat())
+                GLES30.glUniform3f(u(progBuilding, "uColor"), hueF[0], hueF[1], hueF[2])
+                GLES30.glUniform1f(u(progBuilding, "uSeed"), v.seed.toFloat())
+                GLES30.glDrawArrays(GLES30.GL_TRIANGLES, 0, carCount)
+            }
         }
         GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, 0)
     }
