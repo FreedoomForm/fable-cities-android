@@ -6,8 +6,8 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.FableCities">
         <activity
-            android:name=".MainActivity"
-            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboardHidden"
+            android:name=".ParityActivity"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboardHidden|navigation"
             android:exported="true"
             android:screenOrientation="landscape">
             <intent-filter>
@@ -15,5 +15,10 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <activity
+            android:name=".MainActivity"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboardHidden"
+            android:exported="true"
+            android:screenOrientation="landscape" />
     </application>
 </manifest>

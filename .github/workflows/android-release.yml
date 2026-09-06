@@ -21,6 +21,20 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Build web bundle into APK assets (web-parity track)
+        run: |
+          npm ci --no-audit --no-fund
+          npx vite build
+          mkdir -p android/app/src/main/assets/web
+          cp -r dist/. android/app/src/main/assets/web/
+          du -sh android/app/src/main/assets/web
+          ls android/app/src/main/assets/web | head
+
       - name: Set up Java
         uses: actions/setup-java@v4
         with:
@@ -38,7 +52,7 @@ jobs:
         with:
           gradle-version: '8.7'
 
-      - name: Build debug APK
+      - name: Build debug APK (native + bundled web-parity assets)
         working-directory: android
         run: gradle :app:assembleDebug --stacktrace
 
@@ -101,13 +115,25 @@ jobs:
             # artifact/app-debug.apk after v4 strips the android/app/build root.
             ls -la artifact || true
             adb install -r artifact/app-debug.apk
+            # ---- GATE 1: web-parity launcher (WebView + three.js, slow first boot on swiftshader) ----
+            adb logcat -c
+            adb shell am start -W -n com.fablecities.android/.ParityActivity
+            sleep 90
+            adb logcat -d > parity_bootcat.txt || true
+            adb shell pidof com.fablecities.android > pid_parity.txt || true
+            grep -q "[0-9]" pid_parity.txt || { echo "::error::Parity (WebView) process died during launch"; grep -E "Fatal signal|FATAL EXCEPTION|SIGSEGV|SIGABRT|AndroidRuntime|chromium|Console|fablecities" parity_bootcat.txt | head -60; exit 1; }
+            grep -E "\[ERROR:CONSOLE" parity_bootcat.txt | grep -v -i favicon && { echo "::error::Web-parity page reported console errors inside the WebView (shader compile / 404 / JS exception)"; grep -E "\[ERROR:CONSOLE" parity_bootcat.txt | head -20; exit 1; } || true
+            adb exec-out screencap -p > parity_screen.png
+            # ---- GATE 2: native GLES renderer activity ----
+            adb shell am force-stop com.fablecities.android
+            sleep 2
             adb logcat -c
             adb shell am start -W -n com.fablecities.android/.MainActivity
             sleep 20
             # dump the FULL logcat BEFORE the pid check - the last-500 window lost the crash lines
             adb logcat -d > full_bootcat.txt || true
             adb shell pidof com.fablecities.android > pid.txt || true
-            grep -q "[0-9]" pid.txt || { echo "::error::APK process died during launch (the gate that used to be missing)"; grep -E "Fatal signal|FATAL EXCEPTION|SIGSEGV|SIGABRT|AndroidRuntime|fablecities|GlCityRenderer" full_bootcat.txt | head -50; exit 1; }
+            grep -q "[0-9]" pid.txt || { echo "::error::Native APK process died during launch (the gate that used to be missing)"; grep -E "Fatal signal|FATAL EXCEPTION|SIGSEGV|SIGABRT|AndroidRuntime|fablecities|GlCityRenderer" full_bootcat.txt | head -50; exit 1; }
             grep -E "FATAL EXCEPTION|AndroidRuntime|Fatal signal" full_bootcat.txt && { echo "::error::Fatal in logcat during boot"; grep -E -A 25 "FATAL EXCEPTION|Fatal signal" full_bootcat.txt | head -80; exit 1; } || true
             # RENDER GATE: gfxinfo counts only HWUI frames (always 0 for a raw GLSurfaceView app),
             # so gate on the renderer's own error log instead - any shader compile/link failure or
@@ -116,7 +142,7 @@ jobs:
             grep -E "GlCityRenderer: (shader|link|GL error)" full_bootcat.txt && { echo "::error::GL renderer reported compile/link/runtime errors"; grep -E "GlCityRenderer: " full_bootcat.txt | head -30; exit 1; } || true
             adb exec-out screencap -p > emulator_screen.png
             cp full_bootcat.txt full_logcat.txt
-            echo "Emulator gate PASSED: process alive, no fatal, no GL errors"
+            echo "Emulator gate PASSED: parity + native both alive, no fatal, no page/GL errors"
 
       - name: Upload emulator evidence
         if: always()
@@ -124,6 +150,9 @@ jobs:
         with:
           name: emulator-${{ github.sha }}
           path: |
+            parity_screen.png
+            parity_bootcat.txt
+            pid_parity.txt
             emulator_screen.png
             full_bootcat.txt
             full_logcat.txt
@@ -144,7 +173,7 @@ jobs:
             "$APK" \
             --target "$GITHUB_SHA" \
             --title "Android build ${short_sha}" \
-            --notes "Automated native Android APK for commit ${GITHUB_SHA}. Build, unit tests, AND emulator boot gate passed (process alive, no fatal exceptions, GL renderer drawing, screenshot captured)." \
+            --notes "Fable Cities for Android, commit ${GITHUB_SHA}. Contains BOTH tracks: the web-parity launcher (the full production web game bundled and served offline in-app) and the native GLES renderer build. CI gates passed: build + unit tests, emulator boot for both activities (process alive, no fatal exceptions, no page console errors, no GL errors), screenshots in the emulator-${GITHUB_SHA} artifact." \
             --prerelease
 
   web-check:

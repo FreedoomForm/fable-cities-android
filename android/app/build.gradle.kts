@@ -29,4 +29,8 @@ android {
     kotlinOptions { jvmTarget = "17" }
 }
 
+dependencies {
+    implementation("androidx.webkit:webkit:1.10.0")
+}
+
 kotlin { jvmToolchain(17) }

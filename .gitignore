@@ -32,3 +32,6 @@ android/local.properties
 *.iml
 .idea/
 ci-artifacts/
+
+# Generated web bundle copied into APK assets by CI (see .github/workflows/android-release.yml)
+android/app/src/main/assets/web/
