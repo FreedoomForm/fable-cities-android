@@ -125,7 +125,10 @@ jobs:
           name: emulator-${{ github.sha }}
           path: |
             emulator_screen.png
+            full_bootcat.txt
             full_logcat.txt
+            pid.txt
+            frames.txt
           if-no-files-found: warn
           retention-days: 30
 
