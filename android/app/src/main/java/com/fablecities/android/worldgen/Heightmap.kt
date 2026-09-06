@@ -20,7 +20,7 @@ import kotlin.math.sqrt
  * Not yet ported (no native consumer yet, tracked in docs/ANDROID_PORT.md):
  * `raycast`, `computeShoreDistance`, and the outer horizon-ring coarse grids.
  */
-class Heightmap(private val size: Int = 2048, private val spacing: Int = 2, seed: Int = 1337) {
+class Heightmap(val size: Int = 2048, val spacing: Int = 2, seed: Int = 1337) {
 
     val half: Double = size / 2.0
     val N: Int = round(size.toDouble() / spacing).toInt() + 1

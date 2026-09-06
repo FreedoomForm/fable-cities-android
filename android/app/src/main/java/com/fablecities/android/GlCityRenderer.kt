@@ -9,6 +9,7 @@ import com.fablecities.android.worldgen.Environment
 import com.fablecities.android.worldgen.Heightmap
 import com.fablecities.android.worldgen.Rng
 import com.fablecities.android.worldgen.SimBuilding
+import com.fablecities.android.worldgen.WaterMath
 import com.fablecities.android.worldgen.SimEconomy
 import com.fablecities.android.worldgen.SimMilestones
 import com.fablecities.android.worldgen.SimServices
@@ -91,6 +92,11 @@ class GlCityRenderer : GLSurfaceView.Renderer {
     private var cityGroundVbo = 0
     private var cityGroundCount = 0
     private var waterVbo = 0
+    private var waterCount = 0
+    private var texHeight = 0
+    private var texShore = 0
+    private var texNoise = 0
+    private var texWNormal = 0
     private var cubeVbo = 0
     private var carVbo = 0
     private var carCount = 0
@@ -274,6 +280,15 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         var fog = FloatArray(3)      // aerial-perspective colour (display-referred)
         var glow = FloatArray(3)     // sky-dome sun glow tint (unit colour x sunUp)
         var ambKey = 1f              // display ambient key for the water shader
+        // --- water uniforms (the site's Water.js update() bridge) ---
+        var moonDir = FloatArray(3)  // toward the moon (real ephemeris)
+        var waterSun = FloatArray(3) // uSunColor * uSunIntensity, display-referred (sun glitter)
+        var waterMoon = FloatArray(3)// uMoonColor * uMoonIntensity, display-referred (moon glitter)
+        var skyColor = FloatArray(3) // env.skyColor (hemiCol x hemiIntensity/0.8, floored), display-referred
+        var hemiRaw = 1.0            // env.ambientIntensity (unitless, NOT display-scaled) — uAmbient
+        var nightFactor = 0f         // env.nightFactor — foam damping, night sheen, sky floor
+        var waterFloor = FloatArray(3) // uSkyFloor, display-referred (computed like the web update())
+        var waterSheen = FloatArray(3) // uNightSheen, display-referred (luminance-normalised night sheen)
     }
 
     /** Display key scales: the web multiplies radiance by exposure and tone-maps (AgX); the native
@@ -320,6 +335,39 @@ class GlCityRenderer : GLSurfaceView.Renderer {
             sun.glow[1] = (st.sunColor[1] / gMax * sunUp).toFloat()
             sun.glow[2] = (st.sunColor[2] / gMax * sunUp).toFloat()
             sun.ambKey = (st.hemiIntensity * st.exposure * K_LIGHT).toFloat()
+
+            // --- water bridge (Water.js update() semantics, display-referred) ---
+            sun.moonDir[0] = st.moonDir[0].toFloat(); sun.moonDir[1] = st.moonDir[1].toFloat(); sun.moonDir[2] = st.moonDir[2].toFloat()
+            val wK = st.exposure * K_LIGHT
+            sun.waterSun[0] = (st.sunColor[0] * st.sunIntensity * wK).toFloat()
+            sun.waterSun[1] = (st.sunColor[1] * st.sunIntensity * wK).toFloat()
+            sun.waterSun[2] = (st.sunColor[2] * st.sunIntensity * wK).toFloat()
+            sun.waterMoon[0] = (st.moonColor[0] * st.moonIntensity * wK).toFloat()
+            sun.waterMoon[1] = (st.moonColor[1] * st.moonIntensity * wK).toFloat()
+            sun.waterMoon[2] = (st.moonColor[2] * st.moonIntensity * wK).toFloat()
+            // env.skyColor = hemiCol * max(hemiIntensity, 0.02) / 0.8, floored, then display key
+            val amb = max(st.hemiIntensity, 0.02)
+            var sr = st.hemiCol[0] * amb / 0.8
+            var sg = st.hemiCol[1] * amb / 0.8
+            var sb = st.hemiCol[2] * amb / 0.8
+            sr = max(sr, 0.004); sg = max(sg, 0.006); sb = max(sb, 0.012)
+            sun.skyColor[0] = (sr * wK).toFloat(); sun.skyColor[1] = (sg * wK).toFloat(); sun.skyColor[2] = (sb * wK).toFloat()
+            sun.hemiRaw = st.hemiIntensity
+            val night = st.nightFactor
+            sun.nightFactor = night.toFloat()
+            // uSkyFloor: sky*amb*0.055 + night offsets, pulled 0.45/0.55 to its own luminance
+            var fr = sr * st.hemiIntensity * 0.055 + 0.0055 * night
+            var fg = sg * st.hemiIntensity * 0.055 + 0.0068 * night
+            var fb = sb * st.hemiIntensity * 0.055 + 0.0105 * night
+            val fy = 0.2126 * fr + 0.7152 * fg + 0.0722 * fb
+            fr = fr * 0.45 + fy * 0.55; fg = fg * 0.45 + fy * 0.55; fb = fb * 0.45 + fy * 0.55
+            sun.waterFloor[0] = (fr * wK).toFloat(); sun.waterFloor[1] = (fg * wK).toFloat(); sun.waterFloor[2] = (fb * wK).toFloat()
+            // uNightSheen: sky * night^2 * 0.024 / lum(sky) (luminance-normalised, scale-invariant)
+            val skyLum = max(1e-4, 0.2126 * sr + 0.7152 * sg + 0.0722 * sb)
+            val sheen = night * night * 0.024 / skyLum
+            sun.waterSheen[0] = (sr * sheen * wK).toFloat()
+            sun.waterSheen[1] = (sg * sheen * wK).toFloat()
+            sun.waterSheen[2] = (sb * sheen * wK).toFloat()
         }
         return sun
     }
@@ -765,17 +813,78 @@ class GlCityRenderer : GLSurfaceView.Renderer {
 
     // ---------------------------------------------------------------- static meshes
 
+    /** Upload a 2D texture (byte or short payload) with repeat wrap + mipmaps. */
+    private fun uploadTex2D(
+        w: Int, h: Int, internalFormat: Int, format: Int, type: Int,
+        data: java.nio.Buffer?, repeat: Boolean, mipmaps: Boolean
+    ): Int {
+        val handles = IntArray(1)
+        GLES30.glGenTextures(1, handles, 0)
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, handles[0])
+        GLES30.glPixelStorei(GLES30.GL_UNPACK_ALIGNMENT, 1)
+        GLES30.glTexImage2D(GLES30.GL_TEXTURE_2D, 0, internalFormat, w, h, 0, format, type, data)
+        val wrap = if (repeat) GLES30.GL_REPEAT else GLES30.GL_CLAMP_TO_EDGE
+        GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_WRAP_S, wrap)
+        GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_WRAP_T, wrap)
+        GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_MIN_FILTER,
+            if (mipmaps) GLES30.GL_LINEAR_MIPMAP_LINEAR else GLES30.GL_LINEAR)
+        GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_MAG_FILTER, GLES30.GL_LINEAR)
+        if (mipmaps) GLES30.glGenerateMipmap(GLES30.GL_TEXTURE_2D)
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, 0)
+        return handles[0]
+    }
+
+    private fun uploadShortTex(w: Int, h: Int, internalFormat: Int, format: Int, type: Int, data: ShortArray): Int {
+        val buf = ByteBuffer.allocateDirect(data.size * 2).order(ByteOrder.nativeOrder()).asShortBuffer()
+        buf.put(data).position(0)
+        return uploadTex2D(w, h, internalFormat, format, type, buf, false, false)
+    }
+
+    /**
+     * The site's real water surface (Water.js port):
+     *  - geometry: every 128 m chunk whose lowest heightmap sample dips below waterLevel + 0.8,
+     *    plus the 4 horizon-ring quads out to half*3 — not one giant plane
+     *  - per-pixel depth from an R16F half-float height texture (seamless across the map edge)
+     *  - the shore SDF (128 + 4·sd) for the foam lace and the dithered waterline dissolve
+     *  - the site's deterministic tileable RGBA noise + 18-wave ripple normal map
+     */
     private fun buildWater() {
-        val s = mapHalf * 1.3f
-        val data = floatArrayOf(
-            -s, waterY, -s, 1f, 1f, 1f, 1f, 0f,
-            s, waterY, -s, 1f, 1f, 1f, 1f, 0f,
-            s, waterY, s, 1f, 1f, 1f, 1f, 0f,
-            -s, waterY, -s, 1f, 1f, 1f, 1f, 0f,
-            s, waterY, s, 1f, 1f, 1f, 1f, 0f,
-            -s, waterY, s, 1f, 1f, 1f, 1f, 0f
-        )
+        val quads = WaterMath.buildWaterQuads(worldHeight, 128, mapHalf * 3.0)
+        val nQuads = quads.size / 4
+        val data = FloatArray(nQuads * 6 * 8)
+        var o = 0
+        for (q in 0 until nQuads) {
+            val x0 = quads[q * 4 + 0].toFloat(); val z0 = quads[q * 4 + 1].toFloat()
+            val x1 = quads[q * 4 + 2].toFloat(); val z1 = quads[q * 4 + 3].toFloat()
+            // the web's index order [v, v+2, v+1,  v, v+3, v+2] over (x0,z0)(x1,z0)(x1,z1)(x0,z1)
+            val vs = floatArrayOf(x0, waterY, z0, x1, waterY, z1, x1, waterY, z0,  x0, waterY, z0, x0, waterY, z1, x1, waterY, z1)
+            for (v in 0 until 6) {
+                data[o++] = vs[v * 3 + 0]; data[o++] = vs[v * 3 + 1]; data[o++] = vs[v * 3 + 2]
+                data[o++] = 1f; data[o++] = 1f; data[o++] = 1f // unused colour slot
+                data[o++] = 0f; data[o++] = 0f                 // unused extra slot
+            }
+        }
         waterVbo = upload(data)
+        waterCount = nQuads * 6
+
+        // R16F height texture (per-pixel water depth, like the web's heightFine)
+        val n = worldHeight.N
+        val halfData = ShortArray(n * n)
+        for (i in 0 until n * n) halfData[i] = WaterMath.toHalfFloat(worldHeight.data[i].toDouble()).toShort()
+        texHeight = uploadShortTex(n, n, GLES30.GL_R16F, GLES30.GL_RED, GLES30.GL_HALF_FLOAT, halfData)
+
+        // R8 shore SDF payload (128 + 4·sd, ±32 m at 0.25 m) — the web's shoreTex
+        val shore = WaterMath.computeShoreDistance(worldHeight)
+        texShore = uploadTex2D(n, n, GLES30.GL_R8, GLES30.GL_RED, GLES30.GL_UNSIGNED_BYTE,
+            ByteBuffer.allocateDirect(shore.size).put(shore).position(0), false, false)
+
+        // the site's deterministic procedural textures (bit-exact, pinned by WaterParityTest)
+        val noiseData = WaterMath.makeNoiseTexture(256, 1337)
+        texNoise = uploadTex2D(256, 256, GLES30.GL_RGBA8, GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE,
+            ByteBuffer.allocateDirect(noiseData.size).put(noiseData).position(0), true, true)
+        val wnData = WaterMath.makeWaterNormalTexture(256, 3)
+        texWNormal = uploadTex2D(256, 256, GLES30.GL_RGBA8, GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE,
+            ByteBuffer.allocateDirect(wnData.size).put(wnData).position(0), true, true)
     }
 
     private fun pushBox(data: FloatArray, o0: Int, cx: Float, cy: Float, cz: Float, sx: Float, sy: Float, sz: Float, part: Float): Int {
@@ -1389,21 +1498,52 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         if (progWater == 0 || waterVbo == 0) return
         GLES30.glEnable(GLES30.GL_BLEND)
         GLES30.glBlendFunc(GLES30.GL_SRC_ALPHA, GLES30.GL_ONE_MINUS_SRC_ALPHA)
+        GLES30.glDepthMask(false) // the web's depthWrite: false — water never occludes itself
         GLES30.glUseProgram(progWater)
         GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, waterVbo)
         bindAttribs(32)
+        val camX = camTarget[0] + camDist * cos(camPitch) * sin(camYaw)
+        val camY = camTarget[1] + camDist * sin(camPitch)
+        val camZ = camTarget[2] + camDist * cos(camPitch) * cos(camYaw)
         GLES30.glUniformMatrix4fv(u(progWater, "uVP"), 1, false, vpM, 0)
-        GLES30.glUniform3f(u(progWater, "uCamPos"),
-            camTarget[0] + camDist * cos(camPitch) * sin(camYaw),
-            camTarget[1] + camDist * sin(camPitch),
-            camTarget[2] + camDist * cos(camPitch) * cos(camYaw))
+        GLES30.glUniform3f(u(progWater, "uCamPos"), camX, camY, camZ)
+        GLES30.glUniform1f(u(progWater, "uTime"), frameNanos / 1_000_000_000f)
+        GLES30.glUniform1f(u(progWater, "uHalf"), mapHalf)
+        GLES30.glUniform1f(u(progWater, "uSpacing"), worldHeight.spacing.toFloat())
+        GLES30.glUniform1f(u(progWater, "uHeightN"), worldHeight.N.toFloat())
+        GLES30.glUniform1f(u(progWater, "uShoreN"), worldHeight.N.toFloat())
+        GLES30.glUniform1f(u(progWater, "uWaterLevel"), waterY)
         GLES30.glUniform3f(u(progWater, "uZenith"), sun.zenith[0], sun.zenith[1], sun.zenith[2])
         GLES30.glUniform3f(u(progWater, "uHorizon"), sun.horizon[0], sun.horizon[1], sun.horizon[2])
-        GLES30.glUniform1f(u(progWater, "uTime"), frameNanos / 1_000_000_000f)
+        GLES30.glUniform3f(u(progWater, "uGlow"), sun.glow[0], sun.glow[1], sun.glow[2])
+        GLES30.glUniform3f(u(progWater, "uFogColor"), sun.fog[0], sun.fog[1], sun.fog[2])
         GLES30.glUniform3f(u(progWater, "uSunDir"), sun.skySun[0], sun.skySun[1], sun.skySun[2])
-        GLES30.glUniform1f(u(progWater, "uAmbKey"), sun.ambKey)
-        GLES30.glDrawArrays(GLES30.GL_TRIANGLES, 0, 6)
+        GLES30.glUniform3f(u(progWater, "uSunColor"), sun.waterSun[0], sun.waterSun[1], sun.waterSun[2])
+        GLES30.glUniform3f(u(progWater, "uMoonDir"), sun.moonDir[0], sun.moonDir[1], sun.moonDir[2])
+        GLES30.glUniform3f(u(progWater, "uMoonColor"), sun.waterMoon[0], sun.waterMoon[1], sun.waterMoon[2])
+        GLES30.glUniform3f(u(progWater, "uSkyColor"), sun.skyColor[0], sun.skyColor[1], sun.skyColor[2])
+        GLES30.glUniform1f(u(progWater, "uAmbient"), sun.hemiRaw.toFloat())
+        GLES30.glUniform1f(u(progWater, "uNightFactor"), sun.nightFactor)
+        GLES30.glUniform3f(u(progWater, "uSkyFloor"), sun.waterFloor[0], sun.waterFloor[1], sun.waterFloor[2])
+        GLES30.glUniform3f(u(progWater, "uNightSheen"), sun.waterSheen[0], sun.waterSheen[1], sun.waterSheen[2])
+        GLES30.glUniform2f(u(progWater, "uWind"), 0.7f, 0.3f) // the web default (clear weather)
+        GLES30.glUniform1f(u(progWater, "uRain"), 0f)         // clear-weather slice: no wetness yet
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, texHeight)
+        GLES30.glUniform1i(u(progWater, "uHeightTex"), 0)
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE1)
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, texShore)
+        GLES30.glUniform1i(u(progWater, "uShore"), 1)
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE2)
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, texWNormal)
+        GLES30.glUniform1i(u(progWater, "uNormalTex"), 2)
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE3)
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, texNoise)
+        GLES30.glUniform1i(u(progWater, "uNoise"), 3)
+        GLES30.glDrawArrays(GLES30.GL_TRIANGLES, 0, waterCount)
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
         GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, 0)
+        GLES30.glDepthMask(true)
         GLES30.glDisable(GLES30.GL_BLEND)
     }
 
@@ -1574,32 +1714,175 @@ class GlCityRenderer : GLSurfaceView.Renderer {
 
     private val VS_WATER = VS_LIT
 
+    // The site's water (Water.js port, display-referred): a PBR dielectric at roughness 0.04 /
+    // ior 1.333 — the body is a dark teal→navy absorption ramp driven by per-pixel depth from the
+    // R16F height texture, and everything bright on the surface is REFLECTED SKY, not paint.
+    // Five ripple octaves from the site's own 18-wave normal map (150 m swell → 2.4 m chop; the
+    // 23/61 m layers never fade), a sharp-normal GGX glitter lobe for the sun AND the real moon,
+    // a narrow noise-broken foam lace driven by the shore SDF, and a dithered waterline dissolve.
     private val FS_WATER = """
         #version 300 es
         precision highp float;
         in vec3 vColor;
         in vec3 vWorld;
         uniform vec3 uCamPos;
+        uniform float uTime;
+        uniform float uHalf;
+        uniform float uSpacing;
+        uniform float uHeightN;
+        uniform float uShoreN;
+        uniform float uWaterLevel;
         uniform vec3 uZenith;
         uniform vec3 uHorizon;
+        uniform vec3 uGlow;
+        uniform vec3 uFogColor;
         uniform vec3 uSunDir;
-        uniform vec3 uSunColor;   // CI emulator gate caught this missing declaration - the water
-        uniform float uTime;      // shader failed to compile (undeclared identifier) and the water plane never rendered
-        uniform float uAmbKey;    // display ambient key — keeps night water dark (the web's lit-medium rule)
+        uniform vec3 uSunColor;    // sun colour x intensity, display-referred
+        uniform vec3 uMoonDir;
+        uniform vec3 uMoonColor;   // moon colour x intensity, display-referred
+        uniform vec3 uSkyColor;    // env.skyColor, display-referred (sky floor / night sheen)
+        uniform float uAmbient;    // env.ambientIntensity (raw, unitless)
+        uniform float uNightFactor;
+        uniform vec3 uSkyFloor;    // display-referred (computed on the CPU like the web update())
+        uniform vec3 uNightSheen;
+        uniform vec2 uWind;
+        uniform float uRain;
+        uniform sampler2D uHeightTex;
+        uniform sampler2D uShore;
+        uniform sampler2D uNormalTex;
+        uniform sampler2D uNoise;
         out vec4 fragColor;
+        const float PI = 3.141592653589793;
+        const vec3 LUM = vec3(0.2126, 0.7152, 0.0722);
+        const mat2 R37 = mat2(0.7986, -0.6018, 0.6018, 0.7986);
+
+        float waterTerrainHeight(vec2 xz) {
+            // uv = ((xz + half) / spacing + 0.5) / N — texel centres on grid samples (the web's map)
+            vec2 uv = ((xz + uHalf) / uSpacing + 0.5) / uHeightN;
+            return texture(uHeightTex, uv).r;
+        }
+        vec3 waterNrm(vec2 uv, float bias) { return texture(uNormalTex, uv, bias).xyz * 2.0 - 1.0; }
+
+        // analytic stand-in for the PMREM sky probe: the site's own sky gradient along the
+        // reflected ray, with the sky-dome sun glow (no hard disc — the glitter lobe owns that)
+        vec3 skyProbe(vec3 dir) {
+            float t = clamp(dir.y * 1.4 + 0.12, 0.0, 1.0);
+            vec3 col = mix(uHorizon, uZenith, pow(t, 0.75));
+            float s = max(dot(dir, uSunDir), 0.0);
+            col += uGlow * (pow(s, 24.0) * 0.28 + pow(s, 5.0) * 0.10);
+            return col;
+        }
+
         void main() {
-            vec3 viewDir = normalize(uCamPos - vWorld);
-            float fres = pow(1.0 - max(viewDir.y, 0.0), 3.0);
-            float w1 = sin(vWorld.x * 0.12 + uTime * 1.3) * 0.5 + 0.5;
-            float w2 = sin(vWorld.z * 0.09 - uTime * 1.1) * 0.5 + 0.5;
-            vec3 sky = mix(uHorizon, uZenith, 0.6);
-            vec3 deep = vec3(0.05, 0.16, 0.22) * (0.6 + 0.4 * w1 * w2) * (0.12 + 0.88 * min(uAmbKey, 1.2));
-            vec3 col = mix(deep, sky, 0.35 + 0.45 * fres);
-            float sunSpot = pow(max(dot(reflect(-viewDir, vec3(0.0, 1.0, 0.0)), uSunDir), 0.0), 90.0);
-            col += uSunColor * sunSpot * 0.9;
-            float d = length(uCamPos - vWorld);
-            float fog = 1.0 - exp(-d * 0.00056);
-            fragColor = vec4(mix(col, uHorizon, fog), 0.86);
+            vec3 Vw = normalize(uCamPos - vWorld);
+            float dist = length(uCamPos - vWorld);
+            float h = waterTerrainHeight(vWorld.xz);
+            float depth = max(uWaterLevel - h, 0.0);
+            // metres from the waterline: in-map from the shore SDF texture, outside from the depth
+            float toShore;
+            if (max(abs(vWorld.x), abs(vWorld.z)) <= uHalf) {
+                vec2 uvS = ((vWorld.xz + uHalf) / uSpacing + 0.5) / uShoreN;
+                toShore = max(-(texture(uShore, uvS).r * 255.0 - 128.0) * 0.25, 0.0);
+            } else toShore = depth * 6.0;
+
+            // --- animated ripple normals: five octaves; the smallest fade with distance so the far
+            //     water calms, but the 23 m / 61 m layers stay on out to the horizon
+            vec2 wdir = normalize(uWind + vec2(0.0001));
+            vec2 perp = vec2(-wdir.y, wdir.x);
+            float t = uTime;
+            float bias = 1.35 * smoothstep(150.0, 1100.0, dist);
+            vec3 nS = waterNrm((R37 * vWorld.xz) / 150.0 + wdir * t * 0.005, bias);
+            vec3 n0 = waterNrm((R37 * vWorld.xz) / 61.0 + wdir * t * 0.010, bias);
+            vec3 n1 = waterNrm(vWorld.xz / 23.0 + wdir * t * 0.020 + perp * t * 0.004, bias);
+            vec3 n2 = waterNrm((R37 * vWorld.xz) / 7.5 - wdir * t * 0.035 + perp * t * 0.011 + 0.37, bias);
+            vec3 n3 = waterNrm(vWorld.xz / 2.4 + wdir * t * 0.055 + 0.71, bias);
+            float detailFade = 1.0 - smoothstep(50.0, 520.0, dist);
+            float midFade = 1.0 - smoothstep(180.0, 1800.0, dist);
+            float farFade = 1.0 - smoothstep(400.0, 3000.0, dist);
+            float calm = 0.45 + 0.55 * smoothstep(0.0, 2.5, toShore);   // the shallows are calmer
+            vec2 nxy = (nS.xy * 0.15
+                      + n0.xy * (0.10 + 0.13 * farFade)
+                      + n1.xy * (0.07 + 0.16 * midFade)
+                      + n2.xy * (0.03 + 0.13 * detailFade)
+                      + n3.xy * 0.09 * detailFade) * (0.60 + 0.40 * calm) * (0.20 + 0.26 * uRain);
+            vec3 gWN = normalize(vec3(nxy.x, 1.0, nxy.y));
+            // a second, sharper normal for the sun glitter (the sun path as thousands of sparks)
+            vec2 gxy = nxy + (n3.xy * 0.30 + n2.xy * 0.22) * detailFade + n1.xy * 0.09 * midFade;
+            vec3 Ng = normalize(vec3(gxy.x, 1.0, gxy.y));
+
+            // --- body: absorption. Shallow = dark teal, deep = navy (multipliers on 0x13282f)
+            float cosT = max(dot(gWN, Vw), 0.0);
+            float absorb = 1.0 - exp(-depth * 0.62);
+            vec3 shallow = vec3(1.90, 1.45, 1.05);
+            vec3 deep = vec3(0.42, 0.62, 0.98);
+            vec3 diffuse = vec3(0.0745, 0.1569, 0.1843) * mix(shallow, deep, absorb);
+            // river bed shows through the first metre (sand / mud)
+            diffuse = mix(diffuse, vec3(0.058, 0.052, 0.040), exp(-depth * 2.4) * 0.45);
+            diffuse = mix(diffuse, vec3(dot(diffuse, LUM)), 0.30);
+
+            // --- shoreline: a narrow (<= 1.6 m) noise-broken foam lace + rare whitecaps
+            vec2 fuv = vWorld.xz / 9.0;
+            float fN = texture(uNoise, fuv + wdir * t * 0.04).a * 0.55 + texture(uNoise, fuv * 2.7 - wdir * t * 0.07 + 0.3).b * 0.45;
+            float band = 1.0 - smoothstep(0.12, 1.30, toShore);
+            float swell = 0.5 + 0.5 * sin(t * 1.1 - toShore * 1.6 + fN * 4.0 + vWorld.x * 0.05);
+            float foam = band * smoothstep(0.66, 0.88, fN * 0.78 + 0.26 * swell * band) * 0.34;
+            foam = max(foam, (1.0 - smoothstep(0.0, 0.42, toShore)) * smoothstep(0.44, 0.70, fN + 0.16 * sin(t * 1.6 + vWorld.x * 0.3 + vWorld.z * 0.23)) * 0.36);
+            foam *= 1.0 - smoothstep(260.0, 1000.0, dist);
+            foam *= 1.0 - 0.92 * uNightFactor;
+            float caps = smoothstep(0.955, 0.995, texture(uNoise, vWorld.xz / 11.0 + wdir * t * 0.06 + 0.5).b)
+                       * smoothstep(0.80, 0.97, texture(uNoise, vWorld.xz / 70.0 - wdir * t * 0.02 + 0.2).r)
+                       * midFade * calm * smoothstep(1.2, 4.0, depth) * 0.10;
+            foam = max(foam, caps * (1.0 - 0.92 * uNightFactor));
+            diffuse = mix(diffuse, vec3(0.34, 0.36, 0.375), foam);
+
+            // --- direct: hemi fill on the body, plus the sky-bounce floor (open water is never
+            //     a black hole; the web maxes the diffuse irradiance against uSkyFloor * 1.35)
+            vec3 col = diffuse * (uAmbient * vec3(1.0) + uSkyFloor);
+            col = max(col, uSkyFloor * 1.35);
+            float ndv = max(cosT, 1e-3);
+            float a = 0.040 + 0.055 * (1.0 - detailFade) + 0.05 * smoothstep(500.0, 2600.0, dist);
+            float a2 = a * a;
+            float moonUp = smoothstep(0.0, 0.15, uMoonDir.y);
+            {
+                vec3 Hs = normalize(uSunDir + Vw);
+                float ndh = max(dot(Ng, Hs), 0.0), ndlS = max(dot(Ng, uSunDir), 0.0);
+                float dd = ndh * ndh * (a2 - 1.0) + 1.0;
+                float D = a2 / (PI * dd * dd);
+                float Fh = 0.02 + 0.98 * pow(1.0 - max(dot(Hs, Vw), 0.0), 5.0);
+                float Vis = 0.5 / max(ndlS * sqrt(ndv * ndv * (1.0 - a2) + a2) + ndv * sqrt(ndlS * ndlS * (1.0 - a2) + a2), 1e-3);
+                float sunUp = smoothstep(-0.05, 0.12, uSunDir.y);
+                col += uSunColor * sunUp * min(D * Fh * Vis * ndlS, 0.9 + 1.7 * detailFade);
+            }
+            {
+                vec3 Hm = normalize(uMoonDir + Vw);
+                float ndh = max(dot(Ng, Hm), 0.0), ndlM = max(dot(Ng, uMoonDir), 0.0);
+                float dd = ndh * ndh * (a2 - 1.0) + 1.0;
+                float D = a2 / (PI * dd * dd);
+                float Fh = 0.02 + 0.98 * pow(1.0 - max(dot(Hm, Vw), 0.0), 5.0);
+                float Vis = 0.5 / max(ndlM * sqrt(ndv * ndv * (1.0 - a2) + a2) + ndv * sqrt(ndlM * ndlM * (1.0 - a2) + a2), 1e-3);
+                col += uMoonColor * moonUp * min(D * Fh * Vis * ndlM, 5.0) * 1.4;
+            }
+
+            // --- sky reflection (the water's main light): fresnel-weighted probe, desaturated to
+            //     the site's slate chroma, hazed toward the horizon colour with distance
+            float fres = 0.020 + 0.55 * pow(1.0 - cosT, 5.0);
+            vec3 refl = skyProbe(reflect(-Vw, gWN));
+            refl = mix(refl, vec3(dot(refl, LUM)), 0.46);
+            refl = mix(refl, uHorizon, 0.5 * smoothstep(160.0, 1700.0, dist));
+            col += refl * fres * (1.0 + foam * 0.3) * 1.05;
+            col += uNightSheen * (0.16 + 0.84 * pow(1.0 - cosT, 3.0));
+
+            // --- transparency: dithered waterline dissolve (no hard tan seam)
+            float alpha = 1.0 - exp(-depth * 2.2);
+            alpha = max(alpha, fres * 0.8 * smoothstep(0.0, 0.4, depth));
+            alpha = max(alpha, foam * 0.85);
+            float edge = smoothstep(0.0, 1.40, toShore) * smoothstep(0.0, 0.05, depth);
+            float ign = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
+            float grain = texture(uNoise, vWorld.xz * 0.9).g;
+            edge = clamp(edge * 1.22 - 0.11 + (ign * 0.6 + grain * 0.4 - 0.5) * 0.30 * edge * (1.0 - edge) * 4.0, 0.0, 1.0);
+            float fog = 1.0 - exp(-dist * 0.00056);
+            col = mix(col, uFogColor, fog);
+            fragColor = vec4(col, clamp(alpha, 0.0, 1.0) * edge);
         }
     """.trimIndent()
 
