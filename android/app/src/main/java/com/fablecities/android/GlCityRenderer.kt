@@ -111,6 +111,12 @@ class GlCityRenderer : GLSurfaceView.Renderer {
     private var carCount = 0
     private var pedVbo = 0
     private var pedCount = 0
+    private var vanVbo = 0
+    private var vanCount = 0
+    private var truckVbo = 0
+    private var truckCount = 0
+    private var busVbo = 0
+    private var busCount = 0
     private var skyVbo = 0
     private var editRoadVbo = 0
     private var editRoadCount = 0
@@ -200,6 +206,9 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         buildCube()
         buildCar()
         buildPed()
+        buildVan()
+        buildTruck()
+        buildBus()
         buildSky()
         rebuildEditMeshes()
         generateVehicles()
@@ -1101,6 +1110,45 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         pedVbo = upload(data.copyOf(o))
     }
 
+    private fun buildVan() {
+        // van (VehicleModels.js: len 5.35, wid 2.02, roof 2.30, cabEnd 0.62): one tall volume,
+        // short dropped nose, windscreen band, bumpers
+        val data = FloatArray(36 * 8 * 4)
+        var o = 0
+        o = pushBox(data, o, 0f, 1.32f, -0.15f, 2.02f, 2.30f, 4.7f, 0f) // cargo body
+        o = pushBox(data, o, 0f, 1.02f, 2.4f, 1.98f, 1.72f, 1.1f, 0f) // nose
+        o = pushBox(data, o, 0f, 1.86f, 2.62f, 1.86f, 0.72f, 0.5f, 1f) // windscreen
+        o = pushBox(data, o, 0f, 0.42f, 2.62f, 1.96f, 0.36f, 0.28f, 2f) // front bumper
+        vanCount = o / 8
+        vanVbo = upload(data.copyOf(o))
+    }
+
+    private fun buildTruck() {
+        // truck (len 8.6, wid 2.48, cabZ [1.05,4.30] roof 3.05, boxZ [-4.30,0.72] top 3.62)
+        val data = FloatArray(36 * 8 * 5)
+        var o = 0
+        o = pushBox(data, o, 0f, 0.86f, 0.2f, 2.44f, 0.9f, 8.4f, 2f) // chassis
+        o = pushBox(data, o, 0f, 2.0f, 2.72f, 2.4f, 2.85f, 3.1f, 0f) // cab
+        o = pushBox(data, o, 0f, 2.72f, 3.85f, 2.2f, 0.75f, 0.75f, 1f) // cab glass
+        o = pushBox(data, o, 0f, 2.38f, -1.8f, 2.46f, 2.48f, 4.9f, 0f) // cargo box
+        o = pushBox(data, o, 0f, 0.5f, 4.25f, 2.2f, 0.4f, 0.3f, 2f) // front bumper
+        truckCount = o / 8
+        truckVbo = upload(data.copyOf(o))
+    }
+
+    private fun buildBus() {
+        // bus (len 11.8, wid 2.55, roof 3.12, floor 0.60, windows 1.44..2.42)
+        val data = FloatArray(36 * 8 * 5)
+        var o = 0
+        o = pushBox(data, o, 0f, 1.08f, 0f, 2.55f, 1.56f, 11.6f, 0f) // lower body (floor 0.30..1.86)
+        o = pushBox(data, o, 0f, 2.79f, 0f, 2.53f, 0.66f, 11.6f, 0f) // roof
+        o = pushBox(data, o, 0f, 1.93f, -0.4f, 2.58f, 0.98f, 9.6f, 1f) // window band
+        o = pushBox(data, o, 0f, 1.93f, 5.45f, 2.54f, 0.98f, 0.5f, 1f) // windscreen
+        o = pushBox(data, o, 0f, 0.5f, 5.75f, 2.3f, 0.42f, 0.3f, 2f) // front bumper
+        busCount = o / 8
+        busVbo = upload(data.copyOf(o))
+    }
+
     private fun buildSky() {
         val data = floatArrayOf(-1f, -1f, 0f, 1f, -1f, 0f, 1f, 1f, 0f)
         skyVbo = upload(data)
@@ -1647,22 +1695,41 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         val sim = trafficSim
         if (sim != null) {
             val hueF = FloatArray(3)
+            var lastVbo = carVbo
             for (v in sim.vehicles) {
-                // dims by type (VehicleModels.js VEHICLE_SPECS); box approximation of the body
+                // per-kind mesh (VehicleModels.js profiles): cars get the 3-box shell scaled by
+                // the spec, van/truck/bus have their own absolute-dims compositions
                 val spec = v.spec
-                val h = when (spec.kind) {
-                    "truck" -> 3.6f; "bus" -> 3.1f; "box" -> 2.3f
-                    "car" -> if (spec.id == "suv") 1.8f else 1.45f
-                    else -> 1.5f
+                val vbo: Int
+                val count: Int
+                var sx = 1f
+                var sy = 1f
+                var sz = 1f
+                when (spec.kind) {
+                    "truck" -> { vbo = truckVbo; count = truckCount }
+                    "bus" -> { vbo = busVbo; count = busCount }
+                    "box" -> { vbo = vanVbo; count = vanCount }
+                    else -> {
+                        vbo = carVbo; count = carCount
+                        sx = (spec.len / 4.62).toFloat()
+                        sy = (if (spec.id == "suv") 1.22f else if (spec.id == "hatchback") 1.03f else 1f)
+                        sz = (spec.wid / 1.9).toFloat()
+                    }
                 }
+                if (vbo == 0) continue
                 // deterministic paint from the sim's per-vehicle paint int (web palette spirit)
                 vehiclePaint(v.paint, hueF)
                 GLES30.glUniform3f(u(progBuilding, "uPos"), v.x.toFloat(), terrainHeight(v.x.toFloat(), v.z.toFloat()) + 0.05f, v.z.toFloat())
-                GLES30.glUniform3f(u(progBuilding, "uScale"), spec.len.toFloat(), h, spec.wid.toFloat())
+                GLES30.glUniform3f(u(progBuilding, "uScale"), sx * v.sl.toFloat(), sy, sz * v.sw.toFloat())
                 GLES30.glUniform1f(u(progBuilding, "uYaw"), v.yaw.toFloat())
                 GLES30.glUniform3f(u(progBuilding, "uColor"), hueF[0], hueF[1], hueF[2])
                 GLES30.glUniform1f(u(progBuilding, "uSeed"), v.seed.toFloat())
-                GLES30.glDrawArrays(GLES30.GL_TRIANGLES, 0, carCount)
+                if (lastVbo != vbo) {
+                    GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, vbo)
+                    bindAttribs(32)
+                    lastVbo = vbo
+                }
+                GLES30.glDrawArrays(GLES30.GL_TRIANGLES, 0, count)
             }
             // pedestrians: the sim's sidewalk agents (spawnPeds/_stepPed port) as two-box walkers
             if (pedVbo != 0) {
