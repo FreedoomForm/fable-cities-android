@@ -1249,7 +1249,8 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         uniform vec3 uZenith;
         uniform vec3 uHorizon;
         uniform vec3 uSunDir;
-        uniform float uTime;
+        uniform vec3 uSunColor;   // CI emulator gate caught this missing declaration - the water
+        uniform float uTime;      // shader failed to compile (undeclared identifier) and the water plane never rendered
         out vec4 fragColor;
         void main() {
             vec3 viewDir = normalize(uCamPos - vWorld);
