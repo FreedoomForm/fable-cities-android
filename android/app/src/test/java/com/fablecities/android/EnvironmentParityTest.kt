@@ -32,10 +32,11 @@ class EnvironmentParityTest {
 
     @Test
     fun dayOfYear_siteDefaults() {
-        // World.js: month 5 (0-indexed June), day 1 -> 121 (atmosphere.js dayOfYear)
+        // World.js: month 5 (0-indexed June), day 1 -> 121 (atmosphere.js dayOfYear);
+        // web semantics: clamp((month||6)-1, 0, 11) -> cum[month-1] + day
         org.junit.Assert.assertEquals(121, Environment.dayOfYear(5, 1))
         org.junit.Assert.assertEquals(1, Environment.dayOfYear(0, 1))
-        org.junit.Assert.assertEquals(365, Environment.dayOfYear(11, 31))
+        org.junit.Assert.assertEquals(335, Environment.dayOfYear(11, 31))
     }
 
     @Test
@@ -43,9 +44,9 @@ class EnvironmentParityTest {
         val lat = Environment.LATITUDE
         val doy = 121
         val cel = DoubleArray(13)
-        for (h in listOf(0.0, 8.0, 14.0, 19.5, 22.0)) {
-            Environment.celestial(h, doy, lat, cel)
-            val g = EnvGoldens.hours["$h"]!!
+        for (h in listOf("0", "8", "14", "19.5", "22")) { // EnvGoldens keys are Node-stringified hours
+            Environment.celestial(h.toDouble(), doy, lat, cel)
+            val g = EnvGoldens.hours[h]!!
             near(cel[0] * 180.0 / PI, g.sunAltDeg, 1e-9, "sunAltDeg@$h")
             near3(doubleArrayOf(cel[2], cel[3], cel[4]), g.sunDir, 1e-9, "sunDir@$h")
             near3(doubleArrayOf(cel[7], cel[8], cel[9]), g.moonDir, 1e-9, "moonDir@$h")
