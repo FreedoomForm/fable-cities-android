@@ -751,16 +751,17 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         }
     }
 
-    // economy accessors for the HUD
-    fun econMoney(): Int = simEconomy.e.money.toInt()
-    fun econPopulation(): Int = simEconomy.e.population
-    fun econIncome(): Int = simEconomy.e.income
-    fun econExpenses(): Int = simEconomy.e.expenses
-    fun econMilestone(): String = simEconomy.e.milestone.name
-    fun econHappiness(): Double = simEconomy.e.happiness
-    fun econDemandResidential(): Double = simEconomy.e.demand["residential"] ?: 0.0
-    fun econDemandCommercial(): Double = simEconomy.e.demand["commercial"] ?: 0.0
-    fun econDemandIndustrial(): Double = simEconomy.e.demand["industrial"] ?: 0.0
+    // economy accessors for the HUD (the HUD draws before the GL surface is ready — guard lateinit)
+    private fun simReady(): Boolean = this::simEconomy.isInitialized
+    fun econMoney(): Int = if (simReady()) simEconomy.e.money.toInt() else 0
+    fun econPopulation(): Int = if (simReady()) simEconomy.e.population else 0
+    fun econIncome(): Int = if (simReady()) simEconomy.e.income else 0
+    fun econExpenses(): Int = if (simReady()) simEconomy.e.expenses else 0
+    fun econMilestone(): String = if (simReady()) simEconomy.e.milestone.name else "Founding"
+    fun econHappiness(): Double = if (simReady()) simEconomy.e.happiness else 0.0
+    fun econDemandResidential(): Double = if (simReady()) simEconomy.e.demand["residential"] ?: 0.0 else 0.0
+    fun econDemandCommercial(): Double = if (simReady()) simEconomy.e.demand["commercial"] ?: 0.0 else 0.0
+    fun econDemandIndustrial(): Double = if (simReady()) simEconomy.e.demand["industrial"] ?: 0.0 else 0.0
 
     // ---------------------------------------------------------------- static meshes
 
@@ -842,6 +843,7 @@ class GlCityRenderer : GLSurfaceView.Renderer {
 
     /** @return 1 = placed, -1 = removed, 0 = blocked (prebuilt road) */
     fun toggleRoadCell(idx: Int): Int {
+        if (!simReady()) return 0
         val center = cellCenter(idx)
         if (roadDistance(center[0], center[1]) < 1f) return 0
         val removed = roadCells.remove(idx)
@@ -855,6 +857,7 @@ class GlCityRenderer : GLSurfaceView.Renderer {
     }
 
     fun cycleZoneCell(idx: Int): Int {
+        if (!simReady()) return -1
         val cur = zoneCells[idx] ?: -1
         selectedBuilding = null
         if (cur >= 2) zoneCells.remove(idx) else zoneCells[idx] = cur + 1
@@ -869,6 +872,7 @@ class GlCityRenderer : GLSurfaceView.Renderer {
     private var serviceTypeIdx = 0
 
     fun placeService(idx: Int): String {
+        if (!simReady()) return "Still loading — try again in a second"
         val type = serviceOrder[serviceTypeIdx % serviceOrder.size]
         val def = SERVICE_TYPES[type]!!
         val center = cellCenter(idx)
@@ -1045,6 +1049,7 @@ class GlCityRenderer : GLSurfaceView.Renderer {
 
     /** Applies the active tool at the tapped screen position; returns a status message. */
     fun tapTool(sx: Float, sy: Float, tool: String): String {
+        if (!simReady()) return "Still loading — try again in a second"
         val ray = rayFromScreen(sx, sy)
         return when (tool) {
             "ROAD" -> {
