@@ -16,10 +16,11 @@ This is intentionally a redesign rather than a pixel-for-pixel port. A desktop l
 ## Next port slices
 
 1. Exercise both tracks on an emulator/device: CI runs an `emulator-smoke` job on every push (API 34 x86_64, KVM, swiftshader GPU): it installs the APK, boots the web-parity launcher first (90 s soak — three.js first boot is slow on swiftshader; gates: process alive, zero page console errors, screenshot), then force-stops and boots the native activity (20 s soak; gates: process alive, zero fatal/native-signal lines, zero `GlCityRenderer` shader/link/GL-error lines, screenshot). An APK that fails either gate is never published. Still open: rotation policy, background/resume stress, real-device frame pacing, twist→rotate on the parity track.
-2. Replace the procedural vertical-slice scene with the browser game's deterministic simulation data model (weekly economy, milestones, service coverage).
-3. Add PBR material tiers and shadow mapping to the native renderer, then quality fallbacks for low-end devices.
-4. Couple traffic to a lane network with routing instead of decorative lane driving.
-5. Instrument frame time, draw count, memory, battery-sensitive warnings, and on-device capture, persisted to `docs/STATUS.json`.
+2. **Native world parity — DONE (round 2).** `worldgen/` is a bit-exact Kotlin port of the browser game's world core: `shared/random.js` (mulberry32 + hash2), `shared/noise.js` (simplex 2D/3D, fbm, ridged), and `terrain/Heightmap.js` (the full analytic generator, grid generation, `getHeight`/`getSlope`, `flattenRect`/`conformPath`/`conformDisc`, `averageHeight`). Golden JVM tests (`WorldGenParityTest`) pin RNG/hash2/simplex/sampleGen/grid/conformPath to values produced by the actual web code in Node (seed 1337) and run on every CI push. The native scene renders the site's real world: coastal plain, meandering river, sea to the south, terraced mountains north; the prebuilt avenue/streets conform the terrain through the site's own `conformPath`; buildings, vehicles and the tool grid sit on real heights. Not yet ported from Heightmap.js: `raycast` (the renderer uses its own ray-march), `computeShoreDistance`, and the outer horizon-ring coarse grids.
+3. Port the demo city AS DATA next: the web `DemoCity.js` (u,v) road layout + trumpet interchange, zone/landmark placement, then the deterministic simulation data model (weekly economy, milestones, service coverage) on top of the ported world.
+4. Visual parity slices for the native track: port the web terrain/ground material rules (TerrainMaterial.js splats), water shader (Water.js), atmosphere (environment/shaders.js), then buildings/props/traffic — reusing the same GLSL where possible.
+5. Replace the invented demo content as the ports land: the current native buildings/vehicles remain placeholders until the buildings/traffic module ports replace them.
+6. Instrument frame time, draw count, memory, battery-sensitive warnings, and on-device capture, persisted to `docs/STATUS.json`.
 
 ## Verification status
 

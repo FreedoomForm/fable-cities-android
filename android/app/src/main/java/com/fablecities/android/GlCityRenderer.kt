@@ -4,6 +4,7 @@ import android.opengl.GLES30
 import android.opengl.GLSurfaceView
 import android.opengl.Matrix
 import android.util.Log
+import com.fablecities.android.worldgen.Heightmap
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.FloatBuffer
@@ -34,14 +35,14 @@ class GlCityRenderer : GLSurfaceView.Renderer {
     var paused = false
 
     // --- camera ---
-    private val camTarget = floatArrayOf(0f, 2f, 0f)
+    private val camTarget = floatArrayOf(40f, 14f, 0f)
     private var camYaw = 0.6f
     private var camPitch = 0.95f
-    private var camDist = 240f
-    private val camTargetGoal = floatArrayOf(0f, 2f, 0f)
+    private var camDist = 320f
+    private val camTargetGoal = floatArrayOf(40f, 14f, 0f)
     private var camYawGoal = 0.6f
     private var camPitchGoal = 0.95f
-    private var camDistGoal = 240f
+    private var camDistGoal = 320f
 
     // --- matrices ---
     private val projM = FloatArray(16)
@@ -54,12 +55,13 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         private set
     var day = 1
 
-    // --- world constants ---
-    private val mapHalf = 400f
-    private val groundY = 2f
-    private val waterY = 0.9f
+    // --- world constants: the SITE'S real world (2048 m, seed 1337, sea level 0) ---
+    private val mapHalf = 1024f
+    private val cityHalf = 504f // tool grid + prebuilt content extent (east of the river)
+    private val waterY = 0f
     private val cellSize = 24f
-    private val gridN = 32
+    private val gridN = 42
+    private lateinit var worldHeight: Heightmap
 
     // --- shaders ---
     private var progTerrain = 0
@@ -89,7 +91,7 @@ class GlCityRenderer : GLSurfaceView.Renderer {
 
     // --- city data ---
     private class Building(
-        val x: Float, val z: Float, val w: Float, val d: Float, val h: Float,
+        val x: Float, val y: Float, val z: Float, val w: Float, val d: Float, val h: Float,
         val kind: Int, val seed: Int, val cell: Int, var removed: Boolean = false
     )
 
@@ -121,6 +123,10 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         progWater = buildProgram(VS_WATER, FS_WATER, "water")
         progSky = buildProgram(VS_SKY, FS_SKY, "sky")
 
+        // The real world: the site's 2048 m heightmap (seed 1337), then the prebuilt roads
+        // conform the terrain exactly the way the browser game's road tool does.
+        worldHeight = Heightmap(size = 2048, spacing = 4, seed = 1337).generate()
+        conformPrebuiltRoads()
         buildTerrain()
         buildCityGround()
         generateCity()
@@ -294,25 +300,43 @@ class GlCityRenderer : GLSurfaceView.Renderer {
     }
 
     private fun roadDistance(x: Float, z: Float): Float {
-        var d = abs(x) - 10f // avenue along Z at x=0
-        for (street in floatArrayOf(-240f, 0f, 240f)) {
-            d = min(d, abs(z - street) - 8f)
+        // avenue along Z at x=0 (z -1000..560), cross streets along X (x -160..880)
+        var d = if (z in -1000f..560f) abs(x) - 10f else Float.MAX_VALUE
+        if (x in -160f..880f) {
+            for (street in floatArrayOf(-240f, 0f, 240f)) {
+                d = min(d, abs(z - street) - 8f)
+            }
         }
         return d
     }
 
-    private fun terrainHeight(x: Float, z: Float): Float {
-        val r = sqrt(x * x + z * z)
-        val amp = 5f + 44f * ((r - 90f) / 300f).coerceIn(0f, 1f)
-        var h = groundY + (fbm(x * 0.0055f + 7.3f, z * 0.0055f + 2.1f) - 0.5f) * 2f * amp
-        h -= ((r - 310f) / 90f).coerceIn(0f, 1f) * 34f // coastal dip into water
-        val rd = roadDistance(x, z)
-        val t = (rd / 16f).coerceIn(0f, 1f)
-        return h * t + groundY * (1 - t)
+    /** Conform the prebuilt road corridors into the real heightmap (the site's road mechanism). */
+    private fun conformPrebuiltRoads() {
+        val h = worldHeight
+        run {
+            val pts = ArrayList<Heightmap.PathPoint>()
+            var z = -1000.0
+            while (z <= 560.0) {
+                pts.add(Heightmap.PathPoint(0.0, h.getHeight(0.0, z) + 0.5, z))
+                z += 20.0
+            }
+            h.conformPath(pts, 22.0, 24.0)
+        }
+        for (street in floatArrayOf(-240f, 0f, 240f)) {
+            val pts = ArrayList<Heightmap.PathPoint>()
+            var x = -160.0
+            while (x <= 880.0) {
+                pts.add(Heightmap.PathPoint(x.toDouble(), h.getHeight(x.toDouble(), street.toDouble()) + 0.5, street.toDouble()))
+                x += 20.0
+            }
+            h.conformPath(pts, 18.0, 20.0)
+        }
     }
 
+    private fun terrainHeight(x: Float, z: Float): Float = worldHeight.getHeight(x.toDouble(), z.toDouble()).toFloat()
+
     private fun buildTerrain() {
-        val n = 96
+        val n = 224
         val step = mapHalf * 2f / n
         val data = FloatArray(n * n * 48) // 2 tris x 3 verts x 8 floats per cell
         var o = 0
@@ -333,14 +357,34 @@ class GlCityRenderer : GLSurfaceView.Renderer {
     }
 
     private fun terrainColor(x: Float, z: Float, h: Float, out: FloatArray, off: Int) {
-        val sandMix = ((2.9f - h) / 1.6f).coerceIn(0f, 1f)
-        val n = fbm(x * 0.02f, z * 0.02f)
-        var r = 0.20f + n * 0.10f
-        var g = 0.38f + n * 0.14f
-        var b = 0.16f + n * 0.05f
-        r = r * (1 - sandMix) + (0.76f + n * 0.06f) * sandMix
-        g = g * (1 - sandMix) + (0.68f + n * 0.06f) * sandMix
-        b = b * (1 - sandMix) + (0.46f + n * 0.05f) * sandMix
+        val n = fbm(x * 0.02f, z * 0.02f) // fine detail
+        val n2 = fbm(x * 0.004f + 11f, z * 0.004f - 5f) // macro variation
+        var r: Float
+        var g: Float
+        var b: Float
+        when {
+            h < 0.4f -> { // shallow water bed / wet sand
+                r = 0.30f + n * 0.05f; g = 0.26f + n * 0.04f; b = 0.18f + n * 0.03f
+            }
+            h < 3.2f -> { // beach sand
+                r = 0.72f + n * 0.06f; g = 0.65f + n * 0.05f; b = 0.44f + n * 0.04f
+            }
+            h < 120f -> { // grass: light valley → deeper upland
+                val t = ((h - 3.2f) / 116.8f).coerceIn(0f, 1f)
+                r = (0.30f - 0.10f * t) + n * 0.06f + n2 * 0.05f
+                g = (0.44f - 0.08f * t) + n * 0.08f + n2 * 0.04f
+                b = (0.20f - 0.05f * t) + n * 0.03f
+            }
+            h < 190f -> { // rock
+                r = 0.38f + n * 0.08f; g = 0.36f + n * 0.07f; b = 0.33f + n * 0.06f
+            }
+            else -> { // snow caps above ~190 m
+                val s = ((h - 190f) / 30f).coerceIn(0f, 1f)
+                r = (0.38f + n * 0.08f) * (1 - s) + (0.92f + n * 0.04f) * s
+                g = (0.36f + n * 0.07f) * (1 - s) + (0.94f + n * 0.03f) * s
+                b = (0.33f + n * 0.06f) * (1 - s) + 0.97f * s
+            }
+        }
         val rd = roadDistance(x, z)
         if (rd < 2f && h > 1.8f) { // verge beside prebuilt roads
             r = 0.42f; g = 0.40f; b = 0.36f
@@ -380,46 +424,73 @@ class GlCityRenderer : GLSurfaceView.Renderer {
     // ---------------------------------------------------------------- prebuilt city ground
 
     private fun buildCityGround() {
-        val quads = ArrayList<Float>(4096 * 8)
-        val c = FloatArray(3)
-        fun pushQuad(x0: Float, z0: Float, x1: Float, z1: Float, y: Float, col: FloatArray) {
-            quads.addAll(listOf(
-                x0, y, z0, col[0], col[1], col[2], 1f, 0f,
-                x1, y, z0, col[0], col[1], col[2], 1f, 0f,
-                x1, y, z1, col[0], col[1], col[2], 1f, 0f,
-                x0, y, z0, col[0], col[1], col[2], 1f, 0f,
-                x1, y, z1, col[0], col[1], col[2], 1f, 0f,
-                x0, y, z1, col[0], col[1], col[2], 1f, 0f
-            ))
+        val quads = ArrayList<Float>(65536)
+        // ribbons follow the real terrain: every ~24 m segment samples the conformed height
+        fun ribbonZ(x0: Float, x1: Float, z0: Float, z1: Float, yOff: Float, col: FloatArray) {
+            var z = z0
+            while (z < z1 - 0.01f) {
+                val z2 = min(z + 24f, z1)
+                val y00 = terrainHeight(x0, z) + yOff
+                val y10 = terrainHeight(x1, z) + yOff
+                val y01 = terrainHeight(x0, z2) + yOff
+                val y11 = terrainHeight(x1, z2) + yOff
+                quads.addAll(listOf(
+                    x0, y00, z, col[0], col[1], col[2], 1f, 0f,
+                    x1, y10, z, col[0], col[1], col[2], 1f, 0f,
+                    x1, y11, z2, col[0], col[1], col[2], 1f, 0f,
+                    x0, y00, z, col[0], col[1], col[2], 1f, 0f,
+                    x1, y11, z2, col[0], col[1], col[2], 1f, 0f,
+                    x0, y01, z2, col[0], col[1], col[2], 1f, 0f
+                ))
+                z = z2
+            }
+        }
+        fun ribbonX(x0: Float, x1: Float, z0: Float, z1: Float, yOff: Float, col: FloatArray) {
+            var x = x0
+            while (x < x1 - 0.01f) {
+                val x2 = min(x + 24f, x1)
+                val y00 = terrainHeight(x, z0) + yOff
+                val y10 = terrainHeight(x2, z0) + yOff
+                val y01 = terrainHeight(x, z1) + yOff
+                val y11 = terrainHeight(x2, z1) + yOff
+                quads.addAll(listOf(
+                    x, y00, z0, col[0], col[1], col[2], 1f, 0f,
+                    x2, y10, z0, col[0], col[1], col[2], 1f, 0f,
+                    x2, y11, z1, col[0], col[1], col[2], 1f, 0f,
+                    x, y00, z0, col[0], col[1], col[2], 1f, 0f,
+                    x2, y11, z1, col[0], col[1], col[2], 1f, 0f,
+                    x, y01, z1, col[0], col[1], col[2], 1f, 0f
+                ))
+                x = x2
+            }
         }
         // asphalt
         val asphalt = floatArrayOf(0.115f, 0.12f, 0.135f)
-        c[0] = asphalt[0]; c[1] = asphalt[1]; c[2] = asphalt[2]
-        pushQuad(-9.5f, -mapHalf, 9.5f, mapHalf, groundY + 0.06f, asphalt)
+        ribbonZ(-9.5f, 9.5f, -1000f, 560f, 0.06f, asphalt) // avenue
         for (street in floatArrayOf(-240f, 0f, 240f)) {
-            pushQuad(-mapHalf, street - 8f, mapHalf, street + 8f, groundY + 0.06f, asphalt)
+            ribbonX(-160f, 880f, street - 8f, street + 8f, 0.06f, asphalt)
         }
         // centre dashes (light paint)
         val paint = floatArrayOf(0.72f, 0.70f, 0.52f)
-        var z = -mapHalf + 6f
-        while (z < mapHalf) {
-            pushQuad(-0.35f, z, 0.35f, z + 7f, groundY + 0.075f, paint)
+        var z = -1000f + 6f
+        while (z < 560f) {
+            ribbonZ(-0.35f, 0.35f, z, min(z + 7f, 560f), 0.075f, paint)
             z += 18f
         }
         for (street in floatArrayOf(-240f, 0f, 240f)) {
-            var x = -mapHalf + 6f
-            while (x < mapHalf) {
-                pushQuad(x, street - 0.35f, x + 7f, street + 0.35f, groundY + 0.075f, paint)
+            var x = -160f + 6f
+            while (x < 880f) {
+                ribbonX(x, min(x + 7f, 880f), street - 0.35f, street + 0.35f, 0.075f, paint)
                 x += 18f
             }
         }
         // side walks
         val walk = floatArrayOf(0.46f, 0.45f, 0.42f)
-        pushQuad(-13.5f, -mapHalf, -9.5f, mapHalf, groundY + 0.12f, walk)
-        pushQuad(9.5f, -mapHalf, 13.5f, mapHalf, groundY + 0.12f, walk)
+        ribbonZ(-13.5f, -9.5f, -1000f, 560f, 0.12f, walk)
+        ribbonZ(9.5f, 13.5f, -1000f, 560f, 0.12f, walk)
         for (street in floatArrayOf(-240f, 0f, 240f)) {
-            pushQuad(-mapHalf, street - 12f, mapHalf, street - 8f, groundY + 0.12f, walk)
-            pushQuad(-mapHalf, street + 8f, mapHalf, street + 12f, groundY + 0.12f, walk)
+            ribbonX(-160f, 880f, street - 12f, street - 8f, 0.12f, walk)
+            ribbonX(-160f, 880f, street + 8f, street + 12f, 0.12f, walk)
         }
         val arr = FloatArray(quads.size)
         for (i in arr.indices) arr[i] = quads[i]
@@ -434,20 +505,21 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         buildings.clear()
         roadCells.clear()
         zoneCells.clear()
-        // blocks between roads: x from 16..384, z bands (-232..-12, 12..232, 252..384)
-        val zBands = arrayOf(floatArrayOf(-232f, -12f), floatArrayOf(12f, 232f), floatArrayOf(252f, 384f))
+        // blocks beside the avenue and cross streets, east of the river, above the beach:
+        // z bands between streets (-240/0/240), x 16..500 east side and -140..-16 west side
+        val zBands = arrayOf(floatArrayOf(-232f, -12f), floatArrayOf(12f, 228f), floatArrayOf(252f, 500f))
         for (band in zBands) {
             var z = band[0]
             while (z < band[1] - cellSize) {
-                for (sideX in intArrayOf(1, -1)) {
-                    val bx = if (sideX > 0) 16f else -16f - cellSize
-                    var cx = bx
-                    while (cx < 384f && cx > -386f) {
-                        if (rng.nextFloat() < 0.68f) {
-                            addBuilding(cx, z, rng, depth = cellSize)
-                        }
-                        cx += sideX * cellSize
-                    }
+                var cx = 16f
+                while (cx <= 500f) {
+                    if (rng.nextFloat() < 0.68f) addBuilding(cx, z, rng, depth = cellSize)
+                    cx += cellSize
+                }
+                var wx = -16f - cellSize
+                while (wx >= -140f) {
+                    if (rng.nextFloat() < 0.68f) addBuilding(wx, z, rng, depth = cellSize)
+                    wx -= cellSize
                 }
                 z += cellSize
             }
@@ -455,8 +527,11 @@ class GlCityRenderer : GLSurfaceView.Renderer {
     }
 
     private fun addBuilding(cellX: Float, cellZ: Float, rng: Random, depth: Float, forcedKind: Int = -1) {
-        val r = sqrt(cellX * cellX + cellZ * cellZ)
-        val central = (1f - r / 460f).coerceIn(0f, 1f)
+        val cx = cellX + cellSize / 2f
+        val cz = cellZ + cellSize / 2f
+        val baseY = terrainHeight(cx, cz)
+        val r = sqrt(cx * cx + cz * cz)
+        val central = (1f - r / 700f).coerceIn(0f, 1f)
         val roll = rng.nextFloat()
         val kind = if (forcedKind >= 0) forcedKind
         else when {
@@ -473,9 +548,9 @@ class GlCityRenderer : GLSurfaceView.Renderer {
             else -> 14f + rng.nextFloat() * 12f
         }
         val h = base * (0.55f + central * 0.9f)
-        val gx = ((cellX + mapHalf) / cellSize).toInt().coerceIn(0, gridN - 1)
-        val gz = ((cellZ + mapHalf) / cellSize).toInt().coerceIn(0, gridN - 1)
-        buildings.add(Building(cellX + cellSize / 2f, cellZ + cellSize / 2f, w, d, h, kind, rng.nextInt(10000), gz * gridN + gx))
+        val gx = ((cx + cityHalf) / cellSize).toInt().coerceIn(0, gridN - 1)
+        val gz = ((cz + cityHalf) / cellSize).toInt().coerceIn(0, gridN - 1)
+        buildings.add(Building(cx, baseY, cz, w, d, h, kind, rng.nextInt(10000), gz * gridN + gx))
     }
 
     private fun generateVehicles() {
@@ -494,22 +569,28 @@ class GlCityRenderer : GLSurfaceView.Renderer {
                 hue < 0.9f -> floatArrayOf(0.22f, 0.22f, 0.24f)
                 else -> floatArrayOf(0.80f, 0.55f, 0.12f)
             }
-            vehicles.add(Vehicle(axis, lane, fixed, speed, rng.nextFloat() * 760f - 380f, rng.nextInt(10000), body))
+            val s0 = if (axis == 0) -990f + rng.nextFloat() * 1540f else -150f + rng.nextFloat() * 1020f
+            vehicles.add(Vehicle(axis, lane, fixed, speed, s0, rng.nextInt(10000), body))
         }
     }
 
     private fun updateVehicles(dt: Float) {
         for (v in vehicles) {
             v.s += v.speed * dt * (if (v.lane > 0) 1f else -1f)
-            if (v.s > 390f) v.s = -390f
-            if (v.s < -390f) v.s = 390f
+            if (v.axis == 0) { // avenue: z in [-990..550]
+                if (v.s > 550f) v.s = -990f
+                if (v.s < -990f) v.s = 550f
+            } else { // streets: x in [-150..870]
+                if (v.s > 870f) v.s = -150f
+                if (v.s < -150f) v.s = 870f
+            }
         }
     }
 
     // ---------------------------------------------------------------- static meshes
 
     private fun buildWater() {
-        val s = mapHalf * 1.6f
+        val s = mapHalf * 1.3f
         val data = floatArrayOf(
             -s, waterY, -s, 1f, 1f, 1f, 1f, 0f,
             s, waterY, -s, 1f, 1f, 1f, 1f, 0f,
@@ -573,15 +654,15 @@ class GlCityRenderer : GLSurfaceView.Renderer {
     // ---------------------------------------------------------------- edits
 
     fun cellIndexAt(worldX: Float, worldZ: Float): Int {
-        val gx = ((worldX + mapHalf) / cellSize).toInt().coerceIn(0, gridN - 1)
-        val gz = ((worldZ + mapHalf) / cellSize).toInt().coerceIn(0, gridN - 1)
+        val gx = ((worldX + cityHalf) / cellSize).toInt().coerceIn(0, gridN - 1)
+        val gz = ((worldZ + cityHalf) / cellSize).toInt().coerceIn(0, gridN - 1)
         return gz * gridN + gx
     }
 
     private fun cellCenter(idx: Int): FloatArray {
         val gx = idx / gridN
         val gz = idx % gridN
-        return floatArrayOf(-mapHalf + gx * cellSize + cellSize / 2f, -mapHalf + gz * cellSize + cellSize / 2f)
+        return floatArrayOf(-cityHalf + gx * cellSize + cellSize / 2f, -cityHalf + gz * cellSize + cellSize / 2f)
     }
 
     /** @return 1 = placed, -1 = removed, 0 = blocked (prebuilt road) */
@@ -627,7 +708,7 @@ class GlCityRenderer : GLSurfaceView.Renderer {
             val x1 = c[0] + cellSize / 2 - 1.5f
             val z0 = c[1] - cellSize / 2 + 1.5f
             val z1 = c[1] + cellSize / 2 - 1.5f
-            val y = groundY + 0.05f
+            val y = terrainHeight(c[0], c[1]) + 0.05f
             val asphalt = floatArrayOf(0.115f, 0.12f, 0.135f)
             o = putQuad(roads, o, x0, z0, x1, z1, y, asphalt)
             o = putQuad(roads, o, c[0] - 0.3f, z0, c[0] + 0.3f, z1, y + 0.01f, floatArrayOf(0.72f, 0.70f, 0.52f))
@@ -646,7 +727,7 @@ class GlCityRenderer : GLSurfaceView.Renderer {
                 else -> floatArrayOf(0.85f, 0.65f, 0.15f)
             }
             o = putQuad(zones, o, c[0] - cellSize / 2 + 2f, c[1] - cellSize / 2 + 2f,
-                c[0] + cellSize / 2 - 2f, c[1] + cellSize / 2 - 2f, groundY + 0.04f, col)
+                c[0] + cellSize / 2 - 2f, c[1] + cellSize / 2 - 2f, terrainHeight(c[0], c[1]) + 0.04f, col)
         }
         editZoneCount = o / 8
         if (editZoneVbo != 0) GLES30.glDeleteBuffers(1, intArrayOf(editZoneVbo), 0)
@@ -684,13 +765,37 @@ class GlCityRenderer : GLSurfaceView.Renderer {
     }
 
     private fun groundPoint(ray: FloatArray): FloatArray? {
-        if (abs(ray[4]) < 1e-5f) return null
-        val t = (groundY - ray[1]) / ray[4]
-        if (t < 0) return null
-        val x = ray[0] + ray[3] * t
-        val z = ray[2] + ray[5] * t
-        if (abs(x) > mapHalf || abs(z) > mapHalf) return null
-        return floatArrayOf(x, z)
+        // ray-march the real terrain (adaptive step + bisection refine)
+        val ox = ray[0]; val oy = ray[1]; val oz = ray[2]
+        val dx = ray[3]; val dy = ray[4]; val dz = ray[5]
+        if (dy >= 0f && oy > 280f) return null
+        var t = 0f
+        var prevT = 0f
+        var prevDiff = oy - terrainHeight(ox, oz)
+        if (prevDiff < 0f) return floatArrayOf(ox, oz)
+        while (t < 8000f) {
+            t += (prevDiff * 0.6f).coerceIn(8f, 60f)
+            val px = ox + dx * t
+            val py = oy + dy * t
+            val pz = oz + dz * t
+            if (abs(px) > mapHalf || abs(pz) > mapHalf) return null
+            val diff = py - terrainHeight(px, pz)
+            if (diff <= 0f) {
+                var a = prevT
+                var b = t
+                for (k in 0 until 8) {
+                    val m = 0.5f * (a + b)
+                    val mx = ox + dx * m
+                    val mz = oz + dz * m
+                    if (oy + dy * m - terrainHeight(mx, mz) > 0f) a = m else b = m
+                }
+                val tt = 0.5f * (a + b)
+                return floatArrayOf(ox + dx * tt, oz + dz * tt)
+            }
+            prevT = t
+            prevDiff = diff
+        }
+        return null
     }
 
     private fun buildingAt(ray: FloatArray): Building? {
@@ -698,7 +803,7 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         var bestT = Float.MAX_VALUE
         for (b in buildings) {
             if (b.removed) continue
-            val t = rayBox(ray, b.x, groundY, b.z, b.w, b.h, b.d)
+            val t = rayBox(ray, b.x, b.y, b.z, b.w, b.h, b.d)
             if (t in 0f..bestT) {
                 bestT = t
                 best = b
@@ -804,7 +909,7 @@ class GlCityRenderer : GLSurfaceView.Renderer {
     }
 
     fun zoomBy(factor: Float) {
-        camDistGoal = (camDistGoal / factor).coerceIn(60f, 620f)
+        camDistGoal = (camDistGoal / factor).coerceIn(60f, 900f)
     }
 
     fun rotateBy(delta: Float) {
@@ -1006,7 +1111,7 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         for (b in buildings) {
             if (b.removed) continue
             val selected = selectedBuilding === b
-            GLES30.glUniform3f(u(progBuilding, "uPos"), b.x, groundY, b.z)
+            GLES30.glUniform3f(u(progBuilding, "uPos"), b.x, b.y, b.z)
             GLES30.glUniform3f(u(progBuilding, "uScale"), b.w, b.h, b.d)
             val pal = when (b.kind) {
                 0 -> floatArrayOf(0.74f, 0.62f, 0.50f)
@@ -1046,7 +1151,7 @@ class GlCityRenderer : GLSurfaceView.Renderer {
             // orientation: axis 0 drives along Z, axis 1 along X — encoded via uScale sign flip
             val sx = if (v.axis == 1) 4.4f else 1.9f
             val sz = if (v.axis == 1) 1.9f else 4.4f
-            GLES30.glUniform3f(u(progBuilding, "uPos"), x, groundY, z)
+            GLES30.glUniform3f(u(progBuilding, "uPos"), x, terrainHeight(x, z) + 0.05f, z)
             GLES30.glUniform3f(u(progBuilding, "uScale"), sx, 1f, sz)
             GLES30.glUniform3f(u(progBuilding, "uColor"), v.color[0], v.color[1], v.color[2])
             GLES30.glUniform1f(u(progBuilding, "uSeed"), v.seed.toFloat())

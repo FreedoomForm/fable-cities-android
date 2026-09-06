@@ -31,6 +31,7 @@ android {
 
 dependencies {
     implementation("androidx.webkit:webkit:1.10.0")
+    testImplementation("junit:junit:4.13.2")
 }
 
 kotlin { jvmToolchain(17) }

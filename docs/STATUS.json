@@ -1,5 +1,5 @@
 {
- "updated": "android-parity-1",
+ "updated": "android-native-world-2",
  "runId": "loop_20260904_2",
  "threshold": 8.5,
  "modules": {
@@ -1116,10 +1116,10 @@
  },
  "android": {
   "track": "dual",
-  "round": 1,
-  "what": "Web-parity launcher (ParityActivity): full production web build (vite dist 212MB) bundled into APK assets at CI time, served offline via WebViewAssetLoader; touch shim pinch->wheel, 2-finger drag->middle-drag pan; Back->Escape. Native GLES MainActivity retained as track B (adb-launchable). CI emulator gate now boots BOTH activities: parity 90s soak + zero-console-error gate + screenshot, then native 20s soak + GL-error gate + screenshot. Release publishes only after both gates.",
+  "round": 2,
+  "what": "Track B now generates THE SITE'S world natively: bit-exact Kotlin port of the web worldgen core (shared/random.js mulberry32, shared/noise.js simplex/fbm/ridged, terrain/Heightmap.js analytic generator + grid + conformPath/flattenRect/conformDisc) in android/app/src/main/java/com/fablecities/android/worldgen/. Verified against Node golden values (seed 1337): RNG stream, hash2, simplex probes, 16 sampleGen probes, full 2048m/4m grid min/max + 5 getHeight probes, conformPath bounds + heights - ALL bit-exact (local kotlinc run) and enforced by JVM golden tests (WorldGenParityTest) on every CI run. The native scene now renders the real valley+river+sea+northern mountains; prebuilt avenue/streets conform the terrain via the site's own conformPath; buildings/vehicles/tools sit on real heights.",
   "why": "User acceptance criterion is 1:1 visual parity with the browser game; the three.js PBR/CSM/bloom/SMAA stack cannot be reproduced natively quickly. Explicitly clarified by user 2026-09-06.",
-  "verification": "Local SwiftShader chrome probe on the static dist (WebView-equivalent origin): 0 console errors, 634 draw calls, 1.76M tris, fps 0.3 (swiftshader-bound). CI emulator gate result recorded in the run for this commit.",
+  "verification": "Local kotlinc 2.0.21 parity run vs Node probe: identical values. CI: JVM golden tests + emulator gate (both activities) pending on this push.",
   "score": null
  }
 }
