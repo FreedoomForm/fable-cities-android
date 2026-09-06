@@ -60,6 +60,7 @@ class FableCitiesView(context: Context) : GLSurfaceView(context) {
         if (savedState.edits.isNotEmpty()) renderer.restoreEdits(savedState.edits)
         renderer.setHour(savedState.hour)
         renderer.day = savedState.day
+        if (savedState.money > 0) renderer.setEconMoney(savedState.money)
     }
 
     private var persistPending = false
@@ -74,8 +75,8 @@ class FableCitiesView(context: Context) : GLSurfaceView(context) {
     }
 
     fun persistNow() {
-        savedState.money = hud?.money ?: savedState.money
-        savedState.population = hud?.population ?: savedState.population
+        savedState.money = renderer.econMoney()
+        savedState.population = renderer.econPopulation()
         savedState.selectedTool = hud?.selectedTool?.name ?: savedState.selectedTool
         savedState.edits = renderer.editsState()
         savedState.camera = renderer.cameraState()
@@ -136,9 +137,6 @@ class FableCitiesView(context: Context) : GLSurfaceView(context) {
                     val tool = hud?.selectedTool?.name ?: "SELECT"
                     val msg = renderer.tapTool(event.x, event.y, tool)
                     hud?.showMessage(msg)
-                    when (tool) {
-                        "ROAD", "ZONE", "SERVICE", "BULLDOZE" -> hud?.applyToolCost(tool, msg)
-                    }
                     persistSoon()
                 }
                 mode = MODE_IDLE

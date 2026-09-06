@@ -125,7 +125,11 @@ class ParityActivity : Activity() {
 
     private companion object {
         // Two-finger camera shim. CameraController bindings: pan = middle-drag (button 1),
-        // zoom = wheel. Pinch-out (span grows) -> wheel deltaY < 0 -> zoom in.
+        // zoom = wheel, rotate/tilt = right-drag (button 2, yaw -= dx * rotateSpeed).
+        // Pinch-out (span grows) -> wheel deltaY < 0 -> zoom in. Two-finger drag -> middle
+        // pan. When the gesture is dominantly a TWIST (fingers orbit the midpoint), the shim
+        // switches to right-button hold and maps the accumulated angle to synthetic dx moves,
+        // so the camera yaw follows the fingers (1 rad of twist = 1 rad of yaw).
         val TOUCH_SHIM = """
             (function(){
               var cv = document.getElementById('game');
@@ -133,49 +137,72 @@ class ParityActivity : Activity() {
               cv.__fcShim = true;
               cv.style.touchAction = 'none';
               var lastSpan = 0, active = false, lastX = 0, lastY = 0;
-              var BTN = 1, BTN_MASK = 4;
+              var lastAngle = 0, totalTwist = 0, rotateMode = false;
+              var MID_BTN = 1, MID_MASK = 4, RIGHT_BTN = 2, RIGHT_MASK = 2;
+              var ROTATE_SPEED = 0.0045; // CameraController.rotateSpeed
+              var TWIST_ENTER = 0.21;    // ~12 deg of twist switches the gesture to rotate
               function mid(e){ return { x:(e.touches[0].clientX + e.touches[1].clientX)/2,
                                         y:(e.touches[0].clientY + e.touches[1].clientY)/2 }; }
               function span(e){ var dx=e.touches[0].clientX-e.touches[1].clientX,
                                      dy=e.touches[0].clientY-e.touches[1].clientY;
                                  return Math.hypot(dx,dy); }
-              function pd(x,y){ cv.dispatchEvent(new PointerEvent('pointerdown',
-                {button:BTN,buttons:BTN_MASK,clientX:x,clientY:y,pointerId:9001,pointerType:'mouse',bubbles:true})); }
-              function pm(x,y){ window.dispatchEvent(new PointerEvent('pointermove',
-                {button:BTN,buttons:BTN_MASK,clientX:x,clientY:y,pointerId:9001,pointerType:'mouse',bubbles:true})); }
-              function pu(x,y){ window.dispatchEvent(new PointerEvent('pointerup',
-                {button:BTN,buttons:0,clientX:x,clientY:y,pointerId:9001,pointerType:'mouse',bubbles:true})); }
+              function angle(e){ return Math.atan2(e.touches[1].clientY-e.touches[0].clientY,
+                                                   e.touches[1].clientX-e.touches[0].clientX); }
+              function pd(x,y,btn,mask){ cv.dispatchEvent(new PointerEvent('pointerdown',
+                {button:btn,buttons:mask,clientX:x,clientY:y,pointerId:9001,pointerType:'mouse',bubbles:true})); }
+              function pm(x,y,mask){ window.dispatchEvent(new PointerEvent('pointermove',
+                {button:rotateMode?RIGHT_BTN:MID_BTN,buttons:mask,clientX:x,clientY:y,pointerId:9001,pointerType:'mouse',bubbles:true})); }
+              function pu(x,y,btn){ window.dispatchEvent(new PointerEvent('pointerup',
+                {button:btn,buttons:0,clientX:x,clientY:y,pointerId:9001,pointerType:'mouse',bubbles:true})); }
               function wheel(x,y,dy){ cv.dispatchEvent(new WheelEvent('wheel',
                 {clientX:x,clientY:y,deltaY:dy,deltaMode:0,bubbles:true,cancelable:true})); }
               cv.addEventListener('touchstart', function(e){
                 if (e.touches.length === 2) {
                   e.preventDefault();
-                  active = true;
+                  active = true; rotateMode = false; totalTwist = 0;
                   var m = mid(e);
-                  lastSpan = span(e); lastX = m.x; lastY = m.y;
-                  pd(m.x, m.y);
+                  lastSpan = span(e); lastX = m.x; lastY = m.y; lastAngle = angle(e);
+                  pd(m.x, m.y, MID_BTN, MID_MASK);
                 }
               }, {passive:false});
               cv.addEventListener('touchmove', function(e){
                 if (!active || e.touches.length < 2) return;
                 e.preventDefault();
-                var s = span(e), m = mid(e);
-                if (lastSpan > 0) {
-                  var d = s - lastSpan;
-                  if (Math.abs(d) > 0.5) wheel(m.x, m.y, -d * 2.0);
+                var s = span(e), m = mid(e), a = angle(e);
+                var dA = a - lastAngle;
+                if (dA > Math.PI) dA -= 2 * Math.PI; else if (dA < -Math.PI) dA += 2 * Math.PI;
+                totalTwist += dA;
+                lastAngle = a;
+                if (!rotateMode && Math.abs(totalTwist) > TWIST_ENTER) {
+                  // switch the hold from middle (pan) to right (rotate)
+                  rotateMode = true;
+                  pu(lastX, lastY, MID_BTN);
+                  pd(m.x, m.y, RIGHT_BTN, RIGHT_MASK);
                 }
-                lastSpan = s;
-                pm(m.x, m.y);
-                lastX = m.x; lastY = m.y;
+                if (rotateMode) {
+                  // yaw follows the twist: CameraController does yaw -= dx * ROTATE_SPEED
+                  var dxRad = -dA / ROTATE_SPEED;
+                  pm(lastX + dxRad, m.y, RIGHT_MASK);
+                  lastX += dxRad; lastY = m.y;
+                } else {
+                  if (lastSpan > 0) {
+                    var d = s - lastSpan;
+                    if (Math.abs(d) > 0.5) wheel(m.x, m.y, -d * 2.0);
+                  }
+                  lastSpan = s;
+                  pm(m.x, m.y, MID_MASK);
+                  lastX = m.x; lastY = m.y;
+                }
               }, {passive:false});
               cv.addEventListener('touchend', function(e){
                 if (active && e.touches.length < 2) {
                   active = false; lastSpan = 0;
-                  pu(lastX, lastY);
+                  pu(lastX, lastY, rotateMode ? RIGHT_BTN : MID_BTN);
+                  rotateMode = false;
                 }
               }, {passive:false});
               cv.addEventListener('touchcancel', function(){
-                if (active) { active = false; lastSpan = 0; pu(lastX, lastY); }
+                if (active) { active = false; lastSpan = 0; pu(lastX, lastY, rotateMode ? RIGHT_BTN : MID_BTN); rotateMode = false; }
               }, {passive:false});
             })();
         """.trimIndent()
@@ -187,7 +214,7 @@ class ParityActivity : Activity() {
                 if (localStorage.getItem('fc_parity_hint')) return;
                 localStorage.setItem('fc_parity_hint', '1');
                 var d = document.createElement('div');
-                d.textContent = '1 палец — инструменты/интерфейс • 2 пальца — камера (перетаскивание/щипок) • Back — Esc';
+                d.textContent = '1 палец — инструменты/интерфейс • 2 пальца — камера (перетаскивание/щипок/поворот) • Back — Esc';
                 d.style.cssText = 'position:fixed;left:50%;bottom:16px;transform:translateX(-50%);z-index:99999;' +
                   'background:rgba(10,16,24,.86);color:#dfe9f0;padding:10px 16px;border-radius:10px;' +
                   'font:13px/1.4 system-ui,sans-serif;border:1px solid rgba(140,190,220,.4);max-width:92%;text-align:center';

@@ -18,10 +18,6 @@ class HudOverlayView(context: Context) : View(context) {
     enum class Tool(val label: String) { SELECT("Select"), ROAD("Road"), ZONE("Zone"), SERVICE("Service"), BULLDOZE("Bulldoze") }
 
     var gameView: FableCitiesView? = null
-    var money = 125_000
-        private set
-    var population = 240
-        private set
     var selectedTool = Tool.SELECT
         private set
     private var message = "Welcome to Fable Cities"
@@ -51,8 +47,6 @@ class HudOverlayView(context: Context) : View(context) {
     }
 
     init {
-        money = savedState.money
-        population = savedState.population
         selectedTool = Tool.entries.firstOrNull { it.name == savedState.selectedTool } ?: Tool.SELECT
         postOnAnimation(frameCallback)
     }
@@ -70,16 +64,10 @@ class HudOverlayView(context: Context) : View(context) {
         post { invalidate() }
     }
 
-    fun applyToolCost(tool: String, outcome: String) {
-        when (tool) {
-            "ROAD" -> if (outcome == "Road placed") money -= 900
-            "ZONE" -> if (outcome.endsWith("painted")) { money -= 350; population += 24 }
-            "SERVICE" -> if (outcome == "Service built") money -= 2_400
-            "BULLDOZE" -> if (outcome == "Demolished") money += 400
-        }
-        if (money < 0) money = 0
-        post { invalidate() }
-    }
+    /** Live sim counters (the site's economy model owns money — no invented tool costs). */
+    private fun money(): Int = gameView?.renderer?.econMoney() ?: 0
+    private fun population(): Int = gameView?.renderer?.econPopulation() ?: 0
+    private fun milestone(): String = gameView?.renderer?.econMilestone() ?: "Founding"
 
     private fun toLogical(x: Float, y: Float): FloatArray =
         floatArrayOf((x - viewport.left) / scale, (y - viewport.top) / scale)
@@ -139,10 +127,13 @@ class HudOverlayView(context: Context) : View(context) {
         text(canvas, "FABLE CITIES", 62f, 62f, 22f, Color.WHITE, true)
         text(canvas, "RIVERLIGHT  •  DAY $day  •  ${clock(hour)}", 62f, 88f, 14f, Color.rgb(164, 190, 205), false)
 
+        // keep the counters panel refreshing while the sim runs (population moves in game hours)
+        if (!paused()) post { invalidate() }
+
         glass(canvas, RectF(1290f, 28f, 1886f, 106f))
-        text(canvas, "$${money / 1000}k", 1320f, 64f, 21f, Color.rgb(255, 218, 126), true)
-        text(canvas, "POP $population", 1500f, 64f, 18f, Color.rgb(143, 222, 255), true)
-        text(canvas, if (paused()) "PAUSED" else "SIMULATION LIVE", 1320f, 90f, 13f, Color.rgb(210, 220, 226), false)
+        text(canvas, "¤${money() / 1000}k", 1320f, 64f, 21f, Color.rgb(255, 218, 126), true)
+        text(canvas, "POP ${population()}", 1500f, 64f, 18f, Color.rgb(143, 222, 255), true)
+        text(canvas, if (paused()) "PAUSED" else "${milestone()} • SIM LIVE", 1320f, 90f, 13f, Color.rgb(210, 220, 226), false)
 
         glass(canvas, RectF(420f, 900f, 1500f, 1046f))
         Tool.entries.forEachIndexed { i, tool ->

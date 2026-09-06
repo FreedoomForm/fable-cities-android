@@ -7,6 +7,13 @@ import android.util.Log
 import com.fablecities.android.worldgen.DemoCity
 import com.fablecities.android.worldgen.Environment
 import com.fablecities.android.worldgen.Heightmap
+import com.fablecities.android.worldgen.Rng
+import com.fablecities.android.worldgen.SimBuilding
+import com.fablecities.android.worldgen.SimEconomy
+import com.fablecities.android.worldgen.SimMilestones
+import com.fablecities.android.worldgen.SimServices
+import com.fablecities.android.worldgen.SERVICE_TYPES
+import com.fablecities.android.worldgen.simHashString
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.FloatBuffer
@@ -122,6 +129,15 @@ class GlCityRenderer : GLSurfaceView.Renderer {
     private var frameNanos = 0L
     private var glErrorLogged = false
 
+    // --- simulation: the site's real economy / services / milestones model (simulation.js port) ---
+    private lateinit var simServices: SimServices
+    private lateinit var simEconomy: SimEconomy
+    private lateinit var simMilestones: SimMilestones
+    private val simBuildingList = ArrayList<SimBuilding>()
+    private var simMinutesAcc = 0.0
+    private var demoRoadCost = 0.0
+    private var pendingMoney: Int? = null
+
     // ---------------------------------------------------------------- lifecycle
 
     override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
@@ -165,6 +181,7 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         buildSky()
         rebuildEditMeshes()
         generateVehicles()
+        initSimulation()
         glReady = true
         pendingCamera?.let { restoreCamera(it) }
         pendingEdits?.let { applyEdits(it) }
@@ -200,6 +217,7 @@ class GlCityRenderer : GLSurfaceView.Renderer {
                 listener?.onHourChanged(hour, day)
             }
             updateVehicles(dt)
+            stepSimulation(dt)
         }
         updateCamera(dt)
         if (editsDirty && now - lastSaveHint > 900_000_000L) {
@@ -587,6 +605,104 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         }
     }
 
+    // ---------------------------------------------------------------- simulation bridge
+
+    /** DemoCity zone id -> the web's economic type string (zoneClass semantics; park/landmark excluded). */
+    private fun zoneToType(z: Int): String? = when (z) {
+        DemoCity.Z_RES_LOW -> "res_low"
+        DemoCity.Z_RES_HIGH -> "res_high"
+        DemoCity.Z_COM_LOW, DemoCity.Z_COM_HIGH -> "com"
+        DemoCity.Z_OFFICE -> "office"
+        else -> null
+    }
+
+    /** Web ROAD_COST table (economy.js): ¤ per metre per week. */
+    private fun roadCostPerMetre(type: String): Double = when (type) {
+        "highway" -> 1.01
+        "avenue" -> 0.64
+        "path" -> 0.07
+        else -> 0.30
+    }
+
+    private fun initSimulation() {
+        simServices = SimServices(mapHalf.toDouble(), mapHalf * 2.0)
+        // exactly like simulation/index.js: world.rng.fork(hashString('simulation'))
+        val simSeed = com.fablecities.android.worldgen.hash2Signed(1337, simHashString("simulation"))
+        simEconomy = SimEconomy(simBuildingList, simServices, Rng(simSeed))
+        simMilestones = SimMilestones(simEconomy)
+        syncSimBuildings()
+        demoRoadCost = 0.0
+        for (road in demo.roads) {
+            val w = road.world
+            for (i in 0 until w.size - 1) {
+                val dx = w[i + 1][0] - w[i][0]
+                val dz = w[i + 1][1] - w[i][1]
+                demoRoadCost += sqrt(dx * dx + dz * dz).toDouble() * roadCostPerMetre(road.type)
+            }
+        }
+        simEconomy.extraRoadCost = demoRoadCost
+        simEconomy.trafficCongestion = null // no traffic module yet → roads-segments branch (0 segs → 0)
+        pendingMoney?.let { simEconomy.e.money = it.toDouble(); pendingMoney = null }
+        simEconomy.recomputeRates()
+    }
+
+    /** Restore the persisted budget before the first sim tick (called from the view init). */
+    fun setEconMoney(v: Int) {
+        if (this::simEconomy.isInitialized) simEconomy.e.money = v.toDouble() else pendingMoney = v
+    }
+
+    /** Rebuild the sim's building list from the renderer's world state (called after any edit). */
+    private fun syncSimBuildings() {
+        simBuildingList.clear()
+        for (b in demo.blocks) {
+            val t = zoneToType(b.kind) ?: continue // parks / landmarks are not economy buildings (web zoneClass null)
+            simBuildingList.add(SimBuilding("demo${simBuildingList.size}", t, b.x.toDouble(), b.z.toDouble(),
+                b.w.toDouble(), b.d.toDouble(), b.h.toDouble()))
+        }
+        for ((idx, kind) in zoneCells) {
+            val t = when (kind) {
+                0 -> "res_low"; 1 -> "com"; 2 -> "ind"; else -> null
+            } ?: continue
+            val c = cellCenter(idx)
+            simBuildingList.add(SimBuilding("zone$idx", t, c[0].toDouble(), c[1].toDouble(),
+                cellSize.toDouble(), cellSize.toDouble(), 9.0))
+        }
+        simEconomy.buildingsVersion++
+    }
+
+    /** Advance the site's simulation: 3 game minutes per real second (World.js secondsPerHour=20). */
+    private fun stepSimulation(dt: Float) {
+        simMinutesAcc += dt * 3.0
+        var guard = 0
+        while (simMinutesAcc >= 1.0 && guard < 240) {
+            simMinutesAcc -= 1.0
+            guard++
+            val ranHour = simEconomy.minute()
+            if (ranHour) {
+                simEconomy.totalDays = day - 1
+                simEconomy.timeDay = day
+                simMilestones.tick()
+                for (n in simMilestones.notifications) {
+                    if (n.second.startsWith("Milestone:")) {
+                        listener?.onMessage(n.second + " • reward paid")
+                    }
+                }
+                simMilestones.notifications.clear()
+            }
+        }
+    }
+
+    // economy accessors for the HUD
+    fun econMoney(): Int = simEconomy.e.money.toInt()
+    fun econPopulation(): Int = simEconomy.e.population
+    fun econIncome(): Int = simEconomy.e.income
+    fun econExpenses(): Int = simEconomy.e.expenses
+    fun econMilestone(): String = simEconomy.e.milestone.name
+    fun econHappiness(): Double = simEconomy.e.happiness
+    fun econDemandResidential(): Double = simEconomy.e.demand["residential"] ?: 0.0
+    fun econDemandCommercial(): Double = simEconomy.e.demand["commercial"] ?: 0.0
+    fun econDemandIndustrial(): Double = simEconomy.e.demand["industrial"] ?: 0.0
+
     // ---------------------------------------------------------------- static meshes
 
     private fun buildWater() {
@@ -673,6 +789,8 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         if (!removed) roadCells.add(idx)
         selectedBuilding = null
         rebuildEditMeshes()
+        // player roads are local streets: 24 m cell x ¤0.30/m/week (economy.js ROAD_COST.local)
+        simEconomy.extraRoadCost = demoRoadCost + roadCells.size * cellSize * 0.30
         editsDirty = true
         return if (removed) -1 else 1
     }
@@ -681,21 +799,47 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         val cur = zoneCells[idx] ?: -1
         selectedBuilding = null
         if (cur >= 2) zoneCells.remove(idx) else zoneCells[idx] = cur + 1
+        syncSimBuildings()
         rebuildEditMeshes()
         editsDirty = true
         return zoneCells[idx] ?: -1
     }
 
-    fun placeService(idx: Int): Boolean {
+    /** The site's 8 service types in SERVICE_IDS order; the SERVICE tool cycles through them. */
+    private val serviceOrder = listOf("power", "water", "sewage", "garbage", "police", "fire", "health", "education")
+    private var serviceTypeIdx = 0
+
+    fun placeService(idx: Int): String {
+        val type = serviceOrder[serviceTypeIdx % serviceOrder.size]
+        val def = SERVICE_TYPES[type]!!
         val center = cellCenter(idx)
-        if (roadDistance(center[0], center[1]) < 1f) return false
-        for (b in buildings) if (!b.removed && b.cell == idx) return false
+        if (roadDistance(center[0], center[1]) < 1f) return "Too close to a road"
+        for (b in buildings) if (!b.removed && b.cell == idx) return "Blocked — pick an empty lot"
+        if (simEconomy.e.money < def.cost) {
+            serviceTypeIdx = (serviceTypeIdx + 1) % serviceOrder.size // let the player reach an affordable type
+            return "Not enough money for the ${def.name} (¤${def.cost})"
+        }
         val rng = Random(idx * 31L + 7)
         val y = terrainHeight(center[0], center[1])
-        buildings.add(Building(center[0], y, center[1], 26f, 26f, 18f + rng.nextFloat() * 10f, 3, cityYaw, rng.nextInt(10000), idx))
+        simServices.place(type, center[0].toDouble(), center[1].toDouble(), y.toDouble(), true, doubleArrayOf(0.0))
+        simEconomy.e.money -= def.cost // web place(): economy.money -= def.cost (we passed free to skip double-deduction)
+        buildings.add(Building(center[0], y, center[1], def.w.toFloat(), def.d.toFloat(), def.height.toFloat(), 3, cityYaw, rng.nextInt(10000), idx))
+        val label = def.name
+        val next = SERVICE_TYPES[serviceOrder[(serviceTypeIdx + 1) % serviceOrder.size]]!!.name
+        serviceTypeIdx = (serviceTypeIdx + 1) % serviceOrder.size
         selectedBuilding = null
         rebuildEditMeshes()
         editsDirty = true
+        return "$label built • ¤${def.cost} — next tap: $next"
+    }
+
+    /** Remove a service building on `idx` if one is there (bulldoze). */
+    private fun removeServiceAt(idx: Int): Boolean {
+        val c = cellCenter(idx)
+        val hit = simServices.list.firstOrNull { s ->
+            kotlin.math.abs(s.x - c[0]) <= s.w / 2 + 2 && kotlin.math.abs(s.z - c[1]) <= s.d / 2 + 2
+        } ?: return false
+        simServices.remove(hit)
         return true
     }
 
@@ -863,13 +1007,14 @@ class GlCityRenderer : GLSurfaceView.Renderer {
             }
             "SERVICE" -> {
                 val p = groundPoint(ray) ?: return "Aim inside the map"
-                if (placeService(cellIndexAt(p[0], p[1]))) "Service built"
-                else "Blocked — pick an empty lot"
+                placeService(cellIndexAt(p[0], p[1]))
             }
             "BULLDOZE" -> {
                 val b = buildingAt(ray)
                 if (b != null) {
                     b.removed = true
+                    removeServiceAt(b.cell)
+                    simEconomy.buildingsVersion++
                     selectedBuilding = null
                     editsDirty = true
                     "Demolished"
@@ -996,6 +1141,10 @@ class GlCityRenderer : GLSurfaceView.Renderer {
             }
         }
         rebuildEditMeshes()
+        if (glReady) {
+            syncSimBuildings()
+            simEconomy.extraRoadCost = demoRoadCost + roadCells.size * cellSize * 0.30
+        }
     }
 
     private var glReady = false

@@ -8,8 +8,8 @@ import android.content.Context
  * (target xyz, yaw, pitch, distance, hour) packed into a comma-separated string.
  */
 data class CityState(
-    var money: Int = 125_000,
-    var population: Int = 240,
+    var money: Int = 350_000,   // the site's World.js starting money (the sim model owns it now)
+    var population: Int = 0,
     var day: Int = 1,
     var hour: Float = 14f,
     var selectedTool: String = "SELECT",
@@ -44,8 +44,8 @@ data class CityState(
                 } else null
             }
             return CityState(
-                money = prefs.getInt("money", 125_000),
-                population = prefs.getInt("population", 240),
+                money = prefs.getInt("money", 350_000),
+                population = prefs.getInt("population", 0),
                 day = prefs.getInt("day", 1),
                 hour = prefs.getFloat("hour", 14f),
                 selectedTool = prefs.getString("selectedTool", "SELECT") ?: "SELECT",

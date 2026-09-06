@@ -30,6 +30,11 @@ jobs:
         run: |
           npm ci --no-audit --no-fund
           npx vite build
+          # Downscale the CC0 texture sets for the phone: 4K source images never
+          # show beyond ~1024 px in the WebView; keeps the APK at a sane size.
+          # Formats and filenames are untouched, so GLTF texture references keep working.
+          pip install --quiet pillow
+          python3 tools/downscale_assets.py dist/assets 1024
           mkdir -p android/app/src/main/assets/web
           cp -r dist/. android/app/src/main/assets/web/
           du -sh android/app/src/main/assets/web
