@@ -4,6 +4,7 @@ import android.opengl.GLES30
 import android.opengl.GLSurfaceView
 import android.opengl.Matrix
 import android.util.Log
+import com.fablecities.android.worldgen.DemoCity
 import com.fablecities.android.worldgen.Heightmap
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
