@@ -132,7 +132,7 @@ class HudOverlayView(context: Context) : View(context) {
     private fun drawHud(canvas: Canvas) {
         val gv = gameView
         val day = gv?.renderer?.day ?: 1
-        val hour = gv?.renderer?.hour ?: 8f
+        val hour = gv?.renderer?.hour ?: 14f
         paint.style = Paint.Style.FILL
 
         glass(canvas, RectF(34f, 28f, 620f, 106f))

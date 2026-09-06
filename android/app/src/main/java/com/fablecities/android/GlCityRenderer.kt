@@ -5,6 +5,7 @@ import android.opengl.GLSurfaceView
 import android.opengl.Matrix
 import android.util.Log
 import com.fablecities.android.worldgen.DemoCity
+import com.fablecities.android.worldgen.Environment
 import com.fablecities.android.worldgen.Heightmap
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -52,10 +53,15 @@ class GlCityRenderer : GLSurfaceView.Renderer {
     private val vpM = FloatArray(16)
     private val invVpM = FloatArray(16)
 
-    // --- time of day ---
-    var hour = 8f
+    // --- time of day: the site's defaults (Config.js time=14.0, World.js month=5/day=1,
+    // secondsPerHour=20) and the site's clock speed ---
+    var hour = Environment.DEFAULT_HOUR.toFloat()
         private set
     var day = 1
+    private var envHour = Float.NaN
+    private var envDoy = -1
+    private val envState = Environment.EnvState()
+    private val sun = SunState()
 
     // --- world constants: the SITE'S real world (2048 m, seed 1337, sea level 0) ---
     private val mapHalf = 1024f
@@ -187,7 +193,7 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         frameNanos = now
 
         if (!paused) {
-            hour += dt / 18f
+            hour += dt / 20f // World.js: secondsPerHour = 20 at speed 1
             if (hour >= 24f) {
                 hour -= 24f
                 day++
@@ -212,7 +218,7 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         Matrix.multiplyMM(vpM, 0, projM, 0, viewM, 0)
         Matrix.invertM(invVpM, 0, vpM, 0)
 
-        val sun = sunState()
+        val sun = updateSunState()
         GLES30.glViewport(letterbox[0].toInt(), letterbox[1].toInt(), letterbox[2].toInt(), letterbox[3].toInt())
         GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT or GLES30.GL_DEPTH_BUFFER_BIT)
 
@@ -237,53 +243,70 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         }
     }
 
-    // ---------------------------------------------------------------- sun & palette
+    // ---------------------------------------------------------------- environment (the site's real sky)
 
     private class SunState {
-        var dir = FloatArray(3)
-        var color = FloatArray(3)
-        var ambient = FloatArray(3)
-        var dayFactor = 1f
-        var zenith = FloatArray(3)
-        var horizon = FloatArray(3)
+        var dir = FloatArray(3)      // direction TOWARD the shadow-casting light (sun or moon, elev-clamped)
+        var skySun = FloatArray(3)   // direction TOWARD the true sun (unclamped) for sky glow / water specular
+        var color = FloatArray(3)    // display-referred light colour (intensity x exposure folded in)
+        var ambient = FloatArray(3)  // display-referred hemisphere sky fill
+        var dayFactor = 1f           // 1 by day, 0 at night (drives window lights)
+        var zenith = FloatArray(3)   // CPU sky-model zenith radiance (display-referred)
+        var horizon = FloatArray(3)  // CPU sky-model horizon radiance (display-referred)
+        var fog = FloatArray(3)      // aerial-perspective colour (display-referred)
+        var glow = FloatArray(3)     // sky-dome sun glow tint (unit colour x sunUp)
+        var ambKey = 1f              // display ambient key for the water shader
     }
 
-    private fun sunState(): SunState {
-        val s = SunState()
-        val ang = (hour - 6f) / 12f * Math.PI.toFloat()
-        val elev = sin(ang)
-        val dirX = cos(ang) * 0.42f
-        val dirZ = -0.78f
-        val len = sqrt(dirX * dirX + max(0.12f, elev) * max(0.12f, elev) + dirZ * dirZ)
-        s.dir[0] = dirX / len
-        s.dir[1] = max(0.12f, elev) / len
-        s.dir[2] = dirZ / len
-        s.dayFactor = (elev * 3.2f + 0.12f).coerceIn(0f, 1f)
-        val warm = (1f - (elev * 1.8f).coerceIn(0f, 1f))
-        val sunUp = s.dayFactor
-        s.color[0] = (1.0f * (1 - warm * 0.35f) + 0.0f) * sunUp
-        s.color[1] = (0.62f + 0.36f * (1 - warm)) * sunUp
-        s.color[2] = (0.38f + 0.54f * (1 - warm)) * sunUp
-        // ambient: cool blue at night, sky-tinted at day
-        s.ambient[0] = 0.05f + 0.33f * s.dayFactor
-        s.ambient[1] = 0.07f + 0.41f * s.dayFactor
-        s.ambient[2] = 0.13f + 0.53f * s.dayFactor
-        // sky palette
-        val dayZen = floatArrayOf(0.22f, 0.44f, 0.78f)
-        val dayHor = floatArrayOf(0.66f, 0.78f, 0.88f)
-        val duskZen = floatArrayOf(0.12f, 0.14f, 0.30f)
-        val duskHor = floatArrayOf(0.86f, 0.44f, 0.22f)
-        val nightZen = floatArrayOf(0.015f, 0.025f, 0.06f)
-        val nightHor = floatArrayOf(0.05f, 0.08f, 0.16f)
-        val duskMix = (1f - abs(elev) * 2.4f).coerceIn(0f, 1f)
-        for (i in 0..2) {
-            val dayC = dayZen[i] * (1 - duskMix) + duskZen[i] * duskMix
-            val horC = dayHor[i] * (1 - duskMix) + duskHor[i] * duskMix
-            s.zenith[i] = dayC * s.dayFactor + nightZen[i] * (1 - s.dayFactor)
-            s.horizon[i] = horC * s.dayFactor + nightHor[i] * (1 - s.dayFactor)
+    /** Display key scales: the web multiplies radiance by exposure and tone-maps (AgX); the native
+     *  pipeline clips, so radiance x exposure is folded into the uniforms through one constant. */
+    private const val K_LIGHT = 0.25
+    private const val K_SKY = 0.32
+
+    /** Rebuild the lighting key from the ported site model. Refreshed at the web's cadence
+     *  (0.15 s or on time jumps); between refreshes the last key is reused — the sun moves
+     *  imperceptibly within 0.02 h of game time. */
+    private fun updateSunState(): SunState {
+        val doy = Environment.dayOfYear(Environment.DEFAULT_MONTH, Environment.DEFAULT_DAY) + (day - 1)
+        val eyeY = camTarget[1] + camDist * sin(camPitch)
+        val camAlt = max(1.0, eyeY.toDouble())
+        // camera forward (horizontal), as the web's horizon weighting uses
+        val fwdX = -cos(camPitch) * sin(camYaw)
+        val fwdZ = -cos(camPitch) * cos(camYaw)
+        val jumped = java.lang.Float.isNaN(envHour) || envDoy != doy ||
+            abs(hour - envHour) > 0.02f || abs(camAlt.toFloat() - envCamAlt) > 4f
+        if (jumped) {
+            envHour = hour
+            envDoy = doy
+            envCamAlt = camAlt.toFloat()
+            Environment.compute(hour.toDouble(), doy, Environment.LATITUDE, camAlt, fwdX.toDouble(), fwdZ.toDouble(), envState)
+            val st = envState
+            // shadow-casting light: toward-light direction, display key = intensity x exposure x K
+            val iK = st.sunIntensity >= st.moonIntensity
+            sun.dir[0] = -st.lightDir[0].toFloat(); sun.dir[1] = -st.lightDir[1].toFloat(); sun.dir[2] = -st.lightDir[2].toFloat()
+            sun.skySun[0] = st.sunDir[0].toFloat(); sun.skySun[1] = st.sunDir[1].toFloat(); sun.skySun[2] = st.sunDir[2].toFloat()
+            val lc = if (iK) st.sunColor else st.moonColor
+            val li = (if (iK) st.sunIntensity else st.moonIntensity) * st.exposure * K_LIGHT
+            sun.color[0] = (lc[0] * li).toFloat(); sun.color[1] = (lc[1] * li).toFloat(); sun.color[2] = (lc[2] * li).toFloat()
+            val aK = st.hemiIntensity * st.exposure * K_LIGHT
+            sun.ambient[0] = (st.hemiCol[0] * aK).toFloat(); sun.ambient[1] = (st.hemiCol[1] * aK).toFloat(); sun.ambient[2] = (st.hemiCol[2] * aK).toFloat()
+            sun.dayFactor = (1.0 - st.nightFactor).toFloat()
+            val sK = st.exposure * K_SKY
+            sun.zenith[0] = (st.skyAvg[0] * sK).toFloat(); sun.zenith[1] = (st.skyAvg[1] * sK).toFloat(); sun.zenith[2] = (st.skyAvg[2] * sK).toFloat()
+            sun.horizon[0] = (st.horizonAvg[0] * sK).toFloat(); sun.horizon[1] = (st.horizonAvg[1] * sK).toFloat(); sun.horizon[2] = (st.horizonAvg[2] * sK).toFloat()
+            sun.fog[0] = (st.fogColor[0] * sK).toFloat(); sun.fog[1] = (st.fogColor[1] * sK).toFloat(); sun.fog[2] = (st.fogColor[2] * sK).toFloat()
+            // sky-dome glow: unit sun colour x sunUp (refraction keeps the disc visible to about -0.8 deg)
+            val sunUp = Environment.smoothstep(-1.8, 1.2, st.sunAltDeg)
+            val gMax = max(st.sunColor[0], max(st.sunColor[1], st.sunColor[2])).coerceAtLeast(1e-4)
+            sun.glow[0] = (st.sunColor[0] / gMax * sunUp).toFloat()
+            sun.glow[1] = (st.sunColor[1] / gMax * sunUp).toFloat()
+            sun.glow[2] = (st.sunColor[2] / gMax * sunUp).toFloat()
+            sun.ambKey = (st.hemiIntensity * st.exposure * K_LIGHT).toFloat()
         }
-        return s
+        return sun
     }
+
+    private var envCamAlt = Float.NaN
 
     // ---------------------------------------------------------------- terrain / noise
 
@@ -1164,7 +1187,8 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         GLES30.glUniform3f(u(progWater, "uZenith"), sun.zenith[0], sun.zenith[1], sun.zenith[2])
         GLES30.glUniform3f(u(progWater, "uHorizon"), sun.horizon[0], sun.horizon[1], sun.horizon[2])
         GLES30.glUniform1f(u(progWater, "uTime"), frameNanos / 1_000_000_000f)
-        GLES30.glUniform3f(u(progWater, "uSunDir"), sun.dir[0], sun.dir[1], sun.dir[2])
+        GLES30.glUniform3f(u(progWater, "uSunDir"), sun.skySun[0], sun.skySun[1], sun.skySun[2])
+        GLES30.glUniform1f(u(progWater, "uAmbKey"), sun.ambKey)
         GLES30.glDrawArrays(GLES30.GL_TRIANGLES, 0, 6)
         GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, 0)
         GLES30.glDisable(GLES30.GL_BLEND)
@@ -1180,8 +1204,8 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         GLES30.glUniformMatrix4fv(u(progSky, "uInvVP"), 1, false, invVpM, 0)
         GLES30.glUniform3f(u(progSky, "uZenith"), sun.zenith[0], sun.zenith[1], sun.zenith[2])
         GLES30.glUniform3f(u(progSky, "uHorizon"), sun.horizon[0], sun.horizon[1], sun.horizon[2])
-        GLES30.glUniform3f(u(progSky, "uSunDir"), sun.dir[0], sun.dir[1], sun.dir[2])
-        GLES30.glUniform3f(u(progSky, "uSunColor"), sun.color[0], sun.color[1], sun.color[2])
+        GLES30.glUniform3f(u(progSky, "uSunDir"), sun.skySun[0], sun.skySun[1], sun.skySun[2])
+        GLES30.glUniform3f(u(progSky, "uSunColor"), sun.glow[0], sun.glow[1], sun.glow[2])
         GLES30.glUniform3f(u(progSky, "uCamPos"),
             camTarget[0] + camDist * cos(camPitch) * sin(camYaw),
             camTarget[1] + camDist * sin(camPitch),
@@ -1233,7 +1257,7 @@ class GlCityRenderer : GLSurfaceView.Renderer {
             float ndl = max(dot(normalize(vec3(0.0, 1.0, 0.0)), uSunDir), 0.0);
             vec3 col = vColor * uTint * (uAmbient + uSunColor * ndl);
             float d = length(uCamPos - vWorld);
-            float fog = 1.0 - exp(-d * 0.0011);
+            float fog = 1.0 - exp(-d * 0.00056);
             fragColor = vec4(mix(col, uFogColor, fog), 1.0);
         }
     """.trimIndent()
@@ -1292,7 +1316,7 @@ class GlCityRenderer : GLSurfaceView.Renderer {
             float ndl = max(dot(n, uSunDir), 0.0);
             float hemi = 0.5 + 0.5 * n.y;
             float d = length(uCamPos - vWorld);
-            float fog = 1.0 - exp(-d * 0.0011);
+            float fog = 1.0 - exp(-d * 0.00056);
             vec3 colOut;
             if (uKind < 8.5) {
                 // buildings: window grid on side faces
@@ -1348,6 +1372,7 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         uniform vec3 uSunDir;
         uniform vec3 uSunColor;   // CI emulator gate caught this missing declaration - the water
         uniform float uTime;      // shader failed to compile (undeclared identifier) and the water plane never rendered
+        uniform float uAmbKey;    // display ambient key — keeps night water dark (the web's lit-medium rule)
         out vec4 fragColor;
         void main() {
             vec3 viewDir = normalize(uCamPos - vWorld);
@@ -1355,12 +1380,12 @@ class GlCityRenderer : GLSurfaceView.Renderer {
             float w1 = sin(vWorld.x * 0.12 + uTime * 1.3) * 0.5 + 0.5;
             float w2 = sin(vWorld.z * 0.09 - uTime * 1.1) * 0.5 + 0.5;
             vec3 sky = mix(uHorizon, uZenith, 0.6);
-            vec3 deep = vec3(0.05, 0.16, 0.22) * (0.6 + 0.4 * w1 * w2);
+            vec3 deep = vec3(0.05, 0.16, 0.22) * (0.6 + 0.4 * w1 * w2) * (0.12 + 0.88 * min(uAmbKey, 1.2));
             vec3 col = mix(deep, sky, 0.35 + 0.45 * fres);
             float sunSpot = pow(max(dot(reflect(-viewDir, vec3(0.0, 1.0, 0.0)), uSunDir), 0.0), 90.0);
             col += uSunColor * sunSpot * 0.9;
             float d = length(uCamPos - vWorld);
-            float fog = 1.0 - exp(-d * 0.0011);
+            float fog = 1.0 - exp(-d * 0.00056);
             fragColor = vec4(mix(col, uHorizon, fog), 0.86);
         }
     """.trimIndent()

@@ -11,7 +11,7 @@ data class CityState(
     var money: Int = 125_000,
     var population: Int = 240,
     var day: Int = 1,
-    var hour: Float = 8f,
+    var hour: Float = 14f,
     var selectedTool: String = "SELECT",
     var edits: String = "",
     var camera: FloatArray? = null
@@ -47,7 +47,7 @@ data class CityState(
                 money = prefs.getInt("money", 125_000),
                 population = prefs.getInt("population", 240),
                 day = prefs.getInt("day", 1),
-                hour = prefs.getFloat("hour", 8f),
+                hour = prefs.getFloat("hour", 14f),
                 selectedTool = prefs.getString("selectedTool", "SELECT") ?: "SELECT",
                 edits = prefs.getString("edits", "") ?: "",
                 camera = cam
