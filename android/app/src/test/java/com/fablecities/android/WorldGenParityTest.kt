@@ -87,6 +87,23 @@ class WorldGenParityTest {
     }
 
     @Test
+    fun demoCity_sitePicker_matchesWeb() {
+        // the site picker (verbatim DemoCity.js port) must find THE site the browser finds
+        val hm = Heightmap(size = 2048, spacing = 4, seed = 1337).generate()
+        val dc = com.fablecities.android.worldgen.DemoCity(hm, 1337)
+        assertNear(dc.site.cx, -284.0, 1e-6, "site.cx")
+        assertNear(dc.site.cz, -180.0, 1e-6, "site.cz")
+        assertNear(dc.site.ux, -0.25133505943237494, 1e-9, "site.ux")
+        assertNear(dc.site.uz, 0.9679001435582726, 1e-9, "site.uz")
+        assertNear(dc.site.vx, -0.9679001435582726, 1e-9, "site.vx")
+        assertNear(dc.site.vz, -0.25133505943237494, 1e-9, "site.vz")
+        assertNear(dc.site.shoreDist, 177.84921936175658, 1e-6, "shoreDist")
+        assertEquals(6.0, dc.COAST_V, 1e-9)
+        assertEquals(-910.0, dc.HW_V, 1e-9)
+        assertNear(dc.shore.at(264.0), 82.5, 1e-9, "shore.at(264)")
+    }
+
+    @Test
     fun heightmap_conformPath_matchesWeb() {
         // the road-corridor mechanism (the site's roads use the same conformPath)
         val hm = Heightmap(size = 2048, spacing = 4, seed = 1337).generate()

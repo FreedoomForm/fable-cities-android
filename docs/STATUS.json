@@ -1,5 +1,5 @@
 {
- "updated": "android-native-world-2",
+ "updated": "android-native-city-3",
  "runId": "loop_20260904_2",
  "threshold": 8.5,
  "modules": {
@@ -1116,10 +1116,10 @@
  },
  "android": {
   "track": "dual",
-  "round": 2,
-  "what": "Track B now generates THE SITE'S world natively: bit-exact Kotlin port of the web worldgen core (shared/random.js mulberry32, shared/noise.js simplex/fbm/ridged, terrain/Heightmap.js analytic generator + grid + conformPath/flattenRect/conformDisc) in android/app/src/main/java/com/fablecities/android/worldgen/. Verified against Node golden values (seed 1337): RNG stream, hash2, simplex probes, 16 sampleGen probes, full 2048m/4m grid min/max + 5 getHeight probes, conformPath bounds + heights - ALL bit-exact (local kotlinc run) and enforced by JVM golden tests (WorldGenParityTest) on every CI run. The native scene now renders the real valley+river+sea+northern mountains; prebuilt avenue/streets conform the terrain via the site's own conformPath; buildings/vehicles/tools sit on real heights.",
+  "round": 3,
+  "what": "Track B now lays out THE SITE'S demo city: bit-exact port of DemoCity.js site picker (shoreline-fitted local frame), shoreProfile, block grading, and the full street network - motorway with gentle S, avenue spine, trumpet interchange (4 slip roads), 13x8 downtown grid, coastal boulevard extensions, esplanade + cross streets, waterfront promenade, suburban crescents, eastern hillside crescent, industrial estate + freight links, country lane (50 polylines). Preview blocks per the web block plan (PARKS/CIVIC/LANDMARK/SITE_BLOCK + zoneFor mix, yaw-aligned to the city frame, 201 boxes); vehicles drive the spine and coastal boulevard polylines. Roads conform via Heightmap.conformPath; tools block on road segments (signed distance). Building shader rotates by uYaw (picking uses yaw-expanded AABBs).",
   "why": "User acceptance criterion is 1:1 visual parity with the browser game; the three.js PBR/CSM/bloom/SMAA stack cannot be reproduced natively quickly. Explicitly clarified by user 2026-09-06.",
-  "verification": "Local kotlinc 2.0.21 parity run vs Node probe: identical values. CI: JVM golden tests + emulator gate (both activities) pending on this push.",
+  "verification": "Local kotlinc: SITE identity vs Node probe (cx=-284, cz=-180, frame vectors, shoreDist, COAST_V=6, HW_V=-910, shore profile) - identical; 50 roads/201 blocks/2 routes built in 17ms. CI: 7 golden tests (site test added) + emulator gate pending on this push.",
   "score": null
  }
 }
