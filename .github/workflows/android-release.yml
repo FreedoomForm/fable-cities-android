@@ -50,9 +50,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: fable-cities-${{ github.sha }}
-          path: |
-            android/app/build/outputs/apk/debug/*.apk
-            android/app/build/reports/**
+          path: android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 30
 
@@ -97,11 +95,13 @@ jobs:
           script: |
             # NOTE: android-emulator-runner executes this script LINE BY LINE (one sh -c per line) -
             # multi-line if/for blocks are a syntax error here. Keep every statement on one line.
-            echo "PWD=$(pwd)"
-            ls -la "$GITHUB_WORKSPACE/artifact" || true
-            APK=$(find "$GITHUB_WORKSPACE/artifact" -name "*.apk" -type f 2>/dev/null | head -1)
+            echo "GW=$GITHUB_WORKSPACE PWD=$(pwd)"
+            find . -type f -name "*.apk" 2>/dev/null || true
+            APK=$(find "$GITHUB_WORKSPACE/artifact" -type f -name "*.apk" 2>/dev/null | head -1)
             echo "APK=$APK"
-            [ -n "$APK" ] || { echo "::error::no .apk in the downloaded artifact"; exit 1; }
+            [ -n "$APK" ] || APK="$GITHUB_WORKSPACE/artifact/app-debug.apk"
+            ls -la "$APK" || true
+            [ -f "$APK" ] || { echo "::error::no .apk in the downloaded artifact"; exit 1; }
             adb install -r "$APK"
             adb logcat -c
             adb shell am start -W -n com.fablecities.android/.MainActivity
