@@ -8,6 +8,7 @@ import com.fablecities.android.worldgen.DemoCity
 import com.fablecities.android.worldgen.Environment
 import com.fablecities.android.worldgen.Heightmap
 import com.fablecities.android.worldgen.Rng
+import com.fablecities.android.worldgen.RoadNetBuilder
 import com.fablecities.android.worldgen.SimBuilding
 import com.fablecities.android.worldgen.Stars
 import com.fablecities.android.worldgen.Traffic
@@ -27,8 +28,10 @@ import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.atan2
 import kotlin.math.cos
+import kotlin.math.exp
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.roundToInt
 import kotlin.math.sin
 import kotlin.math.sqrt
 
@@ -127,9 +130,11 @@ class GlCityRenderer : GLSurfaceView.Renderer {
 
     private class RoadSeg(val x0: Float, val z0: Float, val x1: Float, val z1: Float, val hw: Float)
 
-    // --- traffic: the site's real IDM car-following sim (traffic/TrafficSim.js port) ---
-    private var trafficNet: Traffic.MiniNet? = null
+    // --- traffic: the site's real IDM car-following sim + full LaneNetwork (junctions, signals,
+    //     conflict matrix, A*) — traffic/LaneNetwork.js + TrafficSim.js ports ---
+    private var trafficNet: Traffic.LaneNetwork? = null
     private var trafficSim: Traffic.TrafficSim? = null
+    private val MAX_VEHICLES = 96
     private val roadSegs = ArrayList<RoadSeg>()
     private var cityYaw = 0f
     private lateinit var demo: DemoCity
@@ -758,27 +763,49 @@ class GlCityRenderer : GLSurfaceView.Renderer {
     }
 
     private fun generateVehicles() {
-        // the demo routes become the lane network; the site's traffic sim drives them
-        val els = ArrayList<Traffic.LaneEl>()
-        for (r in demo.routes.indices) {
-            val route = demo.routes[r]
-            val pts = ArrayList<DoubleArray>()
-            for (i in 0 until route.count) {
-                pts.add(doubleArrayOf(
-                    route.samples[i * 3].toDouble(), route.samples[i * 3 + 1].toDouble(), route.samples[i * 3 + 2].toDouble()))
-            }
-            // 50 km/h lane limit; the curvature limiter slows the bends exactly like the web
-            els.add(Traffic.LaneEl(r, 0, Traffic.makePoly(pts, 50.0 * Traffic.KMH), 50.0 * Traffic.KMH, 2, intArrayOf(r)))
-        }
-        trafficNet = Traffic.MiniNet(els)
-        val sim = Traffic.TrafficSim(trafficNet!!, 1337, simHashString("traffic"))
+        // the demo street polylines become the site's full lane network (nodes at every meeting
+        // and crossing, per-direction lanes, the site's classify() connection rules) — junctions,
+        // signals, the conflict matrix and A* routing then come from the bit-exact LaneNetwork port
+        val net = Traffic.LaneNetwork()
+        net.rebuild(RoadNetBuilder.build(demo.roads))
+        trafficNet = net
+        val sim = Traffic.TrafficSim(net, 1337, simHashString("traffic"))
         sim.onNetwork()
-        sim.spawn(40)
+        sim.spawn(minOf(40, targetVehicleCount() + 6))
         trafficSim = sim
     }
 
+    /** traffic/index.js targetCounts(): byNetwork vs byCity, rush-hour + night curves (density 1). */
+    private fun targetVehicleCount(): Int {
+        val net = trafficNet ?: return 0
+        val laneLen = net.totalLength
+        if (laneLen <= 0.0) return 0
+        val byNetwork = laneLen / 24.0
+        val pop = if (simReady()) simEconomy.e.population else 0
+        val jobs = if (simReady()) simEconomy.e.jobs else 0
+        val byCity = 70.0 + pop * 0.075 + jobs * 0.050
+        val h = hour.toDouble()
+        val rush = 0.50 + 0.50 * maxOf(
+            exp(-Math.pow((h - 8.2) / 2.8, 2.0)),
+            maxOf(exp(-Math.pow((h - 17.6) / 3.6, 2.0)), exp(-Math.pow((h - 12.5) / 3.4, 2.0)) * 0.85),
+        )
+        val night = if (h < 5.2 || h > 22.6) 0.42 else 1.0
+        // native cap: the GLES renderer draws one box body per agent (no instancing yet), so the
+        // fleet is capped below the web's ~900 for frame time; the sim formula itself is the web's
+        val v = minOf(byNetwork, maxOf(byCity, byNetwork * 0.92)) * rush * night
+        return maxOf(0, minOf(MAX_VEHICLES, v.roundToInt()))
+    }
+
     private fun updateVehicles(dt: Float) {
-        trafficSim?.update(min(0.05, dt.toDouble()))
+        val sim = trafficSim ?: return
+        val t = targetVehicleCount()
+        sim.target = t
+        val dv = t - sim.vehicles.size
+        if (dv > 0) sim.spawn(minOf(26, dv))
+        else if (dv < -3) sim.despawnFar(minOf(6, -dv))
+        // web passes the camera position; the native camera orbits 300+ m out, so the look-at
+        // target is the despawn anchor (vehicles stay alive where the player is actually looking)
+        sim.update(min(0.05, dt.toDouble()), camTarget[0].toDouble(), camTarget[2].toDouble())
     }
 
     private fun vehiclePaint(paint: Int, out: FloatArray) {

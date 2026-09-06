@@ -25,14 +25,13 @@ class TrafficParityTest {
         )
     }
 
-    private fun loopNet(): Traffic.MiniNet {
+    private fun loopNet(): Traffic.LaneNetwork {
         val pts = ArrayList<DoubleArray>()
         for (i in 0 until 16) {
             val a = (i / 16.0) * kotlin.math.PI * 2.0
             pts.add(doubleArrayOf(kotlin.math.cos(a) * 300.0, 2.0 + kotlin.math.sin(a * 3.0) * 1.5, kotlin.math.sin(a) * 300.0))
         }
-        val poly = Traffic.makePoly(pts, 50.0 * Traffic.KMH)
-        return Traffic.MiniNet(listOf(Traffic.LaneEl(0, 0, poly, 50.0 * Traffic.KMH, 2, intArrayOf(0))))
+        return Traffic.loopNet(pts, 50.0)
     }
 
     @Test

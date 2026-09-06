@@ -4,6 +4,8 @@ import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.atan2
 import kotlin.math.asin
+import kotlin.math.cos
+import kotlin.math.sin
 import kotlin.math.ceil
 import kotlin.math.exp
 import kotlin.math.floor
@@ -21,14 +23,17 @@ import kotlin.math.sqrt
  *  - `traffic/VehicleModels.js` VEHICLE_SPECS/VEHICLE_IDS: the six vehicle types and their
  *    spawn weights / dimensions / vmax factors.
  *  - `traffic/TrafficSim.js`: the agent simulation — weighted type picking, clear-check spawning,
- *    route extension, spatial buckets, the IDM car-following leader search (same lane + up to 4
- *    route elements ahead, 85 m lookahead), the per-vehicle integration (free-flow + gap term,
- *    curve entry speed, brake lamps, wheel spin, steering, indicators) and element transitions.
+ *    route extension with the A* budget, spatial buckets, the IDM car-following leader search,
+ *    the per-vehicle integration and element transitions.
+ *  - the FULL LaneNetwork: lane elements + Bézier connectors through junctions, junction records
+ *    with signal phases (or priority rules), the connector conflict matrix, the rank-weighted
+ *    spawn table and the A* router; and the junction control in TrafficSim: red-light stop
+ *    distances, per-node first-come-first-served claims ordered by turn priority and rank,
+ *    blocked-exit refusal (never enter a junction whose exit is full) and turn indicators.
  *
- * Junction claims/signals and the pedestrian network are NOT in this slice (the native demo
- * network has no junctions yet — nodes are empty, so the web code takes the same no-control
- * paths). Bit-parity is pinned by TrafficParityTest against tools/probe_traffic.mjs, which runs
- * the REAL web TrafficSim on the same minimal net.
+ * Bit-parity is pinned by TrafficParityTest (single closed-loop lane) and LaneNetworkParityTest
+ * (a signalised 4-way + an unsignalised T junction, driven for 900 steps) against the REAL web
+ * modules run in Node by tools/probe_traffic.mjs and tools/probe_lanenetwork.mjs.
  */
 object Traffic {
     const val KMH = 1.0 / 3.6
@@ -154,19 +159,507 @@ object Traffic {
     )
     val IDS = SPECS.map { it.id }
 
-    // ------------------------------------------------------------------ lane network (minimal)
+    // ------------------------------------------------------------------ lane network (LaneNetwork.js)
 
-    /** One lane element: kind 0 = lane, kind 1 = connector (not used by the demo net yet). */
-    class LaneEl(val idx: Int, val kind: Int, val poly: Poly, val speed: Double, val rank: Int, val outs: IntArray)
+    private val ROAD_RANK = mapOf("highway" to 4, "avenue" to 3, "local" to 2, "path" to 1)
+    private val YIELD_DELAY = doubleArrayOf(0.0, 0.35, 1.5, 2.2)
+    private val SPAWN_W = mapOf(1 to 0.30, 2 to 0.75, 3 to 3.6, 4 to 5.2)
 
-    /** Minimal routable net: the demo loops have one element per route with no junctions.
-     *  randomLane consumes one rng draw (the web calls it as net.randomLane(this.rng()) — the
-     *  argument is evaluated — and a real weighted pick would use it; the single-lane fake
-     *  discards the value but the draw MUST happen for stream parity). */
-    class MiniNet(val elements: List<LaneEl>) {
-        val ready = true
-        fun randomLane(rng: Rng): Int { rng.next(); return 0 }
-        fun route(last: Int, goal: Int): IntArray? = null
+    /** One network element: kind 0 = a lane, kind 1 = a Bézier connector through a junction. */
+    class LElement(
+        val idx: Int, val kind: Int, val poly: Poly, val speed: Double,
+        var id: String = "",
+        var segmentId: String? = null,
+        var dir: Int = 0,
+        var from: String? = null,
+        var to: String? = null,
+        var width: Double = 3.5,
+        var rank: Int = 2,
+        var node: String? = null,       // connectors: the junction node id
+        var fromLane: Int = -1,
+        var toLane: Int = -1,
+        var turn: Int = 0,              // 0 straight, 1 right, 2 left, 3 u-turn
+        var sx: Double = 0.0,
+        var sz: Double = 0.0,
+        var ex: Double = 0.0,
+        var ez: Double = 0.0,
+    ) {
+        val outs = ArrayList<Int>()
+        var localIdx = -1
+        var yieldDelay = 0.0
+        var approach: Approach? = null  // lanes: the approach this lane feeds at its end node
+        var junction: NetNode? = null   // lanes: the node at the end
+        var junctionRef: NetNode? = null // connectors: the node the connector crosses
+    }
+
+    /** One approach arm at a junction (all lanes of one segment arriving). */
+    class Approach(val key: String, val dx: Double, val dz: Double, val rank: Int) {
+        val lanes = ArrayList<Int>()
+        var green = true
+        var amber = false
+        var idx = 0
+    }
+
+    /** A junction claim: a vehicle asking to cross a controlled node. */
+    class Claim(
+        val id: Int, val veh: Vehicle?, var local: Int, var key: Double, val ticket: Int,
+    ) {
+        var state = 0
+        var go = false
+        var seen = 0
+        var blockedExit = false
+    }
+
+    /** A junction node: approaches, connectors, signal phases and the conflict matrix. */
+    class NetNode(val id: String, val x: Double, val z: Double) {
+        val approaches = LinkedHashMap<String, Approach>()
+        val conns = ArrayList<Int>()
+        var conflict = ByteArray(0)
+        var signalized = false
+        var phases: List<IntArray> = emptyList()
+        var phase = 0
+        var timer = 0.0
+        var state = 0
+        var cycle = 0
+        var maxRank = 1
+        val claims = LinkedHashMap<Int, Claim>()
+        val inLanes = ArrayList<Int>()
+        var approachList: List<Approach> = emptyList()
+        var greenTime = 0.0
+        var needsControl = false
+    }
+
+    /** Input graph (the web's roads.api.laneGraph() shape). Speeds are km/h. */
+    class GraphLane(
+        val id: String, val points: List<DoubleArray>, val speed: Double,
+        val segmentId: String, val dir: Int, val from: String?, val to: String?, val width: Double,
+    )
+
+    class LaneGraphIn(
+        val lanes: List<GraphLane>,
+        val connections: LinkedHashMap<String, List<String>>,
+        val nodePos: Map<String, DoubleArray>,
+        val segType: Map<String, String>,
+    )
+
+    private class HeapItem(val node: Int, val f: Double)
+
+    /** Binary min-heap keyed by f (LaneNetwork.js Heap). */
+    private class Heap {
+        val a = ArrayList<HeapItem>()
+        val size: Int get() = a.size
+        fun clear() = a.clear()
+        fun push(node: Int, f: Double) {
+            a.add(HeapItem(node, f))
+            var i = a.size - 1
+            while (i > 0) {
+                val p = (i - 1) shr 1
+                if (a[p].f <= a[i].f) break
+                val t = a[p]; a[p] = a[i]; a[i] = t
+                i = p
+            }
+        }
+        fun pop(): HeapItem {
+            val top = a[0]
+            val last = a.removeAt(a.size - 1)
+            if (a.isNotEmpty()) {
+                a[0] = last
+                var i = 0
+                while (true) {
+                    val l = 2 * i + 1; val r = l + 1
+                    var m = i
+                    if (l < a.size && a[l].f < a[m].f) m = l
+                    if (r < a.size && a[r].f < a[m].f) m = r
+                    if (m == i) break
+                    val t = a[m]; a[m] = a[i]; a[i] = t
+                    i = m
+                }
+            }
+            return top
+        }
+    }
+
+    private fun tangentEnd(poly: Poly): DoubleArray {
+        val n = poly.n
+        val dx = poly.x[n - 1].toDouble() - poly.x[n - 2].toDouble()
+        val dz = poly.z[n - 1].toDouble() - poly.z[n - 2].toDouble()
+        val l = hypot(dx, dz)
+        val ln = if (l == 0.0) 1.0 else l
+        return doubleArrayOf(dx / ln, dz / ln)
+    }
+
+    private fun tangentStart(poly: Poly): DoubleArray {
+        val dx = poly.x[1].toDouble() - poly.x[0].toDouble()
+        val dz = poly.z[1].toDouble() - poly.z[0].toDouble()
+        val l = hypot(dx, dz)
+        val ln = if (l == 0.0) 1.0 else l
+        return doubleArrayOf(dx / ln, dz / ln)
+    }
+
+    /** Bézier connector between the end of one lane and the start of another (LaneNetwork.js). */
+    fun bezierConnector(p0: DoubleArray, t0: DoubleArray, p1: DoubleArray, t1: DoubleArray, speed: Double): Poly {
+        val dx = p1[0] - p0[0]; val dz = p1[2] - p0[2]
+        val d = hypot(dx, dz)
+        if (d < 0.08) return makePoly(listOf(p0, doubleArrayOf(p1[0], p1[1], p1[2])), speed)
+        val h = min(d * 0.46, 16.0)
+        val c0 = doubleArrayOf(p0[0] + t0[0] * h, p0[1], p0[2] + t0[1] * h)
+        val c1 = doubleArrayOf(p1[0] - t1[0] * h, p1[1], p1[2] - t1[1] * h)
+        val steps = max(3.0, min(14.0, ceil(d / 1.6))).toInt()
+        val pts = ArrayList<DoubleArray>(steps + 1)
+        for (i in 0..steps) {
+            val t = i.toDouble() / steps
+            val u = 1.0 - t
+            val a = u * u * u; val b = 3.0 * u * u * t; val c = 3.0 * u * t * t; val e = t * t * t
+            pts.add(doubleArrayOf(
+                a * p0[0] + b * c0[0] + c * c1[0] + e * p1[0],
+                a * p0[1] + b * c0[1] + c * c1[1] + e * p1[1],
+                a * p0[2] + b * c0[2] + c * c1[2] + e * p1[2],
+            ))
+        }
+        return makePoly(pts, speed)
+    }
+
+    /** Proper (non-degenerate, strictly interior) segment-segment intersection test. */
+    private fun segInt(ax: Double, az: Double, bx: Double, bz: Double,
+                       cx: Double, cz: Double, dx: Double, dz: Double): Boolean {
+        val r1 = bx - ax; val r2 = bz - az; val s1 = dx - cx; val s2 = dz - cz
+        val den = r1 * s2 - r2 * s1
+        if (abs(den) < 1e-9) return false
+        val t = ((cx - ax) * s2 - (cz - az) * s1) / den
+        val u = ((cx - ax) * r2 - (cz - az) * r1) / den
+        return t > 0.02 && t < 0.98 && u > 0.02 && u < 0.98
+    }
+
+    private fun polysCross(a: Poly, b: Poly): Boolean {
+        for (i in 0 until a.n - 1) {
+            for (j in 0 until b.n - 1) {
+                if (segInt(a.x[i].toDouble(), a.z[i].toDouble(), a.x[i + 1].toDouble(), a.z[i + 1].toDouble(),
+                        b.x[j].toDouble(), b.z[j].toDouble(), b.x[j + 1].toDouble(), b.z[j + 1].toDouble())) return true
+            }
+        }
+        return false
+    }
+
+    /** The routable lane network: lanes, connectors, junctions, signals, spawn table, A*. */
+    class LaneNetwork {
+        val elements = ArrayList<LElement>()
+        val laneElems = ArrayList<Int>()
+        val pedElements = ArrayList<LElement>() // the pedestrian network is a later slice
+        val nodes = LinkedHashMap<String, NetNode>()
+        var spawnCum = FloatArray(0)
+            private set
+        var spawnTotal = 0.0
+            private set
+        var totalLength = 0.0
+            private set
+        var pedCum = FloatArray(0)
+        var pedTotal = 0.0
+        var ready = false
+            private set
+        var version = -1
+
+        // A* working set
+        private var g = FloatArray(0)
+        private var from = IntArray(0)
+        private var stamp = IntArray(0)
+        private var epoch = 0
+        private val open = Heap()
+
+        /** Rebuild from a lane graph. Returns true when the network changed. */
+        fun rebuild(graph: LaneGraphIn, versionIn: Int = 0): Boolean {
+            if (versionIn == version && ready) return false
+            version = versionIn
+            elements.clear()
+            laneElems.clear()
+            nodes.clear()
+            val byId = HashMap<String, Int>()
+
+            for (lane in graph.lanes) {
+                if (lane.points.size < 2) continue
+                val speedKmh = if (lane.speed != 0.0) lane.speed else 50.0
+                val speed = speedKmh * KMH
+                val poly = makePoly(lane.points, speed)
+                if (!(poly.len > 1.2)) continue
+                val idx = elements.size
+                val rank = ROAD_RANK[graph.segType[lane.segmentId]] ?: 2
+                val el = LElement(
+                    idx, 0, poly, speed,
+                    id = lane.id, segmentId = lane.segmentId, dir = lane.dir,
+                    from = lane.from, to = lane.to, width = lane.width, rank = rank,
+                    sx = poly.x[0].toDouble(), sz = poly.z[0].toDouble(),
+                    ex = poly.x[poly.n - 1].toDouble(), ez = poly.z[poly.n - 1].toDouble(),
+                )
+                elements.add(el)
+                laneElems.add(idx)
+                byId[lane.id] = idx
+            }
+
+            // --- connectors through junctions
+            for ((laneId, outs) in graph.connections) {
+                val ai = byId[laneId] ?: continue
+                if (outs.isEmpty()) continue
+                val A = elements[ai]
+                val pa = doubleArrayOf(A.poly.x[A.poly.n - 1].toDouble(), A.poly.y[A.poly.n - 1].toDouble(), A.poly.z[A.poly.n - 1].toDouble())
+                val ta = tangentEnd(A.poly)
+                for (outId in outs) {
+                    val bi = byId[outId] ?: continue
+                    if (bi == ai) continue
+                    val B = elements[bi]
+                    val pb = doubleArrayOf(B.poly.x[0].toDouble(), B.poly.y[0].toDouble(), B.poly.z[0].toDouble())
+                    val tb = tangentStart(B.poly)
+                    val speed = min(A.speed, B.speed)
+                    val poly = bezierConnector(pa, ta, pb, tb, speed)
+                    val idx = elements.size
+                    val dot = ta[0] * tb[0] + ta[1] * tb[1]
+                    val crossv = ta[0] * tb[1] - ta[1] * tb[0]
+                    // +X is the vehicle's left, so crossv < 0 means the connector bends left.
+                    val turn = if (dot > 0.86) 0 else if (dot < -0.7) 3 else if (crossv < 0) 2 else 1
+                    val el = LElement(
+                        idx, 1, poly, speed,
+                        id = "${laneId}>${outId}", node = A.to, fromLane = ai, toLane = bi,
+                        turn = turn, rank = A.rank,
+                        sx = pa[0], sz = pa[2], ex = pb[0], ez = pb[2],
+                    )
+                    el.outs.add(bi)
+                    elements.add(el)
+                    A.outs.add(idx)
+                }
+            }
+
+            buildJunctions(graph)
+            buildSpawnTable()
+            g = FloatArray(elements.size)
+            from = IntArray(elements.size)
+            stamp = IntArray(elements.size)
+            epoch = 0
+            ready = laneElems.isNotEmpty()
+            return true
+        }
+
+        private fun buildJunctions(graph: LaneGraphIn) {
+            fun ensure(id: String): NetNode {
+                var n = nodes[id]
+                if (n == null) {
+                    val p = graph.nodePos[id]
+                    n = NetNode(id, p?.get(0) ?: 0.0, p?.get(1) ?: 0.0)
+                    nodes[id] = n
+                }
+                return n
+            }
+            for (el in elements) {
+                if (el.kind != 0 || el.to == null) continue
+                val node = ensure(el.to!!)
+                node.inLanes.add(el.idx)
+                var ap = node.approaches[el.segmentId]
+                if (ap == null) {
+                    val t = tangentEnd(el.poly)
+                    ap = Approach(el.segmentId!!, t[0], t[1], el.rank)
+                    ap.idx = node.approaches.size
+                    node.approaches[el.segmentId!!] = ap
+                }
+                ap.lanes.add(el.idx)
+                el.approach = ap
+                el.junction = node
+                node.maxRank = max(node.maxRank, el.rank)
+            }
+            for (el in elements) {
+                if (el.kind != 1) continue
+                val node = nodes[el.node] ?: continue
+                el.localIdx = node.conns.size
+                node.conns.add(el.idx)
+                el.junctionRef = node
+                // how long a driver defers to conflicting traffic before taking the gap (seconds).
+                // Straight-through and major roads go first; left turns and minor roads yield, but only
+                // for a bounded time, so a single left-turner can never lock a single-lane approach.
+                el.yieldDelay = YIELD_DELAY[el.turn] + (4 - el.rank) * 0.55
+            }
+            for (node in nodes.values) {
+                val aps = node.approaches.values.toList()
+                node.approachList = aps
+                // real cities only light up junctions on the major network; local crossings run
+                // on priority (right-before-left / straight-before-turning), which keeps a grid flowing.
+                node.signalized = node.maxRank >= 3 && aps.size >= 3
+                // phase groups: opposite approaches share a green
+                val used = BooleanArray(aps.size)
+                val phases = ArrayList<IntArray>()
+                for (i in aps.indices) {
+                    if (used[i]) continue
+                    val group = ArrayList<Int>()
+                    group.add(i); used[i] = true
+                    var best = -1
+                    var bestDot = -0.55
+                    for (j in i + 1 until aps.size) {
+                        if (used[j]) continue
+                        val d = aps[i].dx * aps[j].dx + aps[i].dz * aps[j].dz
+                        if (d < bestDot) { bestDot = d; best = j }
+                    }
+                    if (best >= 0) { group.add(best); used[best] = true }
+                    phases.add(group.toIntArray())
+                }
+                node.phases = phases
+                if (node.signalized) {
+                    node.greenTime = 7.5 + 1.1 * aps.size
+                    node.cycle = 0
+                    // deterministic desync so a grid does not blink in unison (FNV-1a over node.id)
+                    var h = 2166136261.toInt()
+                    for (ch in node.id) { h = h xor ch.code; h *= 16777619 }
+                    node.timer = ((h.toLong() and 0xFFFFFFFFL) % 1000).toDouble() / 1000.0 * (node.greenTime + 4.4)
+                    node.phase = (h ushr 10) % max(1, node.phases.size)
+                }
+                // conflict matrix between the connectors of this junction
+                val k = node.conns.size
+                node.conflict = ByteArray(k * k)
+                for (a in 0 until k) {
+                    val A = elements[node.conns[a]]
+                    for (b in a + 1 until k) {
+                        val B = elements[node.conns[b]]
+                        var c = 0
+                        if (A.fromLane != B.fromLane) {
+                            c = if (A.toLane == B.toLane) 1 else if (polysCross(A.poly, B.poly)) 1 else 0
+                        }
+                        node.conflict[a * k + b] = c.toByte()
+                        node.conflict[b * k + a] = c.toByte()
+                    }
+                }
+                node.needsControl = false
+                var i = 0
+                while (i < k * k && !node.needsControl) {
+                    if (node.conflict[i].toInt() != 0) node.needsControl = true
+                    i++
+                }
+            }
+        }
+
+        private fun buildSpawnTable() {
+            var total = 0.0
+            var len = 0.0
+            val cum = FloatArray(laneElems.size)
+            // Weight by road rank. Arterials are weighted hard: in Cities: Skylines II the avenues carry a
+            // continuous stream while the back streets are nearly empty, and matching that ratio is what
+            // makes a hero frame looking down an avenue read as a busy city rather than a thin trickle.
+            for (i in laneElems.indices) {
+                val el = elements[laneElems[i]]
+                total += el.poly.len * (SPAWN_W[el.rank] ?: 1.0)
+                len += el.poly.len
+                cum[i] = total.toFloat()
+            }
+            spawnCum = cum
+            spawnTotal = total
+            totalLength = len
+        }
+
+        /** Pick a lane element index weighted by length (r in [0,1)). */
+        fun randomLane(r: Double): Int {
+            val cum = spawnCum
+            if (cum.isEmpty()) return -1
+            val target = r * spawnTotal
+            var lo = 0
+            var hi = cum.size - 1
+            while (lo < hi) {
+                val mid = (lo + hi) shr 1
+                if (cum[mid].toDouble() < target) lo = mid + 1 else hi = mid
+            }
+            return laneElems[lo]
+        }
+
+        fun randomPedLane(r: Double): Int {
+            val cum = pedCum
+            if (cum.isEmpty()) return -1
+            val target = r * pedTotal
+            var lo = 0
+            var hi = cum.size - 1
+            while (lo < hi) {
+                val mid = (lo + hi) shr 1
+                if (cum[mid].toDouble() < target) lo = mid + 1 else hi = mid
+            }
+            return laneElems[lo]
+        }
+
+        /**
+         * A* from lane element [startIdx] to lane element [goalIdx].
+         * Returns the element index path (lanes and connectors), or null.
+         */
+        fun route(startIdx: Int, goalIdx: Int, maxExpand: Int = 900): IntArray? {
+            if (startIdx == goalIdx) return intArrayOf(startIdx)
+            val els = elements
+            val gArr = g
+            val fromArr = from
+            val stampArr = stamp
+            epoch++
+            val ep = epoch
+            open.clear()
+            val goal = els[goalIdx]
+            val inv = 1.0 / 22.0
+            fun h(el: LElement): Double = hypot(el.ex - goal.sx, el.ez - goal.sz) * inv
+            gArr[startIdx] = 0f
+            fromArr[startIdx] = -1
+            stampArr[startIdx] = ep
+            open.push(startIdx, h(els[startIdx]))
+            var expanded = 0
+            while (open.size > 0) {
+                val top = open.pop()
+                val cur = top.node
+                if (cur == goalIdx) break
+                if (++expanded > maxExpand) return null
+                val curG = gArr[cur].toDouble()
+                if (top.f - h(els[cur]) > curG + 1e-3) continue
+                for (nx in els[cur].outs) {
+                    val el = els[nx]
+                    val cost = el.poly.len / max(3.0, el.speed) + (if (el.kind == 1) 1.2 + el.turn * 0.9 else 0.0)
+                    val ng = curG + cost
+                    if (stampArr[nx] == ep && gArr[nx].toDouble() <= ng) continue
+                    stampArr[nx] = ep
+                    gArr[nx] = ng.toFloat()
+                    fromArr[nx] = cur
+                    open.push(nx, ng + h(el))
+                }
+            }
+            if (stampArr[goalIdx] != ep) return null
+            val path = ArrayList<Int>()
+            var n = goalIdx
+            while (n >= 0 && path.size < 400) { path.add(n); n = fromArr[n] }
+            path.reverse()
+            return path.toIntArray()
+        }
+
+        /** Advance every signal cycle. */
+        fun updateSignals(dt: Double) {
+            for (node in nodes.values) {
+                if (!node.signalized || node.phases.isEmpty()) continue
+                node.timer += dt
+                val green = node.greenTime
+                val amber = 2.6
+                val allRed = 1.1
+                val total = green + amber + allRed
+                if (node.timer >= total) {
+                    node.timer -= total
+                    node.phase = (node.phase + 1) % node.phases.size
+                }
+                node.state = if (node.timer < green) 0 else if (node.timer < green + amber) 1 else 2
+                val active = node.phases[node.phase]
+                for (i in node.approachList.indices) {
+                    var on = false
+                    for (v in active) if (v == i) { on = true; break }
+                    node.approachList[i].green = on && node.state == 0
+                    node.approachList[i].amber = on && node.state == 1
+                }
+            }
+        }
+    }
+
+    /** Convenience: a single closed-loop lane with no junctions (the pre-junction demo net). */
+    fun loopNet(pts: List<DoubleArray>, speedKmh: Double = 50.0): LaneNetwork {
+        val graph = LaneGraphIn(
+            lanes = listOf(GraphLane("lane0", pts, speedKmh, "seg0", 1, null, null, 3.5)),
+            connections = linkedMapOf(),
+            nodePos = emptyMap(),
+            segType = mapOf("seg0" to "local"),
+        )
+        val net = LaneNetwork()
+        net.rebuild(graph)
+        // the pre-junction demo net was a closed loop: the single lane's one out is itself
+        if (net.elements.isNotEmpty()) net.elements[0].outs.add(0)
+        return net
     }
 
     // ------------------------------------------------------------------ the simulation
@@ -193,19 +686,32 @@ object Traffic {
         var spin = 0.0; var steer = 0.0; var yawRate = 0.0
         var speedRatio = 1.0
         var dist = 0.0
+        var speed = 0.0; var vx = 0.0; var vz = 0.0
+        var segmentId: String? = null
     }
 
     private fun cmpS(a: Vehicle, b: Vehicle): Int = if (a.s < b.s) -1 else if (a.s > b.s) 1 else 0
 
-    class TrafficSim(private val net: MiniNet, seed: Int, salt: Int) {
+    class TrafficSim(private val net: LaneNetwork, seed: Int, salt: Int) {
         private val rng = Rng(seed).fork(salt)
         val vehicles = ArrayList<Vehicle>()
+        var target = 0
+        var pedTarget = 0
         var frame = 0
             private set
-        private var nextId = 1
+        var ticket = 1
+            private set
+        var time = 0.0
+            private set
+        var nextId = 1
+            private set
+        var camX = 0.0; var camZ = 0.0
+        var congestion = 0.0
+        var avgSpeedRatio = 1.0
         private var astar = 16
-        private val bucket = HashMap<Int, ArrayList<Vehicle>>()
-        private var time = 0.0
+        private var bucket = Array<ArrayList<Vehicle>>(0) { ArrayList() }
+        private var bstamp = IntArray(0)
+        private val touched = ArrayList<Int>()
         private val sample = PolySample(0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 10.0)
 
         /** The web forks world.rng with hashString('traffic'). */
@@ -215,7 +721,11 @@ object Traffic {
 
         fun onNetwork() {
             vehicles.clear()
-            bucket.clear()
+            val n = net.elements.size
+            bucket = Array(n) { ArrayList() }
+            bstamp = IntArray(n)
+            touched.clear()
+            for (node in net.nodes.values) node.claims.clear()
         }
 
         private fun pickType(): VehSpec {
@@ -236,6 +746,7 @@ object Traffic {
         }
 
         fun spawn(count: Int, hintLane: Int = -1): Int {
+            if (!net.ready) return 0
             var made = 0
             for (i in 0 until count) {
                 var placed = false
@@ -244,12 +755,11 @@ object Traffic {
                     tries++
                     var li = -1
                     if (hintLane >= 0 && rng.next() < 0.55) li = hintLane
-                    if (li < 0) li = net.randomLane(rng)
+                    if (li < 0) li = net.randomLane(rng.next())
                     if (li < 0) return made
-                    val el = net.elements[li]
-                    if (el.kind != 0) continue
-                    val id = pickType()
-                    val spec = id
+                    val el = net.elements.getOrNull(li)
+                    if (el == null || el.kind != 0) continue
+                    val spec = pickType()
                     if ((spec.id == "bus" || spec.id == "truck") && el.rank < 2) continue
                     if (el.poly.len < spec.len * 2.2) continue
                     val s = 1.0 + rng.next() * (el.poly.len - spec.len - 2.0)
@@ -293,7 +803,7 @@ object Traffic {
             if (astar > 0) {
                 astar--
                 for (t in 0 until 3) {
-                    val goal = net.randomLane(rng)
+                    val goal = net.randomLane(rng.next())
                     if (goal < 0 || goal == last) continue
                     val path = net.route(last, goal)
                     if (path != null && path.size > 1) {
@@ -310,54 +820,173 @@ object Traffic {
             return true
         }
 
-        fun update(dt: Double) {
-            if (dt <= 0) return
+        /** Remove up to n vehicles, farthest-from-camera first (web despawnFar). */
+        fun despawnFar(n: Int): Int {
+            var removed = 0
+            var i = vehicles.size - 1
+            while (i >= 0 && removed < n) {
+                val v = vehicles[i]
+                val d = hypot(v.x - camX, v.z - camZ)
+                if (d > 170.0) { release(v); vehicles.removeAt(i); removed++ }
+                i--
+            }
+            i = vehicles.size - 1
+            while (i >= 0 && removed < n) {
+                release(vehicles[i]); vehicles.removeAt(i); removed++
+                i--
+            }
+            return removed
+        }
+
+        private fun release(veh: Vehicle) {
+            val el = net.elements.getOrNull(veh.elem)
+            if (el != null && el.kind == 1 && el.junctionRef != null) el.junctionRef!!.claims.remove(veh.id)
+            if (veh.ri + 1 < veh.route.size) {
+                val nx = net.elements.getOrNull(veh.route[veh.ri + 1])
+                if (nx != null && nx.kind == 1 && nx.junctionRef != null) nx.junctionRef!!.claims.remove(veh.id)
+            }
+        }
+
+        fun update(dt: Double, camX: Double = 0.0, camZ: Double = 0.0) {
+            if (!net.ready || dt <= 0) return
+            this.camX = camX; this.camZ = camZ
             frame++
             time += dt
             astar = 16
+            net.updateSignals(dt)
             buildBuckets()
             for (v in vehicles) intent(v)
+            resolveClaims()
             for (v in vehicles) stepVehicle(v, dt)
-            for (i in vehicles.size - 1 downTo 0) if (vehicles[i].dead) vehicles.removeAt(i)
+            for (i in vehicles.size - 1 downTo 0) {
+                if (vehicles[i].dead) { release(vehicles[i]); vehicles.removeAt(i) }
+            }
         }
 
         private fun buildBuckets() {
-            bucket.clear()
+            val f = frame
+            for (e in touched) bucket[e].clear()
+            touched.clear()
             for (v in vehicles) {
-                var b = bucket[v.elem]
-                if (b == null) { b = ArrayList(); bucket[v.elem] = b }
-                b.add(v)
+                val e = v.elem
+                if (bstamp[e] != f) { bstamp[e] = f; bucket[e].clear(); touched.add(e) }
+                bucket[e].add(v)
             }
-            for (b in bucket.values) {
+            for (e in touched) {
+                val b = bucket[e]
                 b.sortWith { a, c -> cmpS(a, c) }
                 for (i in b.indices) b[i].bidx = i
             }
         }
 
+        /** Register (or drop) a junction claim and record a red-light stop distance (web _intent). */
         private fun intent(veh: Vehicle) {
+            val els = net.elements
             veh.stopDist = Double.POSITIVE_INFINITY
-            val el = net.elements.getOrNull(veh.elem)
+            val el = els.getOrNull(veh.elem)
             if (el == null) { veh.dead = true; return }
-            // no junctions in the demo net: nothing to claim or stop for
+            if (el.kind == 1) {
+                val node = el.junctionRef
+                if (node != null) {
+                    val c = node.claims[veh.id]
+                    if (c != null) { c.state = 1; c.seen = frame }
+                }
+                return
+            }
+            if (veh.ri + 1 >= veh.route.size) return
+            val next = els.getOrNull(veh.route[veh.ri + 1])
+            if (next == null || next.kind != 1) return
+            val node = next.junctionRef ?: return
+            val remain = el.poly.len - veh.s
+            if (remain > CLAIM_DIST) return
+
+            val ap = el.approach
+            if (node.signalized && ap != null && !ap.green) {
+                val stopNeed = (veh.v * veh.v) / (2.0 * 4.2) + 1.0
+                val mustRun = ap.amber && remain < stopNeed
+                if (!mustRun) {
+                    node.claims.remove(veh.id)
+                    veh.stopDist = max(0.0, remain - 0.7)
+                    return
+                }
+            }
+            if (!node.needsControl) return
+            var c = node.claims[veh.id]
+            if (c == null) {
+                c = Claim(veh.id, veh, next.localIdx, time + next.yieldDelay, ticket)
+                ticket++
+                node.claims[veh.id] = c
+            } else {
+                c.local = next.localIdx; c.state = 0
+            }
+            c.seen = frame
+            // don't block the box: refuse to enter when the exit lane has no room
+            if (next.outs.isNotEmpty()) {
+                val exit = els.getOrNull(next.outs[0])
+                if (exit != null) {
+                    val b = bucket[exit.idx]
+                    if (bstamp[exit.idx] == frame && b.isNotEmpty()) {
+                        val first = b[0]
+                        c.blockedExit = first.s < veh.spec.len + first.half + 2.5 && first.v < 1.6
+                    } else c.blockedExit = false
+                }
+            }
+        }
+
+        /** FCFS claim resolution per node, gated by the connector conflict matrix (web _resolveClaims). */
+        private fun resolveClaims() {
+            val f = frame
+            for (node in net.nodes.values) {
+                val claims = node.claims
+                if (claims.isEmpty()) continue
+                val it = claims.entries.iterator()
+                while (it.hasNext()) { if (it.next().value.seen != f) it.remove() }
+                if (claims.isEmpty()) continue
+                val list = ArrayList<Claim>(claims.values)
+                list.sortWith { a, b ->
+                    val ai = if (a.state == 1) 0 else 1
+                    val bi = if (b.state == 1) 0 else 1
+                    if (ai != bi) ai - bi
+                    else if (a.key != b.key) (if (a.key < b.key) -1 else 1)
+                    else a.ticket - b.ticket
+                }
+                val k = node.conns.size
+                val taken = ArrayList<Int>()
+                for (c in list) {
+                    val stale = time - c.key > 7.0 // nobody waits for ever
+                    var ok = c.state == 1 || !c.blockedExit
+                    if (ok && !stale) {
+                        for (j in taken.indices) {
+                            if (node.conflict[taken[j] * k + c.local].toInt() != 0) { ok = false; break }
+                        }
+                    }
+                    c.go = ok
+                    // a claim that is only waiting for room beyond the junction must not hold up cross traffic
+                    if (ok || !c.blockedExit) taken.add(c.local)
+                }
+            }
         }
 
         private fun leader(veh: Vehicle): DoubleArray? {
+            val els = net.elements
             val b = bucket[veh.elem]
-            if (b != null && veh.bidx >= 0 && veh.bidx + 1 < b.size) {
-                val nb = b[veh.bidx + 1]
-                return doubleArrayOf(nb.s - nb.half - (veh.s + veh.half), nb.v)
+            if (bstamp[veh.elem] == frame && veh.bidx >= 0) {
+                val nb = b.getOrNull(veh.bidx + 1)
+                if (nb != null) return doubleArrayOf(nb.s - nb.half - (veh.s + veh.half), nb.v)
             }
-            val el = net.elements.getOrNull(veh.elem) ?: return null
-            var ahead = el.poly.len - veh.s
+            val el0 = els.getOrNull(veh.elem) ?: return null
+            var ahead = el0.poly.len - veh.s
             for (k in 1..4) {
                 if (veh.ri + k >= veh.route.size) break
                 val ei = veh.route[veh.ri + k]
-                val eb = bucket[ei]
-                if (eb != null && eb.isNotEmpty()) {
-                    val nb = eb[0]
-                    return doubleArrayOf(ahead + nb.s - nb.half - veh.half, nb.v)
+                if (bstamp[ei] == frame) {
+                    val bb = bucket[ei]
+                    if (bb.isNotEmpty()) {
+                        val nb = bb[0]
+                        return doubleArrayOf(ahead + nb.s - nb.half - veh.half, nb.v)
+                    }
                 }
-                val e2 = net.elements.getOrNull(ei) ?: break
+                val e2 = els.getOrNull(ei) ?: break
                 ahead += e2.poly.len
                 if (ahead > LOOKAHEAD) break
             }
@@ -365,54 +994,68 @@ object Traffic {
         }
 
         private fun stepVehicle(veh: Vehicle, dt: Double) {
-            val el0 = net.elements.getOrNull(veh.elem)
-            if (el0 == null) { veh.dead = true; return }
-            val el: Traffic.LaneEl = el0
-            val p = polyAt(el.poly, veh.s, sample)
+            val els = net.elements
+            val elStart = els.getOrNull(veh.elem)
+            if (elStart == null) { veh.dead = true; return }
+            var el: LElement = elStart
+            var p = polyAt(el.poly, veh.s, sample)
             // target speed: lane limit x driver, curvature, and the entry speed of what comes next
             var v0 = min(el.speed * veh.vf * veh.spec.vmax, p.v)
-            val remain = el.poly.len - veh.s
-            if (veh.ri + 1 < veh.route.size && remain < 40.0) {
-                val nx = net.elements.getOrNull(veh.route[veh.ri + 1])
+            val remain0 = el.poly.len - veh.s
+            if (veh.ri + 1 < veh.route.size && remain0 < 40.0) {
+                val nx = els.getOrNull(veh.route[veh.ri + 1])
                 if (nx != null) {
                     val entry = min(nx.speed * veh.vf * veh.spec.vmax, nx.poly.vmax[0].toDouble())
-                    v0 = min(v0, sqrt(entry * entry + 2.0 * 2.0 * max(0.0, remain - 1.0)))
+                    v0 = min(v0, sqrt(entry * entry + 2.0 * 2.0 * max(0.0, remain0 - 1.0)))
                 }
             }
             var a = idmAccel(veh.v, v0, 1e9, 0.0, A_MAX)
             val lead = leader(veh)
             if (lead != null) a = min(a, idmAccel(veh.v, v0, lead[0], veh.v - lead[1], A_MAX))
-            val stop = veh.stopDist
+
+            // junction stop (red light, or not our turn)
+            var stop = veh.stopDist
+            if (el.kind == 0 && veh.ri + 1 < veh.route.size) {
+                val nx = els.getOrNull(veh.route[veh.ri + 1])
+                if (nx != null && nx.kind == 1 && nx.junctionRef != null && nx.junctionRef!!.needsControl) {
+                    val c = nx.junctionRef!!.claims[veh.id]
+                    if (c != null && !c.go) stop = min(stop, max(0.0, remain0 - 0.7))
+                }
+            }
             if (stop < 1e8) a = min(a, idmAccel(veh.v, v0, stop, veh.v, A_MAX))
-            a = max(DEC_MAX, min(A_MAX, a))
-            veh.v = max(0.0, veh.v + a * dt)
+
+            val aClamped = max(DEC_MAX, min(A_MAX, a))
+            veh.v = max(0.0, veh.v + aClamped * dt)
             if (stop < 0.35 && veh.v < 0.6) veh.v = 0.0
-            val brakeT = min(1.0, max(0.0, -a / 2.6))
-            val hold = if (veh.v < 0.6 && (stop < 1e8 || (lead != null && lead[0] < 9.0))) 0.9 else 0.0
-            veh.brake = veh.brake + (max(brakeT, hold) - veh.brake) * min(1.0, dt * 9.0)
+            // brake lamps: braking, plus held on while stopped at a light or in a queue
+            val brakeT0 = min(1.0, max(0.0, -aClamped / 2.6))
+            var brakeT = brakeT0
+            if (veh.v < 0.6 && (stop < 1e8 || (lead != null && lead[0] < 9.0))) brakeT = max(brakeT, 0.9)
+            veh.brake = veh.brake + (brakeT - veh.brake) * min(1.0, dt * 9.0)
             veh.wait = if (veh.v < 0.4) veh.wait + dt else 0.0
             veh.s += veh.v * dt
             veh.dist += veh.v * dt
 
             // element transitions
-            var cur: Traffic.LaneEl = el
             var guard = 0
-            while (veh.s > cur.poly.len && guard++ < 6) {
-                veh.s -= cur.poly.len
+            while (veh.s > el.poly.len && guard++ < 6) {
+                veh.s -= el.poly.len
+                val wasConn = el.kind == 1
+                val prevNode = if (wasConn) el.junctionRef else null
                 veh.ri++
                 if (veh.ri >= veh.route.size) {
                     if (!extendRoute(veh) || veh.ri >= veh.route.size) { veh.dead = true; return }
                 }
-                cur = net.elements[veh.route[veh.ri]]
+                veh.elem = veh.route[veh.ri]
+                el = els[veh.elem]
+                if (el == null) { veh.dead = true; return }
+                if (prevNode != null) prevNode.claims.remove(veh.id)
                 if (veh.route.size - veh.ri < 3) extendRoute(veh)
-                if (veh.ri > 40) {
-                    veh.route = veh.route.copyOfRange(veh.ri, veh.route.size)
-                    veh.ri = 0
-                }
+                if (veh.ri > 40) { veh.route = veh.route.copyOfRange(veh.ri, veh.route.size); veh.ri = 0 }
             }
             if (veh.route.size - veh.ri < 3) extendRoute(veh)
 
-            val q = polyAt(cur.poly, veh.s, sample)
+            val q = polyAt(el.poly, veh.s, sample)
             veh.x = q.x; veh.y = q.y; veh.z = q.z
             val yaw = atan2(q.tx, q.tz)
             var d = yaw - veh.yaw
@@ -424,7 +1067,23 @@ object Traffic {
             veh.spin += (veh.v / veh.spec.wheelR) * dt
             val targetSteer = max(-0.55, min(0.55, veh.yawRate * 0.85))
             veh.steer += (targetSteer - veh.steer) * min(1.0, dt * 8.0)
+            // turn indicators: on from ~26 m before a turn until the connector is finished
+            var side = 0
+            if (el.kind == 1) side = if (el.turn == 2) 1 else if (el.turn == 1) -1 else 0
+            else if (veh.ri + 1 < veh.route.size) {
+                val nx2 = els.getOrNull(veh.route[veh.ri + 1])
+                if (nx2 != null && nx2.kind == 1 && el.poly.len - veh.s < 26.0) {
+                    side = if (nx2.turn == 2) 1 else if (nx2.turn == 1) -1 else 0
+                }
+            }
+            veh.blinkSide = side
+            veh.blink = if (side == 0) 0.0 else side * ((if (((time + veh.seed) % 0.94) < 0.52) 1.0 else 0.0))
             veh.speedRatio = if (el.speed > 0.1) min(1.0, veh.v / el.speed) else 1.0
+            veh.segmentId = if (el.kind == 0) el.segmentId else null
+            // published for the audio module (m/s + planar velocity)
+            veh.speed = veh.v
+            veh.vx = sin(yaw) * veh.v
+            veh.vz = cos(yaw) * veh.v
         }
     }
 }
