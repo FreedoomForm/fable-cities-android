@@ -16,7 +16,6 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
         requestWindowFeature(Window.FEATURE_NO_TITLE)
         window.setFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN, WindowManager.LayoutParams.FLAG_FULLSCREEN)
-        hideSystemBars()
         gameView = FableCitiesView(this)
         hud = HudOverlayView(this)
         hud.gameView = gameView
@@ -32,6 +31,10 @@ class MainActivity : Activity() {
             )
         )
         setContentView(root)
+        // CI emulator gate caught this: hideSystemBars() ran BEFORE setContentView — the DecorView
+        // did not exist yet, so window.insetsController dereferenced a null DecorView and the app
+        // NPE-crashed instantly on launch on EVERY device (AndroidRuntime: ...MainActivity.kt:51).
+        hideSystemBars()
     }
 
     override fun onResume() {
