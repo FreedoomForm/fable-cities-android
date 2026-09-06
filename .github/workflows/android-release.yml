@@ -93,32 +93,29 @@ jobs:
           emulator-options: -no-window -gpu swiftshader_indirect -no-audio -no-boot-anim -camera-back none -memory 3072
           disable-animations: true
           script: |
-            # NOTE: android-emulator-runner executes this script LINE BY LINE (one sh -c per line) -
-            # multi-line if/for blocks are a syntax error here. Keep every statement on one line.
-            echo "GW=$GITHUB_WORKSPACE PWD=$(pwd)"
-            find . -type f -name "*.apk" 2>/dev/null || true
-            APK=$(find artifact -type f -name "*.apk" 2>/dev/null | head -1)
-            echo "APK=$APK"
-            [ -n "$APK" ] || APK="artifact/app-debug.apk"
-            ls -la "$APK" || true
-            [ -f "$APK" ] || { echo "::error::no .apk in the downloaded artifact"; exit 1; }
-            adb install -r "$APK"
+            # NOTE 1: android-emulator-runner runs this script LINE BY LINE (one sh -c per line) -
+            # no multi-line if/for. NOTE 2: variable expansion inside the script is unreliable
+            # (GITHUB_WORKSPACE renders masked, $() captures came back empty across 4 runs) - so
+            # this script uses ZERO shell variables: the artifact is a single file uploaded with
+            # path android/app/build/outputs/apk/debug/app-debug.apk, which lands at
+            # artifact/app-debug.apk after v4 strips the android/app/build root.
+            ls -la artifact || true
+            adb install -r artifact/app-debug.apk
             adb logcat -c
             adb shell am start -W -n com.fablecities.android/.MainActivity
             sleep 20
-            PID=$(adb shell pidof com.fablecities.android | tr -d '\r' | tr -d ' ')
-            echo "process pid=$PID"
-            [ -n "$PID" ] || { echo "::error::APK process died during launch (the gate that used to be missing)"; adb logcat -d -t 500; exit 1; }
+            adb shell pidof com.fablecities.android > pid.txt || true
+            grep -q "[0-9]" pid.txt || { echo "::error::APK process died during launch (the gate that used to be missing)"; adb logcat -d -t 500; exit 1; }
             adb logcat -d > full_bootcat.txt || true
             grep -E "FATAL EXCEPTION|AndroidRuntime" full_bootcat.txt && { echo "::error::Fatal exception in logcat during boot"; grep -A 30 -B 5 "FATAL EXCEPTION" full_bootcat.txt | head -80; exit 1; } || true
             adb shell dumpsys gfxinfo com.fablecities.android reset > /dev/null || true
             sleep 15
-            FRAMES=$(adb shell dumpsys gfxinfo com.fablecities.android | grep "Total frames rendered" | grep -oE "[0-9]+" | head -1)
-            echo "frames rendered in 15s soak: ${FRAMES:-0}"
-            [ -n "$FRAMES" ] && [ "$FRAMES" -ge 30 ] || { echo "::error::Renderer produced ${FRAMES:-0} frames in 15s - GL thread not drawing"; adb logcat -d -t 300; exit 1; }
+            adb shell dumpsys gfxinfo com.fablecities.android | grep "Total frames rendered" > frames.txt || true
+            cat frames.txt || true
+            grep -oE "[0-9]+" frames.txt | grep -qE "^([3-9][0-9]|[0-9]{3,})$" || { echo "::error::Renderer produced too few frames in 15s - GL thread not drawing"; adb logcat -d -t 300; exit 1; }
             adb exec-out screencap -p > emulator_screen.png
             cp full_bootcat.txt full_logcat.txt
-            echo "Emulator gate PASSED: process alive, no fatal, $FRAMES frames in 15s"
+            echo "Emulator gate PASSED: process alive, no fatal, frames>=30 in 15s"
 
       - name: Upload emulator evidence
         if: always()
@@ -137,7 +134,7 @@ jobs:
         run: |
           short_sha="${GITHUB_SHA::7}"
           tag="android-build-${short_sha}"
-          APK=$(find artifact -name "*.apk" -type f | head -1)
+          APK=artifact/app-debug.apk
           gh release delete "$tag" --yes --cleanup-tag 2>/dev/null || true
           gh release create "$tag" \
             "$APK" \
