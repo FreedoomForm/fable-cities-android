@@ -278,8 +278,8 @@ class GlCityRenderer : GLSurfaceView.Renderer {
 
     /** Display key scales: the web multiplies radiance by exposure and tone-maps (AgX); the native
      *  pipeline clips, so radiance x exposure is folded into the uniforms through one constant. */
-    private const val K_LIGHT = 0.25
-    private const val K_SKY = 0.32
+    private val K_LIGHT = 0.25
+    private val K_SKY = 0.32
 
     /** Rebuild the lighting key from the ported site model. Refreshed at the web's cadence
      *  (0.15 s or on time jumps); between refreshes the last key is reused — the sun moves
