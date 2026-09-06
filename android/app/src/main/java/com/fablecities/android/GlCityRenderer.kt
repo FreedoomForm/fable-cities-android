@@ -427,36 +427,95 @@ class GlCityRenderer : GLSurfaceView.Renderer {
     }
 
     private fun terrainColor(x: Float, z: Float, h: Float, out: FloatArray, off: Int) {
-        val n = fbm(x * 0.02f, z * 0.02f) // fine detail
-        val n2 = fbm(x * 0.004f + 11f, z * 0.004f - 5f) // macro variation
-        var r: Float
-        var g: Float
-        var b: Float
-        when {
-            h < 0.4f -> { // shallow water bed / wet sand
-                r = 0.30f + n * 0.05f; g = 0.26f + n * 0.04f; b = 0.18f + n * 0.03f
-            }
-            h < 3.2f -> { // beach sand
-                r = 0.72f + n * 0.06f; g = 0.65f + n * 0.05f; b = 0.44f + n * 0.04f
-            }
-            h < 120f -> { // grass: light valley → deeper upland
-                val t = ((h - 3.2f) / 116.8f).coerceIn(0f, 1f)
-                r = (0.30f - 0.10f * t) + n * 0.06f + n2 * 0.05f
-                g = (0.44f - 0.08f * t) + n * 0.08f + n2 * 0.04f
-                b = (0.20f - 0.05f * t) + n * 0.03f
-            }
-            h < 190f -> { // rock
-                r = 0.38f + n * 0.08f; g = 0.36f + n * 0.07f; b = 0.33f + n * 0.06f
-            }
-            else -> { // snow caps above ~190 m
-                val s = ((h - 190f) / 30f).coerceIn(0f, 1f)
-                r = (0.38f + n * 0.08f) * (1 - s) + (0.92f + n * 0.04f) * s
-                g = (0.36f + n * 0.07f) * (1 - s) + (0.94f + n * 0.03f) * s
-                b = (0.33f + n * 0.06f) * (1 - s) + 0.97f * s
-            }
-        }
-        out[off] = r; out[off + 1] = g; out[off + 2] = b
+        // Ground palette rules ported from the site's TerrainMaterial.js splat shader: the exact
+        // tint constants (olive meadow / straw grass, damp bank soil, ochre->granite rock strata,
+        // ragged sand, silt bed, wandering snow line at 172 m) driven by the real heightfield.
+        val n1 = fbm(x * 0.0105f + 11.7f, z * 0.0105f - 5.3f)   // ~95 m macro cover patches (nzMacro)
+        val n2 = fbm(x * 0.0233f - 7.1f, z * 0.0233f + 13.9f)   // ~43 m mid mottling (nzMid)
+        val n3 = fbm(x * 0.00233f + 3.1f, z * 0.00233f - 9.7f)  // ~430 m regional colour (nzReg)
+        val nH = fbm(x * 0.00087f + 21.3f, z * 0.00087f + 4.9f) // ~1150 m huge (nzHuge)
+
+        // slope (1 - normal.y) from central differences of the real heightfield
+        val e = 4f
+        val dhx = (terrainHeight(x + e, z) - terrainHeight(x - e, z)) / (2 * e)
+        val dhz = (terrainHeight(x, z + e) - terrainHeight(x, z - e)) / (2 * e)
+        val invLen = 1f / sqrt(1f + dhx * dhx + dhz * dhz)
+        val slope = 1f - invLen
+        val northness = (dhz * invLen * 2.5f).coerceIn(0f, 1f) * smooth01((slope - 0.06f) / 0.19f)
+
+        // regional colour drift: cool damp green <-> warm olive/khaki (site region mix)
+        val regionMix = smooth01((n3 * 0.65f + nH * 0.35f - 0.30f) / 0.42f)
+        val regionR = lerpF(0.95f, 1.03f, regionMix) * (0.96f + 0.08f * n3)
+        val regionG = 1.00f * (0.96f + 0.08f * n3)
+        val regionB = lerpF(0.94f, 0.90f, regionMix) * (0.96f + 0.08f * n3)
+
+        // grass: olive meadow <-> straw in 30-95 m patches
+        val grassT = smooth01((n1 * 0.7f + 0.15f - 0.30f) / 0.48f)
+        var r = lerpF(0.44f, 0.60f, grassT) * regionR
+        var g = lerpF(0.50f, 0.58f, grassT) * regionG
+        var b = lerpF(0.32f, 0.37f, grassT) * regionB
+
+        // weights (site thresholds): rock from ~36 deg, solid by ~53, jittered by noise
+        val jitter = (n2 - 0.5f) * 0.10f
+        val rockSlope = smooth01((slope - (0.19f + jitter)) / 0.21f) *
+            smooth01((0.42f + 0.8f * (n2 - 0.5f) + 0.6f * (n1 - 0.5f) - 0.20f) / 0.46f)
+        val rock = (rockSlope * lerpF(0.62f, 1f, smooth01((h - 14f) / 28f))).coerceIn(0f, 1f)
+
+        // sand: ragged noise-broken fingers at the waterline, flat ground only
+        val sandBreak = smooth01((0.35f + 0.42f * (n2 - 0.5f) + 0.34f * (n1 - 0.5f)) / 0.37f)
+        val sand = if (h > 0f) sandBreak * (1f - smooth01((slope - 0.10f) / 0.14f)) *
+            (1f - smooth01((h - 0.10f) / 0.14f)) else 0f
+        // silt bed below the waterline, wet darkening band at the waterline
+        val bed = if (h < 0f) smooth01((0.15f - h) / 2.35f) else 0f
+        val wMud = (bed * 0.55f * (1f - sand)).coerceIn(0f, 1f)
+        val wSand = (sand * (1f - wMud)).coerceIn(0f, 1f)
+        val wRock = rock.coerceIn(0f, 1f)
+        val rest = (1f - wMud - wSand - wRock).coerceIn(0f, 1f)
+
+        // rock: warm ochre low, cool granite high, horizontal strata bands
+        val rockMix = (smooth01((nH + 0.35f * (n2 - 0.5f) - 0.35f) / 0.30f) * 0.6f +
+            0.55f * smooth01((h - 30f) / 120f)).coerceIn(0f, 1f)
+        val rockR = lerpF(0.86f, 0.92f, rockMix) * lerpF(0.90f, 1.10f, n1)
+        val rockG = lerpF(0.79f, 0.90f, rockMix) * lerpF(0.90f, 1.10f, n1)
+        val rockB = lerpF(0.66f, 0.93f, rockMix) * lerpF(0.90f, 1.10f, n1)
+        val strataF = smooth01((slope - 0.3f) / 0.25f)
+        val strata = 1f - (0.16f) * strataF + 0.30f * strataF * smooth01(((h * 0.11f + n2 * 0.5f) % 1f) / 0.5f)
+        val sandR = lerpF(0.44f, 0.58f, n1) * regionR
+        val sandG = lerpF(0.40f, 0.53f, n1) * regionG
+        val sandB = lerpF(0.33f, 0.43f, n1) * regionB
+        val mudR = 0.52f; val mudG = 0.48f; val mudB = 0.40f
+
+        // snow: line wanders ±100/44 m around 172 m, lower on north faces, none on cliffs
+        val snowLine = 172f + 100f * (n1 - 0.5f) + 44f * (nH - 0.5f) - 25f * northness
+        val snowSlope = 1f - smooth01((slope + 0.16f * (n2 - 0.5f) - 0.16f) / 0.46f)
+        val snow = smooth01((h - (snowLine - 70f)) / 150f) * snowSlope
+        val snowW = (snow * (1f - 0.42f * wRock)).coerceIn(0f, 1f)
+        val keep = 1f - snowW
+
+        // blend layers (grass fills the rest)
+        r = r * rest + rockR * wRock * strata + sandR * wSand + mudR * wMud
+        g = g * rest + rockG * wRock * strata + sandG * wSand + mudG * wMud
+        b = b * rest + rockB * wRock * strata + sandB * wSand + mudB * wMud
+        // snow replaces everything but a little rock
+        val snowShade = 0.84f + 0.16f * n2
+        val scR = 0.74f * snowShade; val scG = 0.78f * snowShade; val scB = 0.85f * snowShade
+        r = lerpF(r * keep, scR, snowW)
+        g = lerpF(g * keep, scG, snowW)
+        b = lerpF(b * keep, scB, snowW)
+        // wet band: darken whatever lies at the waterline
+        val wetK = (1f - smooth01((h - 0.15f) / (2.05f + 1.3f * n2))) * smooth01((h + 1.1f) / 1.05f)
+        val dark = 1f - 0.38f * wetK
+        out[off] = (r * dark).coerceIn(0f, 1f)
+        out[off + 1] = (g * dark).coerceIn(0f, 1f)
+        out[off + 2] = (b * dark).coerceIn(0f, 1f)
     }
+
+    private fun smooth01(v: Float): Float {
+        val t = v.coerceIn(0f, 1f)
+        return t * t * (3f - 2f * t)
+    }
+
+    private fun lerpF(a: Float, b: Float, t: Float): Float = a + (b - a) * t
 
     private fun emitQuad(data: FloatArray, o0: Int,
                          ax: Float, ay: Float, az: Float, bx: Float, by: Float, bz: Float,
