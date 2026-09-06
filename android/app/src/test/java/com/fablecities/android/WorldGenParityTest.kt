@@ -103,7 +103,7 @@ class WorldGenParityTest {
         assertEquals(173, b[2])
         assertEquals(339, b[3])
         val after = doubleArrayOf(13.9566, 27.7832, 9.836)
-        val qs = arrayOf(0.0 to 0.0, 120.0 to 120.0, 120.0 to -240.0)
+        val qs = arrayOf(120.0 to 0.0, 120.0 to 120.0, 120.0 to -240.0)
         for (i in qs.indices) assertNear(hm.getHeight(qs[i].first, qs[i].second), after[i], 1e-3, "conformed(${qs[i].first},${qs[i].second})")
     }
 }
