@@ -104,10 +104,11 @@ jobs:
             adb logcat -c
             adb shell am start -W -n com.fablecities.android/.MainActivity
             sleep 20
-            adb shell pidof com.fablecities.android > pid.txt || true
-            grep -q "[0-9]" pid.txt || { echo "::error::APK process died during launch (the gate that used to be missing)"; adb logcat -d -t 500; exit 1; }
+            # dump the FULL logcat BEFORE the pid check - the last-500 window lost the crash lines
             adb logcat -d > full_bootcat.txt || true
-            grep -E "FATAL EXCEPTION|AndroidRuntime" full_bootcat.txt && { echo "::error::Fatal exception in logcat during boot"; grep -A 30 -B 5 "FATAL EXCEPTION" full_bootcat.txt | head -80; exit 1; } || true
+            adb shell pidof com.fablecities.android > pid.txt || true
+            grep -q "[0-9]" pid.txt || { echo "::error::APK process died during launch (the gate that used to be missing)"; grep -E "Fatal signal|FATAL EXCEPTION|SIGSEGV|SIGABRT|AndroidRuntime|fablecities|GlCityRenderer" full_bootcat.txt | head -50; exit 1; }
+            grep -E "FATAL EXCEPTION|AndroidRuntime|Fatal signal" full_bootcat.txt && { echo "::error::Fatal in logcat during boot"; grep -E -A 25 "FATAL EXCEPTION|Fatal signal" full_bootcat.txt | head -80; exit 1; } || true
             adb shell dumpsys gfxinfo com.fablecities.android reset > /dev/null || true
             sleep 15
             adb shell dumpsys gfxinfo com.fablecities.android | grep "Total frames rendered" > frames.txt || true
