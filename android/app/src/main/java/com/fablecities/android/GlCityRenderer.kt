@@ -9,6 +9,7 @@ import com.fablecities.android.worldgen.Environment
 import com.fablecities.android.worldgen.Heightmap
 import com.fablecities.android.worldgen.Rng
 import com.fablecities.android.worldgen.SimBuilding
+import com.fablecities.android.worldgen.Stars
 import com.fablecities.android.worldgen.WaterMath
 import com.fablecities.android.worldgen.SimEconomy
 import com.fablecities.android.worldgen.SimMilestones
@@ -21,6 +22,7 @@ import java.nio.FloatBuffer
 import java.util.Random
 import javax.microedition.khronos.egl.EGLConfig
 import javax.microedition.khronos.opengles.GL10
+import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.atan2
 import kotlin.math.cos
@@ -97,6 +99,9 @@ class GlCityRenderer : GLSurfaceView.Renderer {
     private var texShore = 0
     private var texNoise = 0
     private var texWNormal = 0
+    private var texStars = 0
+    private var texMoon = 0
+    private val starRotM = FloatArray(9) // world → celestial frame (uStarRot)
     private var cubeVbo = 0
     private var carVbo = 0
     private var carCount = 0
@@ -182,6 +187,7 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         buildRoadMesh()
         loadBuildings()
         buildWater()
+        buildStars()
         buildCube()
         buildCar()
         buildSky()
@@ -289,6 +295,15 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         var nightFactor = 0f         // env.nightFactor — foam damping, night sheen, sky floor
         var waterFloor = FloatArray(3) // uSkyFloor, display-referred (computed like the web update())
         var waterSheen = FloatArray(3) // uNightSheen, display-referred (luminance-normalised night sheen)
+        // --- sky: stars / Milky Way / moon disc / sun disc (environment shaders.js port) ---
+        var starIntensity = 0f    // lerp(0.55, 1.45, nightAmount) x moon wash
+        var milkyWay = 0f         // 3.6 x moon wash x (1-0.75*cover) x nightAmount
+        var moonBright = 0f       // 2.0 x (1 - 0.4*clamp01(cover*1.1))
+        var starSeed = 124.69f    // (seed % 1000) * 0.37
+        var nightAmount = 0f      // st.nightAmount (star intensity driver)
+        var nightKey = 1f         // exposure x K_SKY: radiance → display for the star/disc radiance
+        var sunDisc = 0f          // ATMOS.sunDiscRadiance x elevation lerp, display-referred
+        val sunTint = FloatArray(3) // white lerp (1, 0.52, 0.20) at golden hour
     }
 
     /** Display key scales: the web multiplies radiance by exposure and tone-maps (AgX); the native
@@ -368,8 +383,67 @@ class GlCityRenderer : GLSurfaceView.Renderer {
             sun.waterSheen[0] = (sr * sheen * wK).toFloat()
             sun.waterSheen[1] = (sg * sheen * wK).toFloat()
             sun.waterSheen[2] = (sb * sheen * wK).toFloat()
+
+            // --- stars / Milky Way / moon disc / sun disc (index.js computeFrame sky uniforms) ---
+            val na = st.nightAmount
+            val cover = Environment.CLEAR_COVER
+            sun.nightAmount = na.toFloat()
+            val moonWashStar = Environment.lerp(1.0, 0.55, min(1.0, st.moonIntensity / 0.14))
+            sun.starIntensity = (Environment.lerp(0.55, 1.45, na) * moonWashStar).toFloat()
+            val moonWashMw = Environment.lerp(1.0, 0.30, min(1.0, st.moonIntensity / 0.12))
+            sun.milkyWay = (3.6 * moonWashMw * (1.0 - 0.75 * cover) * na).toFloat()
+            sun.moonBright = (2.0 * Environment.lerp(1.0, 0.4, min(1.0, cover * 1.1))).toFloat()
+            sun.nightKey = (st.exposure * K_SKY).toFloat()
+            sun.starSeed = ((1337 % 1000) * 0.37).toFloat()
+            // sun disc: ATMOS.sunDiscRadiance x elevation lerp, tinted at golden hour (index.js)
+            val lowSun = 1.0 - Environment.smoothstep(4.0, 20.0, st.sunAltDeg)
+            val discLerp = Environment.lerp(0.34, 1.0, Environment.smoothstep(1.0, 16.0, st.sunAltDeg))
+            sun.sunDisc = (Stars.SUN_DISC_RADIANCE * discLerp * st.exposure * K_SKY).toFloat()
+            val tintMix = 0.85 * lowSun * sunUp
+            sun.sunTint[0] = Environment.lerp(1.0, 1.0, tintMix).toFloat()
+            sun.sunTint[1] = Environment.lerp(1.0, 0.52, tintMix).toFloat()
+            sun.sunTint[2] = Environment.lerp(1.0, 0.20, tintMix).toFloat()
+            // star rotation: world → celestial frame (SkyDome.setStarRotation)
+            setStarRotation(Environment.LATITUDE * PI / 180.0, st.siderealAngle)
         }
         return sun
+    }
+
+    /** SkyDome.setStarRotation: celestial pole = north (-Z) tilted up by latitude; the cube spins
+     *  with sidereal time. Fills starRotM (column-major 3x3, as GL expects). */
+    private fun setStarRotation(latRad: Double, siderealAngle: Double) {
+        val px = 0.0; val py = sin(latRad); val pz = -cos(latRad)
+        // qSpin: axis (px,py,pz), angle -siderealAngle
+        val spinHalf = -siderealAngle / 2.0
+        val sx = px * sin(spinHalf); val sy = py * sin(spinHalf); val sz = pz * sin(spinHalf)
+        val sw = cos(spinHalf)
+        // qTilt: rotation from pole to +Y (three setFromUnitVectors, a != -b)
+        val d = max(-1.0, min(1.0, py))
+        val tx: Double; val ty: Double; val tz: Double; val tw: Double
+        if (d < -1.0 + 1e-6) { tx = 1.0; ty = 0.0; tz = 0.0; tw = 0.0 } // opposite: 180 deg about X
+        else {
+            // v = a x b, w = 1 + a.b (a = pole, b = +Y)
+            tx = py * 0.0 - pz * 1.0
+            ty = pz * 0.0 - px * 0.0
+            tz = px * 1.0 - py * 0.0
+            tw = 1.0 + d
+        }
+        val tl = sqrt(tx * tx + ty * ty + tz * tz + tw * tw)
+        val qx = tx / tl; val qy = ty / tl; val qz = tz / tl; val qw = tw / tl
+        // q = qTilt * qSpin (three Quaternion.multiply: this x q)
+        val rx = qw * sx + qx * sw + qy * sz - qz * sy
+        val ry = qw * sy - qx * sz + qy * sw + qz * sx
+        val rz = qw * sz + qx * sy - qy * sx + qz * sw
+        val rw = qw * sw - qx * sx - qy * sy - qz * sz
+        // rotation matrix from q (three Matrix4.makeRotationFromQuaternion, upper-left 3x3, column-major)
+        val x2 = rx + rx; val y2 = ry + ry; val z2 = rz + rz
+        val xx = rx * x2; val xy = rx * y2; val xz = rx * z2
+        val yy = ry * y2; val yz = ry * z2; val zz = rz * z2
+        val wx = rw * x2; val wy = rw * y2; val wz = rw * z2
+        // three stores m[column]; the 3x3 rows for a world->celestial rotation:
+        starRotM[0] = (1.0 - (yy + zz)).toFloat(); starRotM[1] = (xy - wz).toFloat(); starRotM[2] = (xz + wy).toFloat()
+        starRotM[3] = (xy + wz).toFloat(); starRotM[4] = (1.0 - (xx + zz)).toFloat(); starRotM[5] = (yz - wx).toFloat()
+        starRotM[6] = (xz - wy).toFloat(); starRotM[7] = (yz + wx).toFloat(); starRotM[8] = (1.0 - (xx + yy)).toFloat()
     }
 
     private var envCamAlt = Float.NaN
@@ -885,6 +959,32 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         val wnData = WaterMath.makeWaterNormalTexture(256, 3)
         texWNormal = uploadTex2D(256, 256, GLES30.GL_RGBA8, GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE,
             ByteBuffer.allocateDirect(wnData.size).put(wnData).position(0), true, true)
+    }
+
+    /** The site's baked celestial textures (environment/StarField.js, seed 1337): a cube map with
+     *  the Milky Way band and the equirect moon albedo map. Individual stars are procedural. */
+    private fun buildStars() {
+        val faces = Stars.buildStarCubeTexture(1337)
+        val handles = IntArray(1)
+        GLES30.glGenTextures(1, handles, 0)
+        texStars = handles[0]
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_CUBE_MAP, texStars)
+        GLES30.glPixelStorei(GLES30.GL_UNPACK_ALIGNMENT, 1)
+        val targets = intArrayOf(
+            0x8515, 0x8516, 0x8517, 0x8518, 0x8519, 0x851A) // +X -X +Y -Y +Z -Z
+        for (f in 0 until 6) {
+            val buf = ByteBuffer.allocateDirect(faces[f].size).put(faces[f]).position(0)
+            GLES30.glTexImage2D(targets[f], 0, GLES30.GL_RGBA8, 256, 256, 0, GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE, buf)
+        }
+        GLES30.glTexParameteri(GLES30.GL_TEXTURE_CUBE_MAP, GLES30.GL_TEXTURE_MIN_FILTER, GLES30.GL_LINEAR)
+        GLES30.glTexParameteri(GLES30.GL_TEXTURE_CUBE_MAP, GLES30.GL_TEXTURE_MAG_FILTER, GLES30.GL_LINEAR)
+        GLES30.glTexParameteri(GLES30.GL_TEXTURE_CUBE_MAP, GLES30.GL_TEXTURE_WRAP_S, GLES30.GL_CLAMP_TO_EDGE)
+        GLES30.glTexParameteri(GLES30.GL_TEXTURE_CUBE_MAP, GLES30.GL_TEXTURE_WRAP_T, GLES30.GL_CLAMP_TO_EDGE)
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_CUBE_MAP, 0)
+
+        val moonData = Stars.buildMoonTexture(1337)
+        texMoon = uploadTex2D(512, 256, GLES30.GL_RGBA8, GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE,
+            ByteBuffer.allocateDirect(moonData.size).put(moonData).position(0), true, true)
     }
 
     private fun pushBox(data: FloatArray, o0: Int, cx: Float, cy: Float, cz: Float, sx: Float, sy: Float, sz: Float, part: Float): Int {
@@ -1550,6 +1650,7 @@ class GlCityRenderer : GLSurfaceView.Renderer {
     private fun drawSky(sun: SunState) {
         if (progSky == 0 || skyVbo == 0) return
         GLES30.glDisable(GLES30.GL_CULL_FACE)
+        GLES30.glDisable(GLES30.GL_DEPTH_TEST)
         GLES30.glUseProgram(progSky)
         GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, skyVbo)
         GLES30.glVertexAttribPointer(0, 3, GLES30.GL_FLOAT, false, 12, 0)
@@ -1564,8 +1665,30 @@ class GlCityRenderer : GLSurfaceView.Renderer {
             camTarget[1] + camDist * sin(camPitch),
             camTarget[2] + camDist * cos(camPitch) * cos(camYaw))
         GLES30.glUniform1f(u(progSky, "uDayFactor"), sun.dayFactor)
+        // stars / Milky Way / moon / sun disc (environment shaders.js)
+        GLES30.glUniformMatrix3fv(u(progSky, "uStarRot"), 1, false, starRotM, 0)
+        GLES30.glUniform1f(u(progSky, "uStarIntensity"), sun.starIntensity)
+        GLES30.glUniform1f(u(progSky, "uStarSeed"), sun.starSeed)
+        GLES30.glUniform1f(u(progSky, "uMilkyWay"), sun.milkyWay)
+        GLES30.glUniform1f(u(progSky, "uStarFade"), (1.0 - 0.6 * Environment.CLEAR_COVER).toFloat())
+        GLES30.glUniform1f(u(progSky, "uNightKey"), sun.nightKey)
+        GLES30.glUniform1f(u(progSky, "uTime"), frameNanos / 1_000_000_000f)
+        GLES30.glUniform3f(u(progSky, "uMoonDir"), sun.moonDir[0], sun.moonDir[1], sun.moonDir[2])
+        GLES30.glUniform1f(u(progSky, "uMoonBright"), sun.moonBright)
+        GLES30.glUniform1f(u(progSky, "uMoonRadius"), Stars.MOON_ANGULAR_RADIUS.toFloat())
+        GLES30.glUniform1f(u(progSky, "uSunRadius"), Stars.SUN_ANGULAR_RADIUS.toFloat())
+        GLES30.glUniform1f(u(progSky, "uSunDisc"), sun.sunDisc)
+        GLES30.glUniform3f(u(progSky, "uSunTint"), sun.sunTint[0], sun.sunTint[1], sun.sunTint[2])
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
+        GLES30.glBindTexture(0x8513, texStars) // GL_TEXTURE_CUBE_MAP
+        GLES30.glUniform1i(u(progSky, "uStars"), 0)
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE1)
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, texMoon)
+        GLES30.glUniform1i(u(progSky, "uMoonTex"), 1)
         GLES30.glDrawArrays(GLES30.GL_TRIANGLES, 0, 3)
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
         GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, 0)
+        GLES30.glEnable(GLES30.GL_DEPTH_TEST)
         GLES30.glEnable(GLES30.GL_CULL_FACE)
     }
 
@@ -1896,6 +2019,10 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         }
     """.trimIndent()
 
+    // The site's sky (environment shaders.js port, display-referred): the analytic gradient feeds
+    // the same shader that draws the procedural star field + the baked Milky Way cube rotating
+    // with sidereal time, the phase-correct moon disc with limb darkening + halo, and the sun
+    // disc with limb darkening. Star/disc radiance reaches display space through uNightKey.
     private val FS_SKY = """
         #version 300 es
         precision highp float;
@@ -1907,7 +2034,88 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         uniform vec3 uSunColor;
         uniform vec3 uCamPos;
         uniform float uDayFactor;
+        uniform mat3 uStarRot;
+        uniform samplerCube uStars;
+        uniform sampler2D uMoonTex;
+        uniform float uStarIntensity;
+        uniform float uStarSeed;
+        uniform float uMilkyWay;
+        uniform float uStarFade;
+        uniform float uNightKey;
+        uniform float uTime;
+        uniform vec3 uMoonDir;
+        uniform float uMoonBright;
+        uniform float uMoonRadius;
+        uniform float uSunRadius;
+        uniform float uSunDisc;
+        uniform vec3 uSunTint;
         out vec4 fragColor;
+        const float PI = 3.141592653589793;
+        const vec3 LUM = vec3(0.2126, 0.7152, 0.0722);
+
+        vec4 hash4(vec3 p) {
+            vec4 q = vec4(dot(p, vec3(127.1, 311.7, 74.7)), dot(p, vec3(269.5, 183.3, 246.1)), dot(p, vec3(113.5, 271.9, 124.6)), dot(p, vec3(419.2, 371.9, 43.7)));
+            return fract(sin(q) * 43758.5453123);
+        }
+
+        // procedural star field on the celestial sphere (cube-face grid, 3x3 neighbourhood)
+        vec3 starField(vec3 sd) {
+            vec3 a = abs(sd);
+            float faceId; vec2 uv;
+            if (a.x >= a.y && a.x >= a.z) { faceId = sd.x > 0.0 ? 0.0 : 1.0; uv = vec2(-sd.z * sign(sd.x), -sd.y) / a.x; }
+            else if (a.y >= a.z) { faceId = sd.y > 0.0 ? 2.0 : 3.0; uv = vec2(sd.x, sd.z * sign(sd.y)) / a.y; }
+            else { faceId = sd.z > 0.0 ? 4.0 : 5.0; uv = vec2(sd.x * sign(sd.z), -sd.y) / a.z; }
+            const float GRID = 72.0;
+            vec2 g = (uv * 0.5 + 0.5) * GRID;
+            vec2 cell = floor(g);
+            float px = clamp(length(fwidth(g)), 1e-4, 0.25); // one screen pixel in grid units
+            vec3 acc = vec3(0.0);
+            for (int j = -1; j <= 1; j++) {
+                for (int i = -1; i <= 1; i++) {
+                    vec2 c = cell + vec2(float(i), float(j));
+                    if (c.x < 0.0 || c.y < 0.0 || c.x >= GRID || c.y >= GRID) continue;
+                    vec4 h = hash4(vec3(c, faceId * 17.0 + uStarSeed));
+                    if (h.z > 0.50) continue; // star density
+                    vec2 sp = c + 0.1 + 0.8 * h.xy;
+                    float d = length(g - sp);
+                    vec4 h2 = hash4(vec3(c + 31.0, faceId * 5.0 + uStarSeed));
+                    float mag = pow(h2.x, 7.0);            // many faint, few bright
+                    float bright = 0.05 + mag * 4.0 + pow(h2.x, 40.0) * 6.0;
+                    float size0 = 0.018 + mag * 0.05;
+                    float size = max(size0, px * 0.8);     // never thinner than a pixel
+                    float e = bright * clamp(size0 / size, 0.35, 1.0); // partial energy conservation
+                    float sIn = exp(-(d * d) / (size * size));
+                    vec3 col = h2.y < 0.22 ? vec3(0.70, 0.80, 1.0) : h2.y < 0.72 ? vec3(0.94, 0.96, 1.0) : h2.y < 0.93 ? vec3(1.0, 0.95, 0.88) : vec3(1.0, 0.85, 0.70);
+                    float tw = 1.0 + 0.25 * sin(uTime * (3.0 + 5.0 * h2.z) + h2.w * 40.0);
+                    acc += col * e * sIn * tw;
+                }
+            }
+            return acc * 0.92;
+        }
+
+        // phase-consistent moon disc with limb darkening and earthshine
+        vec3 moonDisc(vec3 rd) {
+            float cosA = dot(rd, uMoonDir);
+            float ang = acos(clamp(cosA, -1.0, 1.0));
+            if (ang > uMoonRadius) return vec3(0.0);
+            vec3 up = abs(uMoonDir.y) < 0.99 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+            vec3 right = normalize(cross(up, uMoonDir));
+            vec3 upv = cross(uMoonDir, right);
+            float x = dot(rd, right) / uMoonRadius;
+            float y = dot(rd, upv) / uMoonRadius;
+            float r2 = x * x + y * y;
+            float z = sqrt(max(0.0, 1.0 - r2));
+            vec3 n = normalize(-uMoonDir * z + right * x + upv * y);
+            float ndl = max(0.0, dot(n, uSunDir));
+            vec2 uv = vec2(atan(x, z) / (2.0 * PI) + 0.5, acos(clamp(y, -1.0, 1.0)) / PI);
+            float alb = texture(uMoonTex, uv).r;
+            alb = 0.42 + 0.58 * alb;
+            float edge = 1.0 - smoothstep(0.985, 1.0, sqrt(r2));
+            float limb = 0.62 + 0.38 * pow(max(z, 0.0), 0.42);
+            float light = ndl * limb + 0.012; // earthshine keeps the dark side barely visible
+            return vec3(alb) * light * uMoonBright * 0.30 * edge;
+        }
+
         void main() {
             vec4 p = uInvVP * vec4(vNdc, 1.0, 1.0);
             vec3 dir = normalize(p.xyz / p.w - uCamPos);
@@ -1917,6 +2125,34 @@ class GlCityRenderer : GLSurfaceView.Renderer {
             col += uSunColor * (pow(s, 700.0) * 2.4 + pow(s, 24.0) * 0.28 + pow(s, 5.0) * 0.10);
             // ground below horizon darkens toward a muted land tone
             col = mix(col, uHorizon * 0.55, clamp(-dir.y * 6.0, 0.0, 1.0));
+
+            // stars: procedural (pixel-exact) + baked Milky Way cube, washed out by sky brightness
+            vec3 sd = uStarRot * dir;
+            float skyLum = dot(col, LUM);
+            float wash = exp(-skyLum / max(uNightKey, 1e-4) * 10.0);
+            vec4 mw = texture(uStars, sd);
+            vec3 stars = mw.rgb * (mw.a * 0.7 * 2.4 * uMilkyWay) + starField(sd);
+            col += stars * uStarIntensity * wash * uNightKey * uStarFade;
+
+            // moon + soft halo (forward scattering of moonlight by haze)
+            col += moonDisc(dir) * uNightKey;
+            {
+                float cosM = dot(dir, uMoonDir);
+                float halo = exp(-(1.0 - cosM) * 900.0) * 0.06 + exp(-(1.0 - cosM) * 60.0) * 0.007 + exp(-(1.0 - cosM) * 11.0) * 0.0032;
+                col += halo * uMoonBright * vec3(0.7, 0.8, 1.0) * step(0.0, uMoonDir.y) * uNightKey;
+            }
+
+            // sun disc with limb darkening (low sun: a dimmer, 2200 K tinted disc)
+            {
+                float cosS = dot(dir, uSunDir);
+                float angS = acos(clamp(cosS, -1.0, 1.0));
+                if (angS < uSunRadius) {
+                    float q = angS / uSunRadius;
+                    float limb = 1.0 - 0.55 * (1.0 - sqrt(max(0.0, 1.0 - q * q)));
+                    float edge = 1.0 - smoothstep(0.93, 1.0, q);
+                    col += uSunDisc * uSunTint * limb * edge;
+                }
+            }
             fragColor = vec4(col, 1.0);
         }
     """.trimIndent()

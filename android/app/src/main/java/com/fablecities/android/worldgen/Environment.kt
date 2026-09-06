@@ -331,6 +331,7 @@ object Environment {
         val fogColor = DoubleArray(3)
         var fogDensity = 0.0
         var dayFactor = 1.0 // 1 by day, 0 at night (1 - nightFactor) — drives window lights
+        var siderealAngle = 0.0 // celestial[12] — star cube spin (SkyDome.setStarRotation)
     }
 
     private val CEL = DoubleArray(13)
@@ -420,6 +421,7 @@ object Environment {
         celestial(hour, doy, latDeg, CEL)
         st.sunAltDeg = CEL[0] * 180.0 / PI
         st.moonAltDeg = CEL[5] * 180.0 / PI
+        st.siderealAngle = CEL[12]
         st.moonIllum = CEL[11]
         System.arraycopy(CEL, 2, st.sunDir, 0, 3)
         System.arraycopy(CEL, 7, st.moonDir, 0, 3)
