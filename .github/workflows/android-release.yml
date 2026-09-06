@@ -97,9 +97,9 @@ jobs:
             # multi-line if/for blocks are a syntax error here. Keep every statement on one line.
             echo "GW=$GITHUB_WORKSPACE PWD=$(pwd)"
             find . -type f -name "*.apk" 2>/dev/null || true
-            APK=$(find "$GITHUB_WORKSPACE/artifact" -type f -name "*.apk" 2>/dev/null | head -1)
+            APK=$(find artifact -type f -name "*.apk" 2>/dev/null | head -1)
             echo "APK=$APK"
-            [ -n "$APK" ] || APK="$GITHUB_WORKSPACE/artifact/app-debug.apk"
+            [ -n "$APK" ] || APK="artifact/app-debug.apk"
             ls -la "$APK" || true
             [ -f "$APK" ] || { echo "::error::no .apk in the downloaded artifact"; exit 1; }
             adb install -r "$APK"
