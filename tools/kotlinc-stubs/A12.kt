@@ -17,6 +17,11 @@ object GLES30 {
     const val GL_STATIC_DRAW = 0x88E4
     const val GL_TRIANGLES = 0x0004
     const val GL_POINTS = 0x0000
+    const val GL_TEXTURE_3D = 0x806F
+    const val GL_TEXTURE_WRAP_R = 0x8072
+    const val GL_ONE = 0x1
+    fun glTexImage3D(t: Int, lvl: Int, ifmt: Int, w: Int, h: Int, d: Int, b: Int, fmt: Int, type: Int, data: java.nio.Buffer?): Unit = Unit
+    fun glTexSubImage2D(t: Int, lvl: Int, x: Int, y: Int, w: Int, h: Int, fmt: Int, type: Int, data: java.nio.Buffer?): Unit = Unit
     const val GL_FRONT = 0x0404
     const val GL_TEXTURE4 = 0x84C4
     const val GL_VERTEX_SHADER = 0x8B31

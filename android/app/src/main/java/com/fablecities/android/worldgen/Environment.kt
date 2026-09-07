@@ -309,6 +309,8 @@ object Environment {
         val sunDir = DoubleArray(3)      // toward the sun
         val moonDir = DoubleArray(3)     // toward the moon
         val lightDir = DoubleArray(3)    // toward the shadow-casting light (sun or moon)
+        val lightToward = DoubleArray(3) // toward the light (the web's lightToward, unclamped)
+        val sunTHigh = DoubleArray(3)    // transmittance at 2600 m — cloud-altitude light colour
         var sunAltDeg = 0.0
         var moonAltDeg = 0.0
         var moonIllum = 0.0
@@ -461,6 +463,7 @@ object Environment {
 
         transmittanceToLight(st.sunDir, camAlt, wTurb, SUN_T)
         transmittanceToLight(st.sunDir, 2600.0, wTurb, SUN_T_HIGH)
+        System.arraycopy(SUN_T_HIGH, 0, st.sunTHigh, 0, 3)
         transmittanceToLight(st.moonDir, camAlt, wTurb, MOON_T)
         val sunUp = smoothstep(-1.8, 1.2, st.sunAltDeg)
         val sunMax = max(SUN_T[0], max(SUN_T[1], max(SUN_T[2], 1e-4)))
@@ -516,6 +519,7 @@ object Environment {
         } else {
             lightToward[0] = st.moonDir[0]; lightToward[1] = st.moonDir[1]; lightToward[2] = st.moonDir[2]
         }
+        System.arraycopy(lightToward, 0, st.lightToward, 0, 3)
         st.lightDir[0] = -lightToward[0]; st.lightDir[1] = -lightToward[1]; st.lightDir[2] = -lightToward[2]
         if (st.lightDir[1] > -sin(MIN_SHADOW_ELEV)) {
             val h = hypot(st.lightDir[0], st.lightDir[2])

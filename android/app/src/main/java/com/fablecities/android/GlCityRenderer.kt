@@ -5,7 +5,10 @@ import android.opengl.GLSurfaceView
 import android.opengl.Matrix
 import android.util.Log
 import com.fablecities.android.worldgen.DemoCity
+import com.fablecities.android.worldgen.CloudShadowMap
+import com.fablecities.android.worldgen.Clouds
 import com.fablecities.android.worldgen.Environment
+import com.fablecities.android.worldgen.WeatherPresets
 import com.fablecities.android.worldgen.Heightmap
 import com.fablecities.android.worldgen.Rng
 import com.fablecities.android.worldgen.RoadNetBuilder
@@ -79,6 +82,10 @@ class GlCityRenderer : GLSurfaceView.Renderer {
     private val envState = Environment.EnvState()
     /** The site's weather model (environment/Weather.js), driven by the game clock. */
     val weather = Weather(1337, "clear")
+    /** Lazily-baked cloud ground-shadow map (CloudShadow.js). */
+    private val cloudShadowMap: CloudShadowMap by lazy {
+        CloudShadowMap(Clouds.buildWeatherTexture(1337), Clouds.buildCloudNoiseTexture(1337), 22000.0)
+    }
     private val sun = SunState()
 
     // --- world constants: the SITE'S real world (2048 m, seed 1337, sea level 0) ---
@@ -115,6 +122,13 @@ class GlCityRenderer : GLSurfaceView.Renderer {
     private val reflBias = floatArrayOf(
         0.5f, 0f, 0f, 0f,  0f, 0.5f, 0f, 0f,  0f, 0f, 0.5f, 0f,  0.5f, 0.5f, 0.5f, 1f,
     )
+    // --- volumetric clouds (CloudLayer + CloudShadowMap): baked CPU textures + raymarch dome ---
+    private var progClouds = 0
+    private var texCloudNoise = 0 // 64³ RGBA8 Perlin-Worley (GL_TEXTURE_3D)
+    private var texCloudWeather = 0
+    private var texCloudCirrus = 0
+    private var texCloudShadow = 0
+    private var cloudShadowBakedCover = -1.0
 
     // --- geometry handles ---
     private var terrainVbo = 0
@@ -206,7 +220,9 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         progWater = buildProgram(VS_WATER, FS_WATER, "water")
         progSky = buildProgram(VS_SKY, FS_SKY, "sky")
         progPrecip = buildProgram(VS_PRECIP, FS_PRECIP, "precip")
+        progClouds = buildProgram(VS_SKY, FS_CLOUDS, "clouds")
         buildPrecipBuffer()
+        buildCloudTextures()
 
         // The real world: the site's 2048 m heightmap (seed 1337), then THE SITE'S demo city:
         // the shoreline-fitted site picker, block grading and the full street network
@@ -255,6 +271,57 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         surfaceH = max(1, height)
         computeLetterbox()
         setupReflectionFbo()
+    }
+
+    /** The site's baked cloud textures (worldgen Clouds.kt = the web's Clouds.js CPU bakes). */
+    private fun buildCloudTextures() {
+        if (texCloudNoise != 0) return
+        val noise = Clouds.buildCloudNoiseTexture(1337)
+        val weather = Clouds.buildWeatherTexture(1337)
+        val cirrus = Clouds.buildCirrusTexture(1337)
+        texCloudNoise = uploadTex3D(Clouds.NOISE_SIZE, Clouds.NOISE_SIZE, Clouds.NOISE_SIZE, noise)
+        texCloudWeather = uploadTex2D(
+            Clouds.WEATHER_SIZE, Clouds.WEATHER_SIZE, GLES30.GL_RGBA8, GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE,
+            wrapBytes(weather), repeat = true, mipmaps = false)
+        texCloudCirrus = uploadTex2D(
+            256, 256, GLES30.GL_RGBA8, GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE,
+            wrapBytes(cirrus), repeat = true, mipmaps = false)
+        // R8 ground-shadow texture (CloudShadowMap), re-baked from updateCloudShadows()
+        texCloudShadow = uploadTex2D(
+            CloudShadowMap.SIZE, CloudShadowMap.SIZE, GLES30.GL_R8, GLES30.GL_RED, GLES30.GL_UNSIGNED_BYTE,
+            wrapBytes(ByteArray(CloudShadowMap.SIZE * CloudShadowMap.SIZE) { 255.toByte() }), repeat = true, mipmaps = false)
+    }
+
+    private fun wrapBytes(b: ByteArray): java.nio.Buffer =
+        java.nio.ByteBuffer.allocateDirect(b.size).order(java.nio.ByteOrder.nativeOrder()).put(b).apply { flip() }
+
+    private fun uploadTex3D(w: Int, h: Int, d: Int, data: ByteArray): Int {
+        val ids = IntArray(1)
+        GLES30.glGenTextures(1, ids, 0)
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_3D, ids[0])
+        GLES30.glPixelStorei(GLES30.GL_UNPACK_ALIGNMENT, 1)
+        GLES30.glTexImage3D(GLES30.GL_TEXTURE_3D, 0, GLES30.GL_RGBA8, w, h, d, 0, GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE, wrapBytes(data))
+        GLES30.glTexParameteri(GLES30.GL_TEXTURE_3D, GLES30.GL_TEXTURE_MIN_FILTER, GLES30.GL_LINEAR_MIPMAP_LINEAR)
+        GLES30.glTexParameteri(GLES30.GL_TEXTURE_3D, GLES30.GL_TEXTURE_MAG_FILTER, GLES30.GL_LINEAR)
+        GLES30.glTexParameteri(GLES30.GL_TEXTURE_3D, GLES30.GL_TEXTURE_WRAP_S, GLES30.GL_REPEAT)
+        GLES30.glTexParameteri(GLES30.GL_TEXTURE_3D, GLES30.GL_TEXTURE_WRAP_T, GLES30.GL_REPEAT)
+        GLES30.glTexParameteri(GLES30.GL_TEXTURE_3D, GLES30.GL_TEXTURE_WRAP_R, GLES30.GL_REPEAT)
+        GLES30.glGenerateMipmap(GLES30.GL_TEXTURE_3D)
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_3D, 0)
+        return ids[0]
+    }
+
+    /** CloudShadowMap.update + re-upload when coverage crossed the re-bake threshold. */
+    private fun updateCloudShadows(cover: Double, strength: Double) {
+        if (texCloudShadow == 0) return
+        val shadow = cloudShadowMap
+        if (!shadow.update(cover, strength)) return
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, texCloudShadow)
+        GLES30.glPixelStorei(GLES30.GL_UNPACK_ALIGNMENT, 1)
+        GLES30.glTexSubImage2D(GLES30.GL_TEXTURE_2D, 0, 0, 0, CloudShadowMap.SIZE, CloudShadowMap.SIZE,
+            GLES30.GL_RED, GLES30.GL_UNSIGNED_BYTE, wrapBytes(shadow.data))
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, 0)
+        cloudShadowBakedCover = cover
     }
 
     /** Water.js reflection target: RGBA8 + depth at reflectionScale 0.5 of the viewport. */
@@ -411,6 +478,7 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         drawBuildings(sun)
         drawVehicles(sun)
         drawWater(sun)
+        drawClouds(sun)
         drawPrecipitation(sun)
 
         if (!glErrorLogged) {
@@ -464,6 +532,16 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         var starFade = 0.82f      // 1 - 0.6 x cloudCover — star wash under the deck
         var reflectionStrength = 0f // 1 after a successful planar reflection pass (Water.js)
         var fogSkyCol = FloatArray(3) // st.fogColor x sK — the dome's fog-dissolve colour (milk)
+        // --- volumetric cloud uniforms (index.js 484-522 feed), display-referred via K_LIGHT ---
+        var cloudLight = FloatArray(3)
+        var cloudAmbTop = FloatArray(3)
+        var cloudAmbBottom = FloatArray(3)
+        var cloudAmbSunSide = FloatArray(3)
+        var cloudHaze = FloatArray(3)
+        var cloudHazeDensity = 0f
+        var cloudScatter = 2.9f
+        var cloudShadowStrength = 0f
+        val cloudLightToward = FloatArray(3)
     }
 
     /** Display key scales: the web multiplies radiance by exposure and tone-maps (AgX); the native
@@ -567,6 +645,7 @@ class GlCityRenderer : GLSurfaceView.Renderer {
             sun.fogSkyCol[0] = (st.fogColor[0] * sK).toFloat()
             sun.fogSkyCol[1] = (st.fogColor[1] * sK).toFloat()
             sun.fogSkyCol[2] = (st.fogColor[2] * sK).toFloat()
+
             // sun disc: ATMOS.sunDiscRadiance x elevation lerp, tinted at golden hour (index.js)
             val lowSun = 1.0 - Environment.smoothstep(4.0, 20.0, st.sunAltDeg)
             val discLerp = Environment.lerp(0.34, 1.0, Environment.smoothstep(1.0, 16.0, st.sunAltDeg))
@@ -575,6 +654,54 @@ class GlCityRenderer : GLSurfaceView.Renderer {
             sun.sunTint[0] = Environment.lerp(1.0, 1.0, tintMix).toFloat()
             sun.sunTint[1] = Environment.lerp(1.0, 0.52, tintMix).toFloat()
             sun.sunTint[2] = Environment.lerp(1.0, 0.20, tintMix).toFloat()
+            // --- cloud uniform feed (index.js 484-522), folded into the display key ---
+            val ck = st.exposure * K_LIGHT
+            val isSunLight = st.sunIntensity >= st.moonIntensity
+            sun.cloudLightToward[0] = (-st.lightDir[0]).toFloat()
+            sun.cloudLightToward[1] = (-st.lightDir[1]).toFloat()
+            sun.cloudLightToward[2] = (-st.lightDir[2]).toFloat()
+            val moonUpC = Environment.smoothstep(-1.0, 6.0, st.moonAltDeg)
+            if (isSunLight) {
+                // lc = sunTHigh grey-lerped, low-sun falloff lifted like the ground key
+                var lr = st.sunTHigh[0]; var lg = st.sunTHigh[1]; var lb = st.sunTHigh[2]
+                val ll0 = Environment.luminance(doubleArrayOf(lr, lg, lb))
+                // lerp toward the grey of its own luminance (the web's S.grey trick)
+                lr += (ll0 - lr) * 0.18; lg += (ll0 - lg) * 0.18; lb += (ll0 - lb) * 0.18
+                val lcMax = max(lr, max(lg, max(lb, 1e-4)))
+                val lift = Math.pow(lcMax, Environment.lerp(1.0, 0.7, lowSun)) / lcMax * Environment.SUN_E *
+                    Environment.lerp(1.0, 0.5, lowSun) * Environment.smoothstep(-3.5, 0.2, st.sunAltDeg)
+                sun.cloudLight[0] = (lr * lift * ck).toFloat()
+                sun.cloudLight[1] = (lg * lift * ck).toFloat()
+                sun.cloudLight[2] = (lb * lift * ck).toFloat()
+            } else {
+                sun.cloudLight[0] = (st.moonColor[0] * Environment.MOON_LIGHT * st.moonIllum * moonUpC * 0.85 * ck).toFloat()
+                sun.cloudLight[1] = (st.moonColor[1] * Environment.MOON_LIGHT * st.moonIllum * moonUpC * 0.85 * ck).toFloat()
+                sun.cloudLight[2] = (st.moonColor[2] * Environment.MOON_LIGHT * st.moonIllum * moonUpC * 0.85 * ck).toFloat()
+            }
+            val moonAmbR = st.moonColor[0] * st.moonIntensity * 0.16
+            val moonAmbG = st.moonColor[1] * st.moonIntensity * 0.16
+            val moonAmbB = st.moonColor[2] * st.moonIntensity * 0.16
+            val skyAvgL = st.skyAvg; val horL = st.horizonAvg; val ssL = st.sunSideAvg
+            val ambTopK = Environment.lerp(0.35, 0.12, lowSun)
+            sun.cloudAmbTop[0] = ((skyAvgL[0] * 0.7 + Environment.NIGHT_GLOW[0] * na * 3.0 + moonAmbR) * ck).toFloat()
+            sun.cloudAmbTop[1] = ((skyAvgL[1] * 0.7 + Environment.NIGHT_GLOW[1] * na * 3.0 + moonAmbG) * ck).toFloat()
+            sun.cloudAmbTop[2] = ((skyAvgL[2] * 0.7 + Environment.NIGHT_GLOW[2] * na * 3.0 + moonAmbB) * ck).toFloat()
+            sun.cloudAmbBottom[0] = ((skyAvgL[0] + (horL[0] - skyAvgL[0]) * ambTopK) * 0.66 + st.groundRad[0] * Environment.lerp(0.10, 0.03, lowSun) + Environment.NIGHT_GLOW[0] * na * 1.3 + moonAmbR * 0.45).let { (it * ck).toFloat() }
+            sun.cloudAmbBottom[1] = ((skyAvgL[1] + (horL[1] - skyAvgL[1]) * ambTopK) * 0.66 + st.groundRad[1] * Environment.lerp(0.10, 0.03, lowSun) + Environment.NIGHT_GLOW[1] * na * 1.3 + moonAmbG * 0.45).let { (it * ck).toFloat() }
+            sun.cloudAmbBottom[2] = ((skyAvgL[2] + (horL[2] - skyAvgL[2]) * ambTopK) * 0.66 + st.groundRad[2] * Environment.lerp(0.10, 0.03, lowSun) + Environment.NIGHT_GLOW[2] * na * 1.3 + moonAmbB * 0.45).let { (it * ck).toFloat() }
+            val sunSideK = 1.25 * lowSun * sunUp * (1.0 - 0.6 * cover)
+            sun.cloudAmbSunSide[0] = (ssL[0] * sunSideK * ck).toFloat()
+            sun.cloudAmbSunSide[1] = (ssL[1] * sunSideK * ck).toFloat()
+            sun.cloudAmbSunSide[2] = (ssL[2] * sunSideK * ck).toFloat()
+            val hazeK = 0.35
+            sun.cloudHaze[0] = ((st.fogColor[0] + (skyAvgL[0] - st.fogColor[0]) * hazeK) * ck).toFloat()
+            sun.cloudHaze[1] = ((st.fogColor[1] + (skyAvgL[1] - st.fogColor[1]) * hazeK) * ck).toFloat()
+            sun.cloudHaze[2] = ((st.fogColor[2] + (skyAvgL[2] - st.fogColor[2]) * hazeK) * ck).toFloat()
+            sun.cloudHazeDensity = (st.fogDensity * 0.3).toFloat()
+            sun.cloudScatter = Environment.lerp(2.9, 1.5, na).toFloat()
+            // shadow strength: fair-weather cumulus keep light in the shade; low sun fades the projection
+            sun.cloudShadowStrength = ((0.62 + 0.26 * Environment.smoothstep(0.3, 0.9, cover)) *
+                Environment.lerp(0.35, 1.0, Environment.smoothstep(4.0, 15.0, st.sunAltDeg))).toFloat()
             // star rotation: world → celestial frame (SkyDome.setStarRotation)
             setStarRotation(Environment.LATITUDE * PI / 180.0, st.siderealAngle)
         }
@@ -1798,6 +1925,77 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, 0)
     }
 
+    /** The site's ray-marched cloud deck (CloudLayer composite): depth-tested against the opaque
+     *  pass, premultiplied over-blend, uniforms from the index.js feed. */
+    private fun drawClouds(sun: SunState) {
+        if (progClouds == 0 || skyVbo == 0) return
+        val cover = weather.cloudCover
+        val cirrus = weather.state.keys[WeatherPresets.I_CIRRUS]
+        if (!(cover > 0.005 || cirrus > 0.005)) return
+        // ground shadows drift with the same field (re-baked inside when the threshold is crossed)
+        updateCloudShadows(cover.toDouble(), sun.cloudShadowStrength.toDouble())
+        GLES30.glEnable(GLES30.GL_BLEND)
+        GLES30.glBlendFunc(GLES30.GL_ONE, GLES30.GL_ONE_MINUS_SRC_ALPHA) // premultiplied output
+        GLES30.glDepthMask(false)
+        GLES30.glDisable(GLES30.GL_CULL_FACE)
+        GLES30.glUseProgram(progClouds)
+        GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, skyVbo)
+        GLES30.glVertexAttribPointer(0, 3, GLES30.GL_FLOAT, false, 12, 0)
+        GLES30.glEnableVertexAttribArray(0)
+        GLES30.glUniformMatrix4fv(u(progClouds, "uInvVP"), 1, false, invVpM, 0)
+        val camX = camTarget[0] + camDist * cos(camPitch) * sin(camYaw)
+        val camY = camTarget[1] + camDist * sin(camPitch)
+        val camZ = camTarget[2] + camDist * cos(camPitch) * cos(camYaw)
+        GLES30.glUniform3f(u(progClouds, "uCamPos"), camX, camY, camZ)
+        GLES30.glUniform3f(u(progClouds, "uLightDir"), sun.cloudLightToward[0], sun.cloudLightToward[1], sun.cloudLightToward[2])
+        GLES30.glUniform3f(u(progClouds, "uLightColor"), sun.cloudLight[0], sun.cloudLight[1], sun.cloudLight[2])
+        GLES30.glUniform3f(u(progClouds, "uAmbientTop"), sun.cloudAmbTop[0], sun.cloudAmbTop[1], sun.cloudAmbTop[2])
+        GLES30.glUniform3f(u(progClouds, "uAmbientBottom"), sun.cloudAmbBottom[0], sun.cloudAmbBottom[1], sun.cloudAmbBottom[2])
+        GLES30.glUniform3f(u(progClouds, "uAmbientSunSide"), sun.cloudAmbSunSide[0], sun.cloudAmbSunSide[1], sun.cloudAmbSunSide[2])
+        GLES30.glUniform3f(u(progClouds, "uHazeColor"), sun.cloudHaze[0], sun.cloudHaze[1], sun.cloudHaze[2])
+        GLES30.glUniform1f(u(progClouds, "uHazeDensity"), sun.cloudHazeDensity)
+        GLES30.glUniform1f(u(progClouds, "uCoverage"), cover.toFloat())
+        GLES30.glUniform1f(u(progClouds, "uCloudType"), weather.state.keys[WeatherPresets.I_TYPE].toFloat())
+        GLES30.glUniform1f(u(progClouds, "uDensity"), weather.state.keys[WeatherPresets.I_DENSITY].toFloat())
+        GLES30.glUniform1f(u(progClouds, "uPrecip"), weather.precipitation.toFloat())
+        GLES30.glUniform1f(u(progClouds, "uCloudBase"), 1000f)
+        GLES30.glUniform1f(u(progClouds, "uCloudTop"), 3350f)
+        GLES30.glUniform1f(u(progClouds, "uCurvatureRadius"), 2.4e6f)
+        // cloud drift: 0.075 m per game-second along the preset wind, wrapped on the 22 km tile
+        val gameSeconds = (day * 24.0 + hour) * 3600.0
+        val drift = 0.075 * weather.driftWind * gameSeconds
+        val tile = 22000.0 * 4
+        val wx = weather.state.windX; val wz = weather.state.windZ
+        val wrapV = { v: Double -> v - kotlin.math.floor(v / tile) * tile }
+        GLES30.glUniform3f(u(progClouds, "uWindOffset"), wrapV(wx * drift).toFloat(), 0f, wrapV(wz * drift).toFloat())
+        GLES30.glUniform2f(u(progClouds, "uWindDir"), wx.toFloat(), wz.toFloat())
+        GLES30.glUniform1f(u(progClouds, "uTime"), frameNanos / 1_000_000_000f)
+        GLES30.glUniform1f(u(progClouds, "uCirrusCover"), cirrus.toFloat())
+        GLES30.glUniform1f(u(progClouds, "uCirrusAlt"), 7200f)
+        GLES30.glUniform1f(u(progClouds, "uCirrusScale"), 30000f)
+        GLES30.glUniform1f(u(progClouds, "uWeatherScale"), 22000f)
+        GLES30.glUniform1f(u(progClouds, "uBaseScale"), 5600f)
+        GLES30.glUniform1f(u(progClouds, "uDetailScale"), 1050f)
+        GLES30.glUniform1f(u(progClouds, "uScatterGain"), sun.cloudScatter)
+        GLES30.glUniform1f(u(progClouds, "uBaseJitter"), 0.24f)
+        GLES30.glUniform1f(u(progClouds, "uPixelAngle"), 0.0015f)
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_3D, texCloudNoise)
+        GLES30.glUniform1i(u(progClouds, "uNoise"), 0)
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE1)
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, texCloudWeather)
+        GLES30.glUniform1i(u(progClouds, "uWeather"), 1)
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE2)
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, texCloudCirrus)
+        GLES30.glUniform1i(u(progClouds, "uCirrus"), 2)
+        GLES30.glDrawArrays(GLES30.GL_TRIANGLES, 0, 3)
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
+        GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, 0)
+        GLES30.glEnable(GLES30.GL_CULL_FACE)
+        GLES30.glDepthMask(true)
+        GLES30.glDisable(GLES30.GL_BLEND)
+    }
+
     /** Rain / snow particles: camera-following volume, alpha from the weather precipitation. */
     private fun drawPrecipitation(sun: SunState) {
         if (progPrecip == 0 || precipVbo == 0 || sun.precip <= 0.005f) return
@@ -1894,6 +2092,12 @@ class GlCityRenderer : GLSurfaceView.Renderer {
             camTarget[2] + camDist * cos(camPitch) * cos(camYaw))
         GLES30.glUniform1f(u(progBuilding, "uDayFactor"), sun.dayFactor)
         GLES30.glUniform1f(u(progBuilding, "uFogDensity"), sun.fogDensity)
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE4)
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, texCloudShadow)
+        GLES30.glUniform1i(u(progBuilding, "uCloudShadow"), 4)
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
+        GLES30.glUniform1f(u(progBuilding, "uShadowStrength"), sun.cloudShadowStrength)
+        GLES30.glUniform3f(u(progBuilding, "uLightToward"), sun.cloudLightToward[0], sun.cloudLightToward[1], sun.cloudLightToward[2])
         for (b in buildings) {
             if (b.removed) continue
             val selected = selectedBuilding === b
@@ -1931,6 +2135,12 @@ class GlCityRenderer : GLSurfaceView.Renderer {
             camTarget[2] + camDist * cos(camPitch) * cos(camYaw))
         GLES30.glUniform1f(u(progBuilding, "uDayFactor"), sun.dayFactor)
         GLES30.glUniform1f(u(progBuilding, "uFogDensity"), sun.fogDensity)
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE4)
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, texCloudShadow)
+        GLES30.glUniform1i(u(progBuilding, "uCloudShadow"), 4)
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
+        GLES30.glUniform1f(u(progBuilding, "uShadowStrength"), sun.cloudShadowStrength)
+        GLES30.glUniform3f(u(progBuilding, "uLightToward"), sun.cloudLightToward[0], sun.cloudLightToward[1], sun.cloudLightToward[2])
         GLES30.glUniform1f(u(progBuilding, "uSelected"), 0f)
         GLES30.glUniform1f(u(progBuilding, "uKind"), 9f) // vehicle mode
         val sim = trafficSim
@@ -2146,10 +2356,19 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         uniform float uSnow;
         uniform vec3 uCamPos;
         uniform vec3 uTint;
+        uniform sampler2D uCloudShadow;
+        uniform float uShadowStrength;
+        uniform vec3 uLightToward;
         out vec4 fragColor;
         void main() {
             float ndl = max(dot(normalize(vec3(0.0, 1.0, 0.0)), uSunDir), 0.0);
-            vec3 col = vColor * uTint * (uAmbient + uSunColor * ndl);
+            // cloud shadow (CloudShadowMap projected along the light onto the cloud base)
+            float cs = 1.0;
+            if (uShadowStrength > 0.001) {
+                float t = (1000.0 - vWorld.y) / max(uLightToward.y, 0.05);
+                cs = texture(uCloudShadow, (vWorld.xz + uLightToward.xz * t) / 22000.0).r;
+            }
+            vec3 col = vColor * uTint * (uAmbient + uSunColor * ndl * cs);
             // snow accumulation (WetSurfaces/snow hooks): ground whitens as the deck settles
             col = mix(col, vec3(0.82, 0.85, 0.90) * (uAmbient + uSunColor * ndl) * 1.35, uSnow * 0.72);
             // wet surfaces: albedo darkens and gets a sky sheen (the web's uWetness material hook)
@@ -2198,6 +2417,9 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         uniform vec3 uAmbient;
         uniform vec3 uFogColor;
         uniform float uFogDensity;
+        uniform sampler2D uCloudShadow;
+        uniform float uShadowStrength;
+        uniform vec3 uLightToward;
         uniform vec3 uCamPos;
         uniform vec3 uColor;
         uniform vec3 uScale;
@@ -2220,7 +2442,7 @@ class GlCityRenderer : GLSurfaceView.Renderer {
             vec3 colOut;
             if (uKind < 8.5) {
                 // buildings: window grid on side faces
-                vec3 col = uColor * (uAmbient * hemi + uSunColor * ndl * 0.9);
+                vec3 col = uColor * (uAmbient * hemi + uSunColor * ndl * 0.9 * csB);
                 bool side = abs(n.y) < 0.5;
                 if (side) {
                     float u = abs(n.x) > 0.5 ? vLocal.z : vLocal.x;
@@ -2236,12 +2458,12 @@ class GlCityRenderer : GLSurfaceView.Renderer {
                     if (win) {
                         vec3 glass = uColor * 0.32 + vec3(0.03, 0.05, 0.09);
                         vec3 warm = vec3(1.0, 0.72, 0.38) * (1.6 + 0.9 * hash(cell + 7.0));
-                        col = lit ? warm : glass * (uAmbient * 1.4 + uSunColor * ndl);
+                        col = lit ? warm : glass * (uAmbient * 1.4 + uSunColor * ndl * csB);
                     } else {
                         col *= 0.92; // mullions slightly darker
                     }
                 }
-                if (n.y > 0.5) col = uColor * 0.55 * (uAmbient + uSunColor * ndl);
+                if (n.y > 0.5) col = uColor * 0.55 * (uAmbient + uSunColor * ndl * csB);
                 colOut = col;
                 if (uSelected > 0.5) colOut = mix(colOut, vec3(0.35, 0.85, 1.0), 0.45);
             } else {
@@ -2644,7 +2866,7 @@ class GlCityRenderer : GLSurfaceView.Renderer {
 
     private val FS_PRECIP = """
         #version 300 es
-        precision mediump float;
+        precision highp float; // uMode must match the vertex shader's highp (GLES link rule)
         in float vFade;
         uniform float uMode;
         uniform vec3 uTint;
@@ -2658,5 +2880,329 @@ class GlCityRenderer : GLSurfaceView.Renderer {
             }
             fragColor = vec4(uTint, a);
         }
+    """.trimIndent()
+
+    // The site's volumetric cloud deck (environment/shaders.js CLOUD_FRAGMENT port): ray-marched
+    // spherical shell fed by the baked 64³ Perlin-Worley shape volume, the 256² rank-equalised
+        // weather map and the cirrus sheet — the same textures the web bakes on the CPU (worldgen
+        // Clouds.kt). Temporal accumulation is dropped (fixed jitter, the web's probe path); the march
+        // budget is 18 view steps / 3 light steps (the web 'low' profile).
+    private val FS_CLOUDS = """
+            #version 300 es
+            precision highp float;
+            in vec2 vNdc;
+            uniform mat4 uInvVP;
+            out vec4 fragColor;
+    uniform vec3 uCamPos;
+    uniform vec3 uLightDir;      // toward the dominant light (sun or moon)
+    uniform vec3 uLightColor;    // irradiance at cloud altitude
+    uniform vec3 uAmbientTop;
+    uniform vec3 uAmbientBottom;
+    uniform vec3 uAmbientSunSide;// warm horizon radiance on the sun side (golden hour), lights bases / sun-facing flanks
+    uniform vec3 uHazeColor;
+    uniform float uHazeDensity;
+    uniform float uCoverage;     // 0..1 weather coverage
+    uniform float uCloudType;    // 0 stratus .. 1 cumulus
+    uniform float uDensity;      // extinction scale (1/m at full density)
+    uniform float uPrecip;       // darkens bases
+    uniform float uCloudBase;
+    uniform float uCloudTop;
+    uniform float uCurvatureRadius;
+    uniform vec3 uWindOffset;    // metres
+    uniform vec2 uWindDir;       // unit XZ wind direction (cirrus streaks)
+    uniform float uTime;
+    const int uSteps = 18;
+    const int uLightSteps = 3;
+    uniform sampler3D uNoise;
+    uniform sampler2D uWeather;
+    uniform sampler2D uCirrus;   // R fibrous streak noise, G broad patches (both rank-equalised)
+    uniform float uCirrusCover;  // 0..1
+    uniform float uCirrusAlt;    // metres
+    uniform float uCirrusScale;  // metres per cirrus tile
+    uniform float uWeatherScale; // metres per weather tile
+    uniform float uBaseScale;    // metres per base-noise tile
+    uniform float uDetailScale;
+    // temporal accumulation (main pass only)
+    uniform mat4 uPrevViewProj;  // previous frame projection * rotation-only view
+    uniform float uPixelAngle;   // radians per render-target pixel
+    uniform float uScatterGain;  // in-scatter gain: sunlit cumulus must be the brightest thing in a daylight frame
+    uniform float uBaseJitter;   // per-column base-height jitter as a fraction of the shell thickness
+
+    const float PI = 3.14159265359;
+
+    float remap01(float v, float a, float b) { return clamp((v - a) / (b - a), 0.0, 1.0); }
+    float hg(float mu, float g) { float g2 = g * g; return (1.0 - g2) / (4.0 * PI * pow(1.0 + g2 - 2.0 * g * mu, 1.5)); }
+
+    vec2 raySphere(vec3 ro, vec3 rd, float R) {
+      float b = dot(ro, rd);
+      float c = dot(ro, ro) - R * R;
+      float h = b * b - c;
+      if (h < 0.0) return vec2(-1.0);
+      h = sqrt(h);
+      return vec2(-b - h, -b + h);
+    }
+
+    // weather-map coverage → local cloud coverage; the covered sky fraction tracks uCoverage. Wide ramp: the
+    // coverage field itself shapes the cloud (thin ragged fringe → dense core)
+    float coverageAt(vec4 w) {
+      float th = 1.0 - uCoverage;
+      return smoothstep(th - 0.08, th + 0.20, w.r + (w.b - 0.5) * 0.28);
+    }
+
+    // per-column top (fraction of the shell thickness): small patches stay flatter, big fronts tower
+    float columnTop(float cov, vec4 w2) {
+      return clamp(mix(0.44, 1.05, pow(cov, 0.5)) * mix(0.60, 1.30, w2.b), 0.18, 1.0);
+    }
+    // per-column base height offset (fraction of the shell thickness): two decorrelated weather octaves so the deck
+    // never sits on one plane — the r2 critic's 'row of pancakes with a shared dead-flat base'
+    // per-cloud base wobble: the weather map is km-scale, so on its own every cumulus in a row is still cut off by
+    // the same base plane (the r3 critic's 'dead-flat horizontal base'). Two decorrelated sine lattices at ~620 m and
+    // ~290 m give each cell its own base height at no texture cost.
+    float baseWobble(vec2 pw) {
+      vec2 q = pw * (1.0 / 620.0);
+      float a = sin(q.x * 1.7 + sin(q.y * 1.3) * 2.1) * cos(q.y * 1.9 - sin(q.x * 0.7) * 1.7);
+      vec2 r = pw * (1.0 / 291.0);
+      float b = sin(r.x * 2.3 - cos(r.y * 1.1) * 1.9) * cos(r.y * 1.5 + sin(r.x * 1.3) * 1.3);
+      return a * 0.64 + b * 0.36;
+    }
+    float columnBase(vec4 wHi, vec4 w2, vec2 pw) {
+      float km = (wHi.b - 0.5) * 0.62 + (w2.g - 0.5) * 0.38;
+      return (km * 1.30 + baseWobble(pw) * 0.42) * 2.0 * uBaseJitter;
+    }
+    // vertical profile in normalised column height hn (0 = base, 1 = local top): flat dense base, rounded top
+    float heightGradient(float hn, float type) {
+      float stratus = smoothstep(0.0, 0.06, hn) * (1.0 - smoothstep(0.25, 0.65, hn));
+      float cumulus = smoothstep(0.0, 0.16, hn) * (1.0 - smoothstep(0.52, 1.0, hn));
+      return mix(stratus, cumulus, type);
+    }
+
+    // mip level for a noise tile of scale metres (64 texels) seen at distance t: footprint in texels → log2.
+    // aniso: at grazing elevations adjacent pixel ROWS sample the layer hundreds of metres apart while columns are metres
+    // apart — the vertical footprint is 1/sin(elevation) larger, and without this the far deck aliases into stripes
+    float noiseLod(float t, float scale, float pixAng, float aniso) {
+      return log2(max(1.0, t * pixAng * aniso * 64.0 / scale));
+    }
+
+    // density at world position p; hn = normalised column height; detail in [0,1] scales the erosion samples;
+    // lodB / lodD: explicit mip levels for the base / detail lookups (far clouds must not alias into dashes)
+    float cloudDensity(vec3 p, float hn, float weatherCov, float cloudType, float detail, float lodB, float lodD) {
+      vec3 q = (p + uWindOffset) / uBaseScale;
+      q.y *= 0.85; // near-isotropic: cumulus heaps, not smeared sheets
+      vec4 n = textureLod(uNoise, q, lodB);
+      float lowFbm = n.g * 0.625 + n.b * 0.25 + n.a * 0.125;
+      float base = remap01(n.r, -(1.0 - lowFbm) * 0.85, 1.0);
+      float type = clamp(mix(0.15, 0.95, uCloudType) * (0.42 + 1.16 * cloudType), 0.05, 1.0);
+      // ragged base: the height gradient alone cuts every column off at exactly the same plane (the r2 critic's
+      // 'row of pancakes'). n.b is the 16-cell Worley octave (~350 m cells) already fetched above, so this wobbles
+      // the base and the cap by +/- 11 % of the column for free.
+      float wob = (n.b - 0.5) * 0.22;
+      base *= heightGradient(clamp(hn - wob, 0.0, 1.0), type);
+      // coverage carves the base shape; density grows with height (bases wispy, cores dense)
+      float dens = remap01(base, 1.0 - weatherCov, 1.0) * weatherCov;
+      dens *= mix(0.65, 1.0, smoothstep(0.0, 0.35, hn));
+      if (detail > 0.001 && dens > 0.0) {
+        vec3 qd = (p + uWindOffset * 0.6 + vec3(uTime * 6.0, uTime * 1.5, 0.0)) / uDetailScale;
+        vec4 hn4 = textureLod(uNoise, qd, lodD);
+        float hfbm = hn4.g * 0.625 + hn4.b * 0.25 + hn4.a * 0.125;
+        // wispy erosion at the base (subtract fbm), billowy at the top (subtract inverted fbm)
+        float erode = mix(hfbm, 1.0 - hfbm, clamp(hn * 5.0, 0.0, 1.0));
+        float strength = mix(0.66, 0.46, smoothstep(0.1, 0.5, hn)) * detail;
+        dens = remap01(dens, erode * strength, 1.0);
+        // cauliflower: two high-frequency Worley octaves (3.1x and 6.4x the detail tile) biting into the silhouette.
+        // The bite scales with sqrt(coverage) so dense cores stay solid while fringes break into billows.
+        if (dens > 0.0 && dens < 0.72) {
+          float edge = 1.0 - dens / 0.72;
+          float bite = detail * sqrt(clamp(weatherCov, 0.0, 1.0)) * edge;
+          float f1 = textureLod(uNoise, qd * 3.1 + vec3(0.21, 0.57, 0.13), lodD + 1.63).a;
+          float f2 = textureLod(uNoise, qd * 6.4 + vec3(0.73, 0.11, 0.47), lodD + 2.68).a;
+          dens = remap01(dens, ((1.0 - f1) * 0.30 + (1.0 - f2) * 0.16) * bite, 1.0);
+        }
+      }
+      return dens;
+    }
+
+    void main() {
+      vec3 rd = normalize(vDir);
+      vec3 ro = uCamPos;
+      if (rd.y < -0.02) discard;
+      // spherical shell centred below the camera → clouds curve down to the horizon
+      vec3 C = vec3(ro.x, -uCurvatureRadius, ro.z);
+      vec3 roC = ro - C;
+      float rIn = uCurvatureRadius + uCloudBase;
+      float rOut = uCurvatureRadius + uCloudTop;
+      float camR = length(roC);
+      float tStart, tEnd;
+      vec2 tIn = raySphere(roC, rd, rIn);
+      vec2 tOut = raySphere(roC, rd, rOut);
+      bool hasShell = true;
+      if (camR < rIn) { tStart = tIn.y; tEnd = tOut.y; }
+      else if (camR < rOut) { tStart = 0.0; tEnd = (tIn.x > 0.0) ? tIn.x : tOut.y; }
+      else { if (tOut.x < 0.0) hasShell = false; tStart = tOut.x; tEnd = (tIn.x > 0.0) ? tIn.x : tOut.y; }
+      if (tEnd <= tStart) hasShell = false;
+      float maxLen = 22000.0;
+      tEnd = min(tEnd, tStart + maxLen);
+      float pathLen = max(tEnd - tStart, 1.0);
+
+      float mu = dot(rd, uLightDir);
+      float thick = uCloudTop - uCloudBase;
+      vec3 col = vec3(0.0);
+      float T = 1.0;
+      float firstHitT = -1.0;
+      float sigma = uDensity;
+      vec2 weatherOfs = uWindOffset.xz * 0.35;
+      // interleaved gradient noise + golden-ratio temporal offset: every frame marches a different start offset and
+      // the history buffer integrates them. The probe (no history) uses a fixed offset so the PMREM stays noise-free.
+      // stratified temporal jitter: per-pixel random phase + golden-ratio sequence over frames (converges far faster
+      // than white noise under the exponential history)
+      float ign = 0.5; // fixed jitter (the web's probe path): deterministic, noise-free
+      float pixAng = 0.0035;
+      // anisotropic footprint at grazing elevations (see noiseLod); the layer curves down with the shell so use the
+      // elevation relative to the shell tangent at the entry point
+      float elev = clamp(abs(rd.y) + tStart / (2.0 * uCurvatureRadius), 0.03, 1.0);
+      float aniso = pow(1.0 / elev, 0.6);
+
+      if (hasShell && uCoverage > 0.003) {
+        // step budget scales with the path length (grazing rays are long) up to a hard cap
+        float targetStep = 5200.0 / float(uSteps);  // ~160 m at 32 steps
+        int steps = int(clamp(pathLen / targetStep, 16.0, min(float(uSteps) * 2.0, 64.0)));
+        float ds = pathLen / float(steps);
+        float t = tStart + ds * ign;
+        // phase: dual-lobe HG octaves (Hillaire) — forward lobe brightens sun-facing flanks, back lobe keeps the
+        // anti-solar side from going black
+        float ph0 = 4.0 * PI * mix(hg(mu, 0.72), hg(mu, -0.24), 0.40);
+        float ph1 = 4.0 * PI * mix(hg(mu, 0.45), hg(mu, -0.14), 0.40);
+        float ph2 = 4.0 * PI * mix(hg(mu, 0.26), hg(mu, -0.08), 0.40);
+        ph0 = min(ph0, 3.0);
+        // silver lining: a very narrow forward lobe that survives only through thin, sun-facing edges
+        float silverPh = min(4.0 * PI * hg(mu, 0.93), 40.0);
+        float stepScale = 1.0;
+        int emptyRun = 0;
+        for (int i = 0; i < 84; i++) {
+          if (t >= tEnd) break;
+          vec3 p = ro + rd * t;
+          float h = length(p - C) - uCurvatureRadius;
+          vec2 wuv = (p.xz + weatherOfs) / uWeatherScale;
+          vec4 w = texture(uWeather, wuv);
+          vec4 w2 = texture(uWeather, wuv * 0.41 + vec2(0.37, 0.61)); // large-scale column structure (top height)
+          float cov = coverageAt(w);
+          // grazing rays stack dozens of cells: thin the far field a little so a 25 %-cover sky keeps its blue gaps
+          cov *= 1.0 - 0.5 * smoothstep(3000.0, 14000.0, t);
+          float dens = 0.0;
+          float hn = 0.0;
+          if (cov > 0.01) {
+            // ~1 km-scale lookup: neighbouring columns must get decorrelated bases, or the deck is one plane
+            vec4 wHi = texture(uWeather, wuv * 2.7 + vec2(0.19, 0.83));
+            float baseShift = columnBase(wHi, w2, p.xz) * thick;  // undulating, per-column cloud base
+            float topF = columnTop(cov, w2);
+            float hf = (h - uCloudBase - baseShift) / thick;
+            hn = hf / topF;
+            if (hn > 0.0 && hn < 1.0) {
+              float detail = 1.0 - smoothstep(12000.0, 24000.0, t); // detail erosion resolvable to ~15 km
+              dens = cloudDensity(p, hn, cov, w.g, detail, noiseLod(t, uBaseScale, pixAng, aniso), noiseLod(t, uDetailScale, pixAng, aniso));
+            }
+          }
+          if (dens > 0.002) {
+            if (stepScale > 0.75) {
+              // entered a cloud with a coarse step: back up and refine
+              t -= ds * stepScale * 0.65;
+              stepScale = 0.35;
+              emptyRun = 0;
+              continue;
+            }
+            emptyRun = 0;
+            float dsl = ds * stepScale;
+            if (firstHitT < 0.0) firstHitT = t;
+            // light march toward the light (exponentially growing steps: fine near the sample, coarse far away)
+            float odL = 0.0;
+            vec3 lp = p;
+            float ls = 34.0;
+            for (int j = 0; j < 6; j++) {
+              if (j >= uLightSteps) break;
+              lp += uLightDir * ls;
+              float lh = length(lp - C) - uCurvatureRadius;
+              if (lh > uCloudTop + 200.0 || lh < uCloudBase - 200.0) break;
+              vec2 lwuv = (lp.xz + weatherOfs) / uWeatherScale;
+              vec4 lw = texture(uWeather, lwuv);
+              vec4 lw2 = texture(uWeather, lwuv * 0.41 + vec2(0.37, 0.61));
+              float lcov = coverageAt(lw);
+              float ltopF = columnTop(lcov, lw2);
+              vec4 lwHi = texture(uWeather, lwuv * 2.7 + vec2(0.19, 0.83));
+              float lhn = ((lh - uCloudBase - columnBase(lwHi, lw2, lp.xz) * thick) / thick) / ltopF;
+              if (lhn > 0.0 && lhn < 1.0) odL += cloudDensity(lp, lhn, lcov, lw.g, 0.0, noiseLod(t, uBaseScale, pixAng, aniso) + 0.5, 0.0) * ls;
+              ls *= 1.9;
+            }
+            float tauL = odL * sigma * 0.55;
+            // multiple-scattering approximation (Hillaire): octaves of attenuated single scattering
+            float lightE = exp(-tauL) * ph0 + 0.45 * exp(-tauL * 0.42) * ph1 + 0.20 * exp(-tauL * 0.18) * ph2;
+            // Beer-powder: the eye sees less in-scatter at the freshly lit surface of dense cloud (sun side only)
+            float powder = 1.0 - 0.55 * exp(-2.4 * (dens * sigma * dsl + odL * sigma * 0.12)) * clamp(mu, 0.0, 1.0);
+            lightE *= powder;
+            // single scattering alone leaves cumulus a mid-grey smudge (the r2 critic's 'blurry smudges'): a real deck
+            // is many-times-scattered and reads as the brightest surface in the frame. uScatterGain lifts it there, the
+            // clamp keeps it from blowing the white point (auto-exposure would then sink the ground).
+            lightE = min(lightE * uScatterGain, 5.2);
+            lightE += min(silverPh * exp(-tauL * 2.2) * 0.34 * (1.0 - smoothstep(0.0, 0.5, dens)), 1.4);
+            // sky ambient: top/bottom gradient, occluded by the cloud above; precipitation darkens the bases
+            vec3 ambient = mix(uAmbientBottom, uAmbientTop, smoothstep(0.0, 0.75, hn)) * (1.0 - 0.45 * uPrecip * (1.0 - hn));
+            ambient *= 0.46 + 0.54 * exp(-tauL * 0.55);
+            // golden hour: the warm sun-side horizon lights bases and sun-facing flanks (exp(-tauL) ≈ "faces the sun").
+            // Bases pick it up most (the belt is below them), which is what turns an evening deck orange from underneath.
+            ambient += uAmbientSunSide * (0.35 + 1.15 * (1.0 - hn)) * (0.22 + 0.78 * exp(-tauL * 0.8));
+            vec3 sctr = uLightColor * lightE * (1.0 / PI) + ambient;
+            // optical step capped: grazing rays take 500 m+ steps, and an opaque hit-or-miss per sample is variance the
+            // history cannot average — capping keeps the far deck soft and the accumulation converged in ~40 frames
+            float aStep = 1.0 - exp(-dens * sigma * min(dsl, 260.0));
+            col += sctr * aStep * T;
+            T *= 1.0 - aStep;
+            if (T < 0.02) break;
+          } else {
+            emptyRun++;
+            if (emptyRun > 2) stepScale = 1.0;
+          }
+          t += ds * stepScale;
+        }
+      }
+
+      // --- cirrus / alto-stratus veil: a 2D sheet high above the deck, strongly forward scattering (ice) ---
+      if (uCirrusCover > 0.003 && T > 0.01) {
+        float rC = uCurvatureRadius + uCirrusAlt;
+        float tC = raySphere(roC, rd, rC).y;
+        if (tC > 0.0) {
+          vec3 pc = ro + rd * tC;
+          vec2 wd = normalize(uWindDir + vec2(1e-4, 0.0));
+          vec2 uvw = (pc.xz + uWindOffset.xz * 1.9) / uCirrusScale;
+          // streaks along the wind: anisotropic lookup in the wind frame
+          vec2 uv = vec2(dot(uvw, wd) * 0.28, dot(uvw, vec2(-wd.y, wd.x)));
+          float fib = texture(uCirrus, uv).r;
+          float fib2 = texture(uCirrus, uv * 2.3 + vec2(0.13, 0.71)).r;
+          float patchN = texture(uCirrus, uvw * 0.16 + vec2(0.5, 0.27)).g;
+          float th = 1.0 - uCirrusCover;
+          float covC = smoothstep(th - 0.05, th + 0.30, patchN * 0.72 + fib * 0.28);
+          float densC = covC * (fib * 0.7 + fib2 * 0.3);
+          densC *= densC;
+          float alphaC = clamp(densC * 0.7, 0.0, 0.40);
+          float phC = min(4.0 * PI * (0.42 * hg(mu, 0.86) + 0.30 * hg(mu, 0.45) + 0.28 * hg(mu, -0.12)), 2.0);
+          vec3 cirCol = uLightColor * phC * (0.9 / PI) * (0.55 + 0.45 * (1.0 - alphaC)) + uAmbientTop * 0.9 + uAmbientSunSide * 0.5;
+          float hazeC = 1.0 - exp(-pow(tC * uHazeDensity * 0.6, 1.3));
+          cirCol = mix(cirCol, uHazeColor, clamp(hazeC, 0.0, 1.0));
+          col += cirCol * alphaC * T;
+          T *= 1.0 - alphaC;
+        }
+      }
+
+      float alpha = 1.0 - T;
+      // aerial perspective on the deck: blend toward the horizon haze with distance
+      float dist = firstHitT > 0.0 ? firstHitT : tStart;
+      float haze = 1.0 - exp(-pow(dist * uHazeDensity, 1.3));
+      haze = clamp(haze, 0.0, 1.0);
+      col = mix(col, uHazeColor * alpha, haze);
+      // fade the deck into the horizon band so it never cuts the sky abruptly
+      float horizonFade = smoothstep(-0.008, 0.02, rd.y);
+      alpha *= horizonFade;
+      col *= horizonFade;
+      vec4 cur = vec4(col, alpha);
+
+      fragColor = vec4(col * alpha, alpha); // premultiplied over-compositing
+    }
     """.trimIndent()
 }
