@@ -512,7 +512,9 @@ class GlCityRenderer : GLSurfaceView.Renderer {
             floatArrayOf(0f, -1f, 0f, -1f, -1f, -1f, 1f, -1f, -1f, 1f, -1f, 1f, -1f, -1f, 1f),
         )
         for (f in faces) {
-            for (i in 0 until 6) {
+            // f = [nx, ny, nz, 4 corners x3]; two triangles over the corner indices
+            val idx = intArrayOf(0, 1, 2, 0, 2, 3)
+            for (i in idx) {
                 data.add(fx + f[3 + i * 3] * hx)
                 data.add(fy + f[4 + i * 3] * hy)
                 data.add(fz + f[5 + i * 3] * hz)
@@ -3545,6 +3547,40 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         return loc
     }
 
+    /**
+     * Per-building facade parameters from the site's generator ranges (buildings/generators.js):
+     * apartment floors 3.0 m bays 3.0-4.2 winFrac 0.42-0.55 litBias 0.6; retail ground 4.2;
+     * curtain-wall towers bays 1.6-2.2. style: 0 plain, 1 apartment, 2 retail, 3 curtain.
+     * Seeded by the building's own seed so the SAME building always gets the SAME facade.
+     */
+    private fun facadeParams(kind: Int, seed: Int, out: FloatArray) {
+        val rng = Rng(hash2Signed(seed, 17))
+        when (kind) {
+            0 -> { // residential
+                out[0] = 3.0f; out[1] = 3.4f
+                out[2] = rng.range(3.0, 4.2).toFloat(); out[3] = rng.range(0.42, 0.55).toFloat()
+                out[4] = 0.6f; out[5] = 1f
+            }
+            1 -> { // commercial / retail frontage
+                out[0] = 3.2f; out[1] = 4.2f
+                out[2] = rng.range(3.0, 4.2).toFloat(); out[3] = rng.range(0.45, 0.58).toFloat()
+                out[4] = 0.65f; out[5] = 2f
+            }
+            2 -> { // office / high-rise: curtain wall
+                out[0] = 3.4f; out[1] = 4.0f
+                out[2] = rng.range(1.6, 2.2).toFloat(); out[3] = 0.62f
+                out[4] = 0.55f; out[5] = 3f
+            }
+            else -> { // services
+                out[0] = 3.4f; out[1] = 3.6f
+                out[2] = rng.range(3.2, 3.8).toFloat(); out[3] = 0.4f
+                out[4] = 0.45f; out[5] = 0f
+            }
+        }
+    }
+
+    private val facadeTmp = FloatArray(6)
+
     private fun drawBuildings(sun: SunState) {
         if (progBuilding == 0 || cubeVbo == 0) return
         GLES30.glUseProgram(progBuilding)
@@ -3581,6 +3617,9 @@ class GlCityRenderer : GLSurfaceView.Renderer {
             }
             GLES30.glUniform3f(u(progBuilding, "uColor"), pal[0], pal[1], pal[2])
             GLES30.glUniform1f(u(progBuilding, "uSeed"), b.seed.toFloat())
+            facadeParams(b.kind, b.seed, facadeTmp)
+            GLES30.glUniform4f(u(progBuilding, "uFacade1"), facadeTmp[0], facadeTmp[1], facadeTmp[2], facadeTmp[3])
+            GLES30.glUniform4f(u(progBuilding, "uFacade2"), facadeTmp[4], facadeTmp[5], 0f, 0f)
             GLES30.glUniform1f(u(progBuilding, "uKind"), b.kind.toFloat())
             GLES30.glUniform1f(u(progBuilding, "uSelected"), if (selected) 1f else 0f)
             GLES30.glDrawArrays(GLES30.GL_TRIANGLES, 0, 36)
@@ -3899,6 +3938,10 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         uniform float uSeed;
         uniform float uKind;
         uniform float uSelected;
+        // the site's facade parameters (buildings/generators.js fp(): style, floorH, groundH,
+        // bayW, winFrac, litBias) derived per building from its seed
+        uniform vec4 uFacade1;   // floorH, groundH, bayW, winFrac
+        uniform vec4 uFacade2;   // litBias, style (0 plain, 1 apartment, 2 retail, 3 curtain), 0, 0
         out vec4 fragColor;
 
         float hash(vec2 p) {
@@ -3919,27 +3962,52 @@ class GlCityRenderer : GLSurfaceView.Renderer {
             float fog = 1.0 - exp(-d * uFogDensity);
             vec3 colOut;
             if (uKind < 8.5) {
-                // buildings: window grid on side faces
+                // buildings: the site's facade rhythm (generators.js fp + facadeShader styles)
                 vec3 col = uColor * (uAmbient * hemi + uSunColor * ndl * 0.9 * csB);
                 bool side = abs(n.y) < 0.5;
                 if (side) {
                     float u = abs(n.x) > 0.5 ? vLocal.z : vLocal.x;
                     float v = vLocal.y;
-                    float rows = max(2.0, floor(uScale.y / 5.0));
-                    vec2 grid = vec2(u, v) * vec2(6.0, rows);
-                    vec2 cell = floor(grid);
+                    float floorH = uFacade1.x;
+                    float groundH = uFacade1.y;
+                    float bayW = uFacade1.z;
+                    float winFrac = uFacade1.w;
+                    float litBias = uFacade2.x;
+                    float style = uFacade2.y;
+                    bool curtain = style > 2.5;   // glass tower: full glazing, thin mullions
+                    bool ground = v < groundH;
+                    // retail ground floors take wider shopfront bays with tall glazing
+                    float bay = ground ? bayW * 1.35 : bayW;
+                    float gy = ground ? v : v - groundH;
+                    float fy = ground ? gy / groundH : (gy / floorH + 0.5) * 0.0 + fract(gy / floorH);
+                    float row = ground ? 0.0 : floor(gy / floorH);
+                    vec2 grid = vec2(u / bay, gy / (ground ? groundH : floorH));
+                    vec2 cell = floor(grid + vec2(uSeed * 0.013, 0.0));
                     vec2 f = fract(grid);
-                    bool win = f.x > 0.22 && f.x < 0.78 && f.y > 0.25 && f.y < 0.80;
+                    float wf = ground ? 0.66 : winFrac;
+                    bool win;
+                    if (curtain) {
+                        win = f.y > 0.06 && f.y < 0.94;                 // spandrel strip only
+                    } else {
+                        win = f.x > (1.0 - wf) * 0.5 && f.x < (1.0 + wf) * 0.5
+                           && f.y > (ground ? 0.12 : 0.22) && f.y < (ground ? 0.88 : 0.82);
+                    }
                     float litRand = hash(cell);
-                    float litFraction = mix(0.72, 0.10, uDayFactor);
-                    bool lit = win && litRand < litFraction;
+                    float litFraction = mix(litBias, 0.08, uDayFactor);
+                    bool lit = win && litRand < litFraction && !(ground && uDayFactor > 0.5 && style < 1.5);
                     if (win) {
-                        vec3 glass = uColor * 0.32 + vec3(0.03, 0.05, 0.09);
+                        vec3 glass = uColor * (curtain ? 0.55 : 0.32) + vec3(0.03, 0.05, 0.09);
                         vec3 warm = vec3(1.0, 0.72, 0.38) * (1.6 + 0.9 * hash(cell + 7.0));
                         col = lit ? warm : glass * (uAmbient * 1.4 + uSunColor * ndl * csB);
+                        // curtain walls keep a faint sky reflection band between floors
+                        if (curtain && (f.y <= 0.06 || f.y >= 0.94)) {
+                            col = uColor * (uAmbient * hemi + uSunColor * ndl * 0.9 * csB) * 0.82;
+                        }
                     } else {
-                        col *= 0.92; // mullions slightly darker
+                        col *= ground ? 0.9 : 0.92; // mullions slightly darker
                     }
+                    // floor slab shadow line every level (the site's facadeShader banding)
+                    if (!curtain && !ground && f.y < 0.08) col *= 0.86;
                 }
                 if (n.y > 0.5) col = uColor * 0.55 * (uAmbient + uSunColor * ndl * csB);
                 colOut = col;
