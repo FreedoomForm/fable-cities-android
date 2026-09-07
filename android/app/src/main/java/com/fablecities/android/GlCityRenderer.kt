@@ -136,6 +136,7 @@ class GlCityRenderer : GLSurfaceView.Renderer {
     private var progUndergrowth = 0
     private var progGroundFX = 0
     private var progLampHead = 0
+    private var progCloudComposite = 0
     // --- scene FBO (GroundFXPass: the whole scene renders into a colour+depth RT, then the
     //     depth-driven fullscreen wet-SSR / contact-shadow / AO / aerial pass blits it up) ---
     private var sceneFbo = 0
@@ -182,6 +183,18 @@ class GlCityRenderer : GLSurfaceView.Renderer {
     private var texCloudCirrus = 0
     private var texCloudShadow = 0
     private var cloudShadowBakedCover = -1.0
+    // --- temporal cloud history (Clouds.js renderOffscreen): half-res ping-pong + reprojection ---
+    private var cloudRtFbo = 0
+    private val cloudRtTex = intArrayOf(0, 0) // [write, history] swap pair
+    private var cloudRtW = 0
+    private var cloudRtH = 0
+    private var cloudRtFloat = false
+    private var cloudFrame = 0
+    private var cloudHistoryValid = false
+    private val cloudRotView = FloatArray(16)
+    private val cloudViewProj = FloatArray(16)
+    private val cloudPrevVP = FloatArray(16)
+    private var cloudPrevVPValid = false
 
     // --- geometry handles ---
     private var terrainVbo = 0
@@ -285,6 +298,7 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         progSky = buildProgram(VS_SKY, FS_SKY, "sky")
         progPrecip = buildProgram(VS_PRECIP, FS_PRECIP, "precip")
         progClouds = buildProgram(VS_SKY, FS_CLOUDS, "clouds")
+        progCloudComposite = buildProgram(VS_SKY, FS_CLOUD_COMPOSITE, "cloudcomposite")
         progPuddle = buildProgram(TerrainShaders.VS_PUDDLE, TerrainShaders.FS_PUDDLE, "puddle")
         progTrees = buildProgram(TerrainShaders.VS_TREES, TerrainShaders.FS_TREES, "trees")
         progUndergrowth = buildProgram(TerrainShaders.VS_UNDERGROWTH, TerrainShaders.FS_UNDERGROWTH, "undergrowth")
@@ -2144,7 +2158,10 @@ class GlCityRenderer : GLSurfaceView.Renderer {
     }
 
     /** environment.api.setWeather(w, false): smooth ~10 s transition like the site's UI switch. */
-    fun setWeather(name: String): Boolean = weather.set(name, false)
+    fun setWeather(name: String): Boolean {
+        cloudHistoryValid = false // Clouds.resetHistory(): weather jumps drop the temporal buffer
+        return weather.set(name, false)
+    }
 
     fun weatherName(): String = weather.name
 
@@ -2301,15 +2318,36 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         if (!(cover > 0.005 || cirrus > 0.005)) return
         // ground shadows drift with the same field (re-baked inside when the threshold is crossed)
         updateCloudShadows(cover.toDouble(), sun.cloudShadowStrength.toDouble())
+
+        // ---- pass 1: ray-march the deck off-screen at half resolution (Clouds.js renderOffscreen) ----
+        val rtW = max(2, (letterbox[2] * 0.5f).toInt())
+        val rtH = max(2, (letterbox[3] * 0.5f).toInt())
+        ensureCloudTargets(rtW, rtH)
+        val writeIdx = 0
+        val histIdx = 1
+        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, cloudRtFbo)
+        GLES30.glFramebufferTexture2D(GLES30.GL_FRAMEBUFFER, GLES30.GL_COLOR_ATTACHMENT0, GLES30.GL_TEXTURE_2D, cloudRtTex[writeIdx], 0)
+        GLES30.glViewport(0, 0, rtW, rtH)
+        GLES30.glClearColor(0f, 0f, 0f, 0f)
+        GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT)
         GLES30.glEnable(GLES30.GL_BLEND)
         GLES30.glBlendFunc(GLES30.GL_ONE, GLES30.GL_ONE_MINUS_SRC_ALPHA) // premultiplied output
         GLES30.glDepthMask(false)
+        GLES30.glDisable(GLES30.GL_DEPTH_TEST)
         GLES30.glDisable(GLES30.GL_CULL_FACE)
         GLES30.glUseProgram(progClouds)
         GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, skyVbo)
         GLES30.glVertexAttribPointer(0, 3, GLES30.GL_FLOAT, false, 12, 0)
         GLES30.glEnableVertexAttribArray(0)
         GLES30.glUniformMatrix4fv(u(progClouds, "uInvVP"), 1, false, invVpM, 0)
+        // temporal accumulation feeds
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE3)
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, cloudRtTex[histIdx])
+        GLES30.glUniform1i(u(progClouds, "uHistory"), 3)
+        GLES30.glUniform1f(u(progClouds, "uHistoryWeight"), if (cloudHistoryValid) 0.94f else 0f)
+        GLES30.glUniform1i(u(progClouds, "uFrame"), cloudFrame)
+        if (cloudPrevVPValid) GLES30.glUniformMatrix4fv(u(progClouds, "uPrevViewProj"), 1, false, cloudPrevVP, 0)
+        GLES30.glUniform1f(u(progClouds, "uPixelAngle"), (50.0 * Math.PI / 180.0).toFloat() / rtH.toFloat())
         val camX = camTarget[0] + camDist * cos(camPitch) * sin(camYaw)
         val camY = camTarget[1] + camDist * sin(camPitch)
         val camZ = camTarget[2] + camDist * cos(camPitch) * cos(camYaw)
@@ -2358,9 +2396,76 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         GLES30.glDrawArrays(GLES30.GL_TRIANGLES, 0, 3)
         GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
         GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, 0)
+
+        // this frame's rotation-only view-projection becomes next frame's reprojection matrix
+        run {
+            val rv = FloatArray(16)
+            System.arraycopy(viewM, 0, rv, 0, 16)
+            rv[12] = 0f; rv[13] = 0f; rv[14] = 0f
+            Matrix.invertM(cloudRotView, 0, rv, 0)
+            Matrix.multiplyMM(cloudViewProj, 0, projM, 0, cloudRotView, 0)
+            System.arraycopy(cloudViewProj, 0, cloudPrevVP, 0, 16)
+            cloudPrevVPValid = true
+        }
+        // swap: the freshly written buffer is what the composite shows and next frame's history
+        cloudRtTex[0] = cloudRtTex[1].also { cloudRtTex[1] = cloudRtTex[0] }
+        cloudFrame = (cloudFrame + 1) % 1024
+        cloudHistoryValid = true
+
+        // ---- pass 2: composite into the scene with the Gaussian 4x4 reconstruction ----
+        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, sceneFbo)
+        GLES30.glViewport(0, 0, sceneW, sceneH)
+        GLES30.glEnable(GLES30.GL_BLEND)
+        GLES30.glBlendFunc(GLES30.GL_ONE, GLES30.GL_ONE_MINUS_SRC_ALPHA) // premultiplied
+        GLES30.glDepthMask(false)
+        GLES30.glEnable(GLES30.GL_DEPTH_TEST) // the far dome hides behind closer geometry
+        GLES30.glDepthFunc(GLES30.GL_LEQUAL)
+        GLES30.glDisable(GLES30.GL_CULL_FACE)
+        GLES30.glUseProgram(progCloudComposite)
+        GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, skyVbo)
+        GLES30.glVertexAttribPointer(0, 3, GLES30.GL_FLOAT, false, 12, 0)
+        GLES30.glEnableVertexAttribArray(0)
+        GLES30.glUniformMatrix4fv(u(progCloudComposite, "uInvVP"), 1, false, invVpM, 0)
+        GLES30.glUniform2f(u(progCloudComposite, "uResolution"), sceneW.toFloat(), sceneH.toFloat())
+        GLES30.glUniform2f(u(progCloudComposite, "uTexel"), 1f / rtW.toFloat(), 1f / rtH.toFloat())
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, cloudRtTex[1]) // the just-written target
+        GLES30.glUniform1i(u(progCloudComposite, "uTex"), 0)
+        GLES30.glDrawArrays(GLES30.GL_TRIANGLES, 0, 3)
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
+        GLES30.glDepthFunc(GLES30.GL_LESS)
         GLES30.glEnable(GLES30.GL_CULL_FACE)
         GLES30.glDepthMask(true)
         GLES30.glDisable(GLES30.GL_BLEND)
+    }
+
+    /** Clouds.js targets: exact 1:2 of the drawing buffer, float16 RGBA when renderable. */
+    private fun ensureCloudTargets(w: Int, h: Int) {
+        if (cloudRtFbo != 0 && w == cloudRtW && h == cloudRtH) return
+        if (cloudRtFbo == 0) {
+            val genFb = IntArray(1); val genTex = IntArray(2)
+            GLES30.glGenFramebuffers(1, genFb, 0)
+            GLES30.glGenTextures(2, genTex, 0)
+            cloudRtFbo = genFb[0]
+            cloudRtTex[0] = genTex[0]; cloudRtTex[1] = genTex[1]
+        }
+        cloudRtW = w; cloudRtH = h
+        // float16 targets when the implementation can render to them (HalfFloatType on the web)
+        val useFloat = GLES30.glGetString(GLES30.GL_EXTENSIONS)?.contains("color_buffer_float") == true ||
+            GLES30.glGetString(GLES30.GL_EXTENSIONS)?.contains("color_buffer_half_float") == true
+        cloudRtFloat = useFloat
+        val ifmt = if (useFloat) 0x881A else GLES30.GL_RGBA8 // GL_RGBA16F
+        for (i in 0..1) {
+            GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, cloudRtTex[i])
+            GLES30.glTexImage2D(GLES30.GL_TEXTURE_2D, 0, ifmt, w, h, 0, GLES30.GL_RGBA, if (useFloat) 0x8D61 /*HALF_FLOAT*/ else GLES30.GL_UNSIGNED_BYTE, null)
+            GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_MIN_FILTER, GLES30.GL_LINEAR)
+            GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_MAG_FILTER, GLES30.GL_LINEAR)
+            GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_WRAP_S, GLES30.GL_CLAMP_TO_EDGE)
+            GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_WRAP_T, GLES30.GL_CLAMP_TO_EDGE)
+        }
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, 0)
+        cloudHistoryValid = false // resize drops the history (stays valid across sizes on the web;
+        // a reset here only costs one noise frame — simpler than resampling)
     }
 
     /** Rain / snow particles: camera-following volume, alpha from the weather precipitation. */
@@ -3912,6 +4017,39 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         // weather map and the cirrus sheet — the same textures the web bakes on the CPU (worldgen
         // Clouds.kt). Temporal accumulation is dropped (fixed jitter, the web's probe path); the march
         // budget is 18 view steps / 3 light steps (the web 'low' profile).
+    /** Clouds.js compositeMaterial: Gaussian reconstruction of the half-res march (sigma 0.75 texel). */
+    private val FS_CLOUD_COMPOSITE = """
+        #version 300 es
+        precision highp float;
+        in vec2 vNdc;
+        out vec4 fragColor;
+        uniform sampler2D uTex;
+        uniform vec2 uResolution;
+        uniform vec2 uTexel;
+        void main() {
+          vec2 uv = gl_FragCoord.xy / uResolution;
+          // Gaussian reconstruction in render-target texel space (sigma 0.75 texel, 4x4 texel-centred taps): a
+          // smooth magnification with no grid beat, and no edge-aware weighting that would turn residual
+          // temporal noise into worms along the (horizontally coherent) far deck
+          vec2 tc = uv / uTexel - 0.5;
+          vec2 base = floor(tc);
+          vec2 f = tc - base;
+          vec4 c = vec4(0.0);
+          float wsum = 0.0;
+          for (int j = -1; j <= 2; j++) {
+            for (int i = -1; i <= 2; i++) {
+              vec2 d = vec2(float(i), float(j)) - f;
+              float w = exp(-dot(d, d) / (2.0 * 0.52 * 0.52));
+              c += texture(uTex, (base + vec2(float(i), float(j)) + 0.5) * uTexel) * w;
+              wsum += w;
+            }
+          }
+          c /= wsum;
+          if (c.a < 0.002) discard;
+          fragColor = c;
+        }
+    """.trimIndent()
+
     private val FS_CLOUDS = """
             #version 300 es
             precision highp float;
@@ -3948,7 +4086,10 @@ class GlCityRenderer : GLSurfaceView.Renderer {
     uniform float uBaseScale;    // metres per base-noise tile
     uniform float uDetailScale;
     // temporal accumulation (main pass only)
+    uniform sampler2D uHistory;
     uniform mat4 uPrevViewProj;  // previous frame projection * rotation-only view
+    uniform float uHistoryWeight;
+    uniform int uFrame;
     uniform float uPixelAngle;   // radians per render-target pixel
     uniform float uScatterGain;  // in-scatter gain: sunlit cumulus must be the brightest thing in a daylight frame
     uniform float uBaseJitter;   // per-column base-height jitter as a fraction of the shell thickness
@@ -3956,6 +4097,11 @@ class GlCityRenderer : GLSurfaceView.Renderer {
     const float PI = 3.14159265359;
 
     float remap01(float v, float a, float b) { return clamp((v - a) / (b - a), 0.0, 1.0); }
+    float jitterHash(vec2 p) {
+      vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+      p3 += dot(p3, p3.yzx + 33.33);
+      return fract((p3.x + p3.y) * p3.z);
+    }
     float hg(float mu, float g) { float g2 = g * g; return (1.0 - g2) / (4.0 * PI * pow(1.0 + g2 - 2.0 * g * mu, 1.5)); }
 
     vec2 raySphere(vec3 ro, vec3 rd, float R) {
@@ -4080,8 +4226,8 @@ class GlCityRenderer : GLSurfaceView.Renderer {
       // the history buffer integrates them. The probe (no history) uses a fixed offset so the PMREM stays noise-free.
       // stratified temporal jitter: per-pixel random phase + golden-ratio sequence over frames (converges far faster
       // than white noise under the exponential history)
-      float ign = 0.5; // fixed jitter (the web's probe path): deterministic, noise-free
-      float pixAng = 0.0035;
+      float ign = (uHistoryWeight > 0.001) ? fract(jitterHash(gl_FragCoord.xy) + 0.61803398875 * float(uFrame)) : 0.5;
+      float pixAng = (uHistoryWeight > 0.001) ? uPixelAngle : 0.0035;
       // anisotropic footprint at grazing elevations (see noiseLod); the layer curves down with the shell so use the
       // elevation relative to the shell tangent at the entry point
       float elev = clamp(abs(rd.y) + tStart / (2.0 * uCurvatureRadius), 0.03, 1.0);
@@ -4226,8 +4372,23 @@ class GlCityRenderer : GLSurfaceView.Renderer {
       float horizonFade = smoothstep(-0.008, 0.02, rd.y);
       alpha *= horizonFade;
       col *= horizonFade;
+      vec4 cur = vec4(col * alpha, alpha); // premultiplied over-compositing
 
-      fragColor = vec4(col * alpha, alpha); // premultiplied over-compositing
+      // --- temporal accumulation: reproject by direction (clouds are far, camera translation is negligible) ---
+      if (uHistoryWeight > 0.001) {
+        vec4 pc = uPrevViewProj * vec4(rd, 0.0);
+        if (pc.w > 1e-4) {
+          vec2 puv = pc.xy / pc.w * 0.5 + 0.5;
+          if (puv.x > 0.0 && puv.x < 1.0 && puv.y > 0.0 && puv.y < 1.0) {
+            vec4 hist = texture(uHistory, puv);
+            vec2 edge = smoothstep(0.0, 0.03, puv) * smoothstep(1.0, 0.97, puv);
+            // exponential history (jumps in time / weather reset it from the CPU side)
+            float w = uHistoryWeight * edge.x * edge.y;
+            cur = mix(cur, hist, w);
+          }
+        }
+      }
+      fragColor = cur;
     }
     """.trimIndent()
 }

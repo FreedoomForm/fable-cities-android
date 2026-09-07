@@ -33,12 +33,17 @@ object GLES30 {
     const val GL_ONE_MINUS_SRC_ALPHA = 0x0303
     const val GL_SRC_ALPHA = 0x0302
     const val GL_STATIC_DRAW = 0x88E4
+    const val GL_LEQUAL = 0x0203
+    const val GL_LESS = 0x0201
+    const val GL_RGBA16F = 0x881A
+    const val GL_HALF_FLOAT = 0x8D61
     const val GL_DYNAMIC_DRAW = 0x88E8
     const val GL_TRIANGLES = 0x0004
     const val GL_POINTS = 0x0000
     const val GL_TEXTURE_3D = 0x806F
     const val GL_TEXTURE_WRAP_R = 0x8072
     const val GL_ONE = 0x1
+    fun glDepthFunc(func: Int): Unit = Unit
     fun glUniform4fv(loc: Int, n: Int, v: FloatArray, off: Int): Unit = Unit
     fun glUniform3fv(loc: Int, n: Int, v: FloatArray, off: Int): Unit = Unit
     fun glTexImage3D(t: Int, lvl: Int, ifmt: Int, w: Int, h: Int, d: Int, b: Int, fmt: Int, type: Int, data: java.nio.Buffer?): Unit = Unit
@@ -47,7 +52,6 @@ object GLES30 {
     const val GL_TEXTURE4 = 0x84C4
     const val GL_VERTEX_SHADER = 0x8B31
     const val GL_CLAMP_TO_EDGE = 0x812F
-    const val GL_HALF_FLOAT = 0x140B
     const val GL_LINEAR = 0x2601
     const val GL_LINEAR_MIPMAP_LINEAR = 0x2703
     const val GL_R16F = 0x822D
