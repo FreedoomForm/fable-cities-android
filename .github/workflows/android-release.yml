@@ -139,7 +139,9 @@ jobs:
             sleep 2
             adb logcat -c
             adb shell am start -W -n com.fablecities.android/.MainActivity
-            sleep 20
+            # the native build now bakes the control maps, canopy coverage, splat arrays and
+            # 15k tree instances before the first frame — give it time on swiftshader
+            sleep 60
             # dump the FULL logcat BEFORE the pid check - the last-500 window lost the crash lines
             adb logcat -d > full_bootcat.txt || true
             adb shell pidof com.fablecities.android > pid.txt || true
