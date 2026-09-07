@@ -2436,6 +2436,12 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         void main() {
             vec3 n = normalize(vNormal);
             float ndl = max(dot(n, uSunDir), 0.0);
+            // cloud shadow (the same projection the ground uses)
+            float csB = 1.0;
+            if (uShadowStrength > 0.001) {
+                float tB = (1000.0 - vWorld.y) / max(uLightToward.y, 0.05);
+                csB = texture(uCloudShadow, (vWorld.xz + uLightToward.xz * tB) / 22000.0).r;
+            }
             float hemi = 0.5 + 0.5 * n.y;
             float d = length(uCamPos - vWorld);
             float fog = 1.0 - exp(-d * uFogDensity);
@@ -3022,7 +3028,8 @@ class GlCityRenderer : GLSurfaceView.Renderer {
     }
 
     void main() {
-      vec3 rd = normalize(vDir);
+      vec4 pw2 = uInvVP * vec4(vNdc, 1.0, 1.0);
+      vec3 rd = normalize(pw2.xyz / pw2.w - uCamPos);
       vec3 ro = uCamPos;
       if (rd.y < -0.02) discard;
       // spherical shell centred below the camera → clouds curve down to the horizon
@@ -3200,7 +3207,6 @@ class GlCityRenderer : GLSurfaceView.Renderer {
       float horizonFade = smoothstep(-0.008, 0.02, rd.y);
       alpha *= horizonFade;
       col *= horizonFade;
-      vec4 cur = vec4(col, alpha);
 
       fragColor = vec4(col * alpha, alpha); // premultiplied over-compositing
     }
