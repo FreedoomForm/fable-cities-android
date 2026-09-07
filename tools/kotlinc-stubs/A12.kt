@@ -44,6 +44,8 @@ object GLES30 {
     const val GL_TEXTURE_WRAP_R = 0x8072
     const val GL_ONE = 0x1
     fun glDepthFunc(func: Int): Unit = Unit
+    fun glDisableVertexAttribArray(index: Int): Unit = Unit
+    fun glVertexAttrib4f(index: Int, x: Float, y: Float, z: Float, w: Float): Unit = Unit
     fun glUniform4fv(loc: Int, n: Int, v: FloatArray, off: Int): Unit = Unit
     fun glUniform3fv(loc: Int, n: Int, v: FloatArray, off: Int): Unit = Unit
     fun glTexImage3D(t: Int, lvl: Int, ifmt: Int, w: Int, h: Int, d: Int, b: Int, fmt: Int, type: Int, data: java.nio.Buffer?): Unit = Unit

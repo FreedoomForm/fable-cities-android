@@ -521,7 +521,16 @@ float fxPuddleField(vec2 xz) {
         uniform float uFxTime;
         uniform float uFxPuddle;
         uniform float uFxTrack;
+        uniform vec4 uRoad;        // segLen, segHash, lampTerm (0/1), uCwHalf
+        uniform vec4 uLamp;        // spacing, headLat, alternate, height (RoadTypes.js lamps)
+        uniform float uLampRadius;
+        uniform vec3 uLampColor;
+        uniform float uNight;
+        in vec4 vRoad;             // (lat, along, dA, dB) in the road's own frame, metres
         out vec4 fragColor;
+
+        // pool -> emitted radiance (soft saturation so overlapping pools do not blow out)
+        float rdTone(float p) { return p / (1.0 + 0.7 * p); }
 
         ${FX_NOISE_GLSL}
 
@@ -590,6 +599,34 @@ float fxPuddleField(vec2 xz) {
                     vec3 snowCol = vec3(0.955, 0.965, 0.995) * (0.88 + 0.12 * sn) * (0.93 + 0.09 * drift) * (0.94 + 0.11 * mottle);
                     col = mix(col, snowCol * (uAmbient + uSunColor * ndl * cs) * 1.35, snowW);
                 }
+            }
+            // ---- analytic street-lamp pools (RoadMaterials.js GLSL_NIGHT_ASPHALT, diffuse half;
+            //      the view-dependent GGX streaks arrive through the GroundFX emitter pass) ----
+            if (uRoad.z > 0.5 && uNight > 0.001 && uLamp.x > 0.0 && abs(vRoad.x) < 500.0) {
+                float lat = vRoad.x; float along = vRoad.y; float dA = vRoad.z; float dB = vRoad.w;
+                float spacing = uLamp.x;
+                float diff = 0.0;
+                float i0 = floor(along / spacing - 0.5);
+                for (int k = -1; k <= 1; k++) {
+                    float i = i0 + float(k);
+                    float ds = (i + 0.5) * spacing - along;
+                    if (dA + ds < 3.0 || dB - ds < 3.0) continue;   // LAMP_MARGIN 3 m from the ends
+                    float side = uLamp.z > 0.5 ? (mod(i, 2.0) < 0.5 ? 1.0 : -1.0) : 0.0;
+                    // ±18 % per-luminaire output (age, dirt, lamp type) keyed off the same index
+                    // the instances use — a row of subtly different pools, never one glowing tube
+                    float g = 0.82 + 0.36 * fract(sin(i * 12.9898 + uRoad.y * 4.1414) * 43758.5453);
+                    float dl = side * uLamp.y - lat;
+                    float d2 = dl * dl + ds * ds;
+                    float win = 1.0 - smoothstep(uLampRadius * 0.3, uLampRadius, sqrt(d2));
+                    if (win > 0.0) {
+                        win *= g;
+                        float h2 = uLamp.w * uLamp.w;
+                        float D2 = d2 + h2;
+                        diff += h2 * uLamp.w / (D2 * sqrt(D2)) * win;
+                    }
+                }
+                float gain = uNight * mix(1.0, 0.45, smoothstep(180.0, 620.0, d));
+                col += uLampColor * (alb * (rdTone(diff) * 0.55)) * gain;
             }
             float fog = 1.0 - exp(-d * uFogDensity);
             fragColor = vec4(mix(col, uFogColor, fog), 1.0);

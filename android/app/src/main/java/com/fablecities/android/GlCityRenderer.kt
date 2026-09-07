@@ -253,6 +253,12 @@ class GlCityRenderer : GLSurfaceView.Renderer {
 
     private class RoadSeg(val x0: Float, val z0: Float, val x1: Float, val z1: Float, val hw: Float)
 
+    /** one demo road polyline baked with its road-space frame for the analytic lamp pools */
+    private class RoadMesh(val vbo: Int, val count: Int, val segLen: Float, val segHash: Int,
+                           val lampSpacing: Float, val lampHeadLat: Float, val lampAlternate: Float,
+                           val lampHeight: Float, val lampRadius: Float, val lampCol: FloatArray)
+    private val roadMeshes = ArrayList<RoadMesh>()
+
     // --- traffic: the site's real IDM car-following sim + full LaneNetwork (junctions, signals,
     //     conflict matrix, A*) — traffic/LaneNetwork.js + TrafficSim.js ports ---
     private var trafficNet: Traffic.LaneNetwork? = null
@@ -1338,15 +1344,30 @@ class GlCityRenderer : GLSurfaceView.Renderer {
     // ---------------------------------------------------------------- prebuilt city ground
 
     private fun buildRoadMesh() {
-        // every demo street as a conformed ribbon + centre dashes (paths get a lighter tone)
-        val quads = ArrayList<Float>(1 shl 17)
-        for (road in demo.roads) {
+        // every demo street as a conformed ribbon + centre dashes (paths get a lighter tone),
+        // one mesh per polyline carrying its road-space frame (lat, along, dA, dB) so the
+        // FS_LIT_WET analytic lamp pools evaluate in the road's own coordinates (RoadMaterials.js)
+        roadMeshes.clear()
+        for ((roadIdx, road) in demo.roads.withIndex()) {
             val hw = DemoCity.halfWidth(road.type)
             val isPath = road.type == "path"
             val cr = if (isPath) 0.46f else 0.115f
             val cg = if (isPath) 0.43f else 0.12f
             val cb = if (isPath) 0.38f else 0.135f
             val w = road.world
+            // cumulative arc length for the along coordinate
+            val acc = DoubleArray(w.size)
+            for (i in 1 until w.size) {
+                acc[i] = acc[i - 1] + v8Hypot(w[i][0] - w[i - 1][0], w[i][1] - w[i - 1][1])
+            }
+            val total = acc[w.size - 1].toFloat()
+            val quads = ArrayList<Float>(1 shl 13)
+            fun push(v: ArrayList<Float>, x: Float, y: Float, z: Float, r: Float, g: Float, b: Float, lat: Float, along: Float, da: Float, db: Float) {
+                v.add(x); v.add(y); v.add(z)
+                v.add(r); v.add(g); v.add(b)
+                v.add(0f); v.add(0f)          // aExtra (unused on the lit path)
+                v.add(lat); v.add(along); v.add(da); v.add(db)
+            }
             for (i in 0 until w.size - 1) {
                 val x0 = w[i][0].toFloat(); val z0 = w[i][1].toFloat()
                 val x1 = w[i + 1][0].toFloat(); val z1 = w[i + 1][1].toFloat()
@@ -1355,18 +1376,19 @@ class GlCityRenderer : GLSurfaceView.Renderer {
                 if (len < 0.5f) continue
                 val px = -dz / len * hw
                 val pz = dx / len * hw
+                val a0 = acc[i].toFloat(); val a1 = acc[i + 1].toFloat()
+                val da0 = a0; val db0 = total - a0
+                val da1 = a1; val db1 = total - a1
                 val y00 = terrainHeight(x0 - px, z0 - pz) + 0.06f
                 val y10 = terrainHeight(x0 + px, z0 + pz) + 0.06f
                 val y01 = terrainHeight(x1 - px, z1 - pz) + 0.06f
                 val y11 = terrainHeight(x1 + px, z1 + pz) + 0.06f
-                quads.addAll(listOf(
-                    x0 - px, y00, z0 - pz, cr, cg, cb, 1f, 0f,
-                    x0 + px, y10, z0 + pz, cr, cg, cb, 1f, 0f,
-                    x1 + px, y11, z1 + pz, cr, cg, cb, 1f, 0f,
-                    x0 - px, y00, z0 - pz, cr, cg, cb, 1f, 0f,
-                    x1 + px, y11, z1 + pz, cr, cg, cb, 1f, 0f,
-                    x1 - px, y01, z1 - pz, cr, cg, cb, 1f, 0f
-                ))
+                push(quads, x0 - px, y00, z0 - pz, cr, cg, cb, -hw, a0, da0, db0)
+                push(quads, x0 + px, y10, z0 + pz, cr, cg, cb, hw, a0, da0, db0)
+                push(quads, x1 + px, y11, z1 + pz, cr, cg, cb, hw, a1, da1, db1)
+                push(quads, x0 - px, y00, z0 - pz, cr, cg, cb, -hw, a0, da0, db0)
+                push(quads, x1 + px, y11, z1 + pz, cr, cg, cb, hw, a1, da1, db1)
+                push(quads, x1 - px, y01, z1 - pz, cr, cg, cb, -hw, a1, da1, db1)
             }
             if (!isPath) {
                 // centre dashes: 9 m dash / 9 m gap along the polyline
@@ -1389,25 +1411,32 @@ class GlCityRenderer : GLSurfaceView.Renderer {
                             val y10 = terrainHeight(ax + px, az + pz) + 0.075f
                             val y01 = terrainHeight(bx - px, bz - pz) + 0.075f
                             val y11 = terrainHeight(bx + px, bz + pz) + 0.075f
-                            quads.addAll(listOf(
-                                ax - px, y00, az - pz, 0.72f, 0.70f, 0.52f, 1f, 0f,
-                                ax + px, y10, az + pz, 0.72f, 0.70f, 0.52f, 1f, 0f,
-                                bx + px, y11, bz + pz, 0.72f, 0.70f, 0.52f, 1f, 0f,
-                                ax - px, y00, az - pz, 0.72f, 0.70f, 0.52f, 1f, 0f,
-                                bx + px, y11, bz + pz, 0.72f, 0.70f, 0.52f, 1f, 0f,
-                                bx - px, y01, bz - pz, 0.72f, 0.70f, 0.52f, 1f, 0f
-                            ))
+                            val a0 = acc[i].toFloat() + t
+                            val a1 = a0 + stepLen
+                            push(quads, ax - px, y00, az - pz, 0.72f, 0.70f, 0.52f, -0.35f, a0, a0, total - a0)
+                            push(quads, ax + px, y10, az + pz, 0.72f, 0.70f, 0.52f, 0.35f, a0, a0, total - a0)
+                            push(quads, bx + px, y11, bz + pz, 0.72f, 0.70f, 0.52f, 0.35f, a1, a1, total - a1)
+                            push(quads, ax - px, y00, az - pz, 0.72f, 0.70f, 0.52f, -0.35f, a0, a0, total - a0)
+                            push(quads, bx + px, y11, bz + pz, 0.72f, 0.70f, 0.52f, 0.35f, a1, a1, total - a1)
+                            push(quads, bx - px, y01, bz - pz, 0.72f, 0.70f, 0.52f, -0.35f, a1, a1, total - a1)
                         }
                         stepIdx++
                         t += stepLen
                     }
                 }
             }
+            val arr = FloatArray(quads.size)
+            for (i in arr.indices) arr[i] = quads[i]
+            val lm = lampSpec(road.type)
+            roadMeshes.add(RoadMesh(
+                upload(arr), arr.size / 12, total, roadIdx,
+                lm?.spacing?.toFloat() ?: 0f,
+                if (lm == null) 0f else if (lm.mast) 0f else (lm.poleLat - lm.arm).toFloat(),
+                if (lm != null && lm.alternate) 1f else 0f,
+                lm?.height?.toFloat() ?: 9f,
+                lm?.radius?.toFloat() ?: 0f,
+                if (lm != null && lm.mast) floatArrayOf(1.0f, 0.84f, 0.62f) else floatArrayOf(1.0f, 0.70f, 0.40f)))
         }
-        val arr = FloatArray(quads.size)
-        for (i in arr.indices) arr[i] = quads[i]
-        cityGroundCount = arr.size / 8
-        cityGroundVbo = upload(arr)
     }
 
     // ---------------------------------------------------------------- city generation
@@ -2538,6 +2567,8 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         GLES30.glUniform1f(u(program, "uFxTime"), pudTime)
         GLES30.glUniform1f(u(program, "uFxPuddle"), if (puddles) 1f else 0f)
         GLES30.glUniform1f(u(program, "uFxTrack"), if (tracks) 1f else 0f)
+        GLES30.glUniform4f(u(program, "uRoad"), 0f, 0f, 0f, 0f) // lamp pools only on the road meshes
+        GLES30.glUniform1f(u(program, "uNight"), sun.nightFactor)
         GLES30.glDrawArrays(GLES30.GL_TRIANGLES, 0, count)
         GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, 0)
     }
@@ -3175,7 +3206,60 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         if (splatReady) drawSplat(sun)
         else drawLit(progFlat, terrainVbo, terrainCount, sun, 0.52f, 0.58f, 0.40f, puddles = false, tracks = false)
     }
-    private fun drawCityGround(sun: SunState) = drawLit(progFlat, cityGroundVbo, cityGroundCount, sun, 1f, 1f, 1f, puddles = true, tracks = true)
+    /** Road ribbons with their own frames: the analytic lamp pools evaluate per road (RoadMaterials.js). */
+    private fun drawCityGround(sun: SunState) {
+        for (m in roadMeshes) drawRoadMesh(m, sun)
+        if (cityGroundVbo != 0 && cityGroundCount > 0) {
+            drawLit(progFlat, cityGroundVbo, cityGroundCount, sun, 1f, 1f, 1f, puddles = true, tracks = true)
+        }
+    }
+
+    private fun bindAttribsRoad(stride: Int) {
+        bindAttribs(stride)
+        GLES30.glEnableVertexAttribArray(3)
+        GLES30.glVertexAttribPointer(3, 4, GLES30.GL_FLOAT, false, stride, 32)
+    }
+
+    private fun drawRoadMesh(m: RoadMesh, sun: SunState) {
+        if (progFlat == 0 || m.vbo == 0) return
+        GLES30.glUseProgram(progFlat)
+        GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, m.vbo)
+        bindAttribsRoad(48)
+        val eye = FloatArray(3)
+        camEye(eye)
+        GLES30.glUniformMatrix4fv(u(progFlat, "uVP"), 1, false, vpM, 0)
+        GLES30.glUniform3f(u(progFlat, "uSunDir"), sun.dir[0], sun.dir[1], sun.dir[2])
+        GLES30.glUniform3f(u(progFlat, "uSunColor"), sun.color[0], sun.color[1], sun.color[2])
+        GLES30.glUniform3f(u(progFlat, "uAmbient"), sun.ambient[0], sun.ambient[1], sun.ambient[2])
+        GLES30.glUniform3f(u(progFlat, "uFogColor"), sun.horizon[0], sun.horizon[1], sun.horizon[2])
+        GLES30.glUniform3f(u(progFlat, "uCamPos"), eye[0], eye[1], eye[2])
+        GLES30.glUniform3f(u(progFlat, "uTint"), 1f, 1f, 1f)
+        GLES30.glUniform1f(u(progFlat, "uWetness"), sun.wetness)
+        GLES30.glUniform1f(u(progFlat, "uSnow"), sun.snowCover)
+        GLES30.glUniform1f(u(progFlat, "uShadowStrength"), sun.cloudShadowStrength)
+        GLES30.glUniform3f(u(progFlat, "uLightToward"), sun.cloudLightToward[0], sun.cloudLightToward[1], sun.cloudLightToward[2])
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE5)
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, texDrainage)
+        GLES30.glUniform1i(u(progFlat, "uFxPoolMap"), 5)
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE6)
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, texCloudShadow)
+        GLES30.glUniform1i(u(progFlat, "uCloudShadow"), 6)
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
+        GLES30.glUniform4f(u(progFlat, "uFxPoolXf"), pudDrainXf[0], pudDrainXf[1], pudDrainXf[2], pudDrainXf[3])
+        GLES30.glUniform1f(u(progFlat, "uFxTime"), pudTime)
+        GLES30.glUniform1f(u(progFlat, "uFxPuddle"), 1f)
+        GLES30.glUniform1f(u(progFlat, "uFxTrack"), 1f)
+        GLES30.glUniform4f(u(progFlat, "uRoad"), m.segLen, m.segHash.toFloat(), 1f, 0f)
+        GLES30.glUniform4f(u(progFlat, "uLamp"), m.lampSpacing, m.lampHeadLat, m.lampAlternate, m.lampHeight)
+        GLES30.glUniform1f(u(progFlat, "uLampRadius"), m.lampRadius)
+        GLES30.glUniform3f(u(progFlat, "uLampColor"), m.lampCol[0], m.lampCol[1], m.lampCol[2])
+        GLES30.glUniform1f(u(progFlat, "uNight"), sun.nightFactor)
+        GLES30.glDrawArrays(GLES30.GL_TRIANGLES, 0, m.count)
+        // other users of progFlat draw without the road attribute: pin the generic value to 0
+        GLES30.glDisableVertexAttribArray(3)
+        GLES30.glVertexAttrib4f(3, 0f, 0f, 0f, 1f)
+        GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, 0)
+    }
 
     private fun drawEditQuads(sun: SunState) {
         GLES30.glEnable(GLES30.GL_BLEND)
@@ -3453,15 +3537,18 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         layout(location=0) in vec3 aPos;
         layout(location=1) in vec3 aColor;
         layout(location=2) in vec2 aExtra;
+        layout(location=3) in vec4 aRoad;     // road frame (lat, along, dA, dB) — roads only
         uniform mat4 uVP;
         uniform mat4 uReflTex;
         out vec3 vColor;
         out vec3 vWorld;
         out vec4 vReflUv;
+        out vec4 vRoad;
         void main() {
             vColor = aColor;
             vWorld = aPos;
             vReflUv = uReflTex * vec4(aPos, 1.0);
+            vRoad = aRoad;
             gl_Position = uVP * vec4(aPos, 1.0);
         }
     """.trimIndent()
