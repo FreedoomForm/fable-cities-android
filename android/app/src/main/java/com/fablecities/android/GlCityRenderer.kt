@@ -12,6 +12,7 @@ import com.fablecities.android.worldgen.RoadNetBuilder
 import com.fablecities.android.worldgen.SimBuilding
 import com.fablecities.android.worldgen.Stars
 import com.fablecities.android.worldgen.Traffic
+import com.fablecities.android.worldgen.Weather
 import com.fablecities.android.worldgen.WaterMath
 import com.fablecities.android.worldgen.SimEconomy
 import com.fablecities.android.worldgen.SimMilestones
@@ -75,6 +76,8 @@ class GlCityRenderer : GLSurfaceView.Renderer {
     private var envHour = Float.NaN
     private var envDoy = -1
     private val envState = Environment.EnvState()
+    /** The site's weather model (environment/Weather.js), driven by the game clock. */
+    val weather = Weather(1337, "clear")
     private val sun = SunState()
 
     // --- world constants: the SITE'S real world (2048 m, seed 1337, sea level 0) ---
@@ -91,6 +94,12 @@ class GlCityRenderer : GLSurfaceView.Renderer {
     private var progBuilding = 0
     private var progWater = 0
     private var progSky = 0
+    private var progPrecip = 0
+    private var precipVbo = 0
+    private var precipTime = 0.0
+    /** Precipitation.js: camera-following volume of GPU-wrapped streak/flake seeds. */
+    private val PRECIP_N = 2600
+    private val PRECIP_VOLUME = floatArrayOf(150f, 80f, 150f)
 
     // --- geometry handles ---
     private var terrainVbo = 0
@@ -177,6 +186,8 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         progBuilding = buildProgram(VS_BUILDING, FS_BUILDING, "building")
         progWater = buildProgram(VS_WATER, FS_WATER, "water")
         progSky = buildProgram(VS_SKY, FS_SKY, "sky")
+        progPrecip = buildProgram(VS_PRECIP, FS_PRECIP, "precip")
+        buildPrecipBuffer()
 
         // The real world: the site's 2048 m heightmap (seed 1337), then THE SITE'S demo city:
         // the shoreline-fitted site picker, block grading and the full street network
@@ -247,6 +258,8 @@ class GlCityRenderer : GLSurfaceView.Renderer {
                 day++
                 listener?.onHourChanged(hour, day)
             }
+            // the site drives weather off the game clock (deterministic per seed + time)
+            weather.update(dt.toDouble(), ((day * 24.0 + hour) * 3600.0))
             updateVehicles(dt)
             stepSimulation(dt)
         }
@@ -282,6 +295,7 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         drawBuildings(sun)
         drawVehicles(sun)
         drawWater(sun)
+        drawPrecipitation(sun)
 
         if (!glErrorLogged) {
             val err = GLES30.glGetError()
@@ -323,6 +337,16 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         var nightKey = 1f         // exposure x K_SKY: radiance → display for the star/disc radiance
         var sunDisc = 0f          // ATMOS.sunDiscRadiance x elevation lerp, display-referred
         val sunTint = FloatArray(3) // white lerp (1, 0.52, 0.20) at golden hour
+        // --- weather (environment/Weather.js + computeFrame weather branch) ---
+        var fogDensity = 0.00056f // weather.state.fog (exp2 fog density, 1/m)
+        var skyFog = 0f           // dome dissolve into the luminous fog colour (0 clear .. 0.92 fog)
+        var fogSunGlow = 0f       // forward-scatter sun glow through the medium (uFogSun.w = x0.8)
+        var wetness = 0f          // weather.wetness * (1 - snowCover) — wet-surface darkening
+        var snowCover = 0f        // snow accumulation — ground whitening
+        var precip = 0f           // smoothed rain|snow — particle system alpha
+        var precipMode = 0f       // 0 rain, 1 snow (by the dominant type)
+        var starFade = 0.82f      // 1 - 0.6 x cloudCover — star wash under the deck
+        var fogSkyCol = FloatArray(3) // st.fogColor x sK — the dome's fog-dissolve colour (milk)
     }
 
     /** Display key scales: the web multiplies radiance by exposure and tone-maps (AgX); the native
@@ -346,7 +370,7 @@ class GlCityRenderer : GLSurfaceView.Renderer {
             envHour = hour
             envDoy = doy
             envCamAlt = camAlt.toFloat()
-            Environment.compute(hour.toDouble(), doy, Environment.LATITUDE, camAlt, fwdX.toDouble(), fwdZ.toDouble(), envState)
+            Environment.compute(hour.toDouble(), doy, Environment.LATITUDE, camAlt, fwdX.toDouble(), fwdZ.toDouble(), envState, weather.state)
             val st = envState
             // shadow-casting light: toward-light direction, display key = intensity x exposure x K
             val iK = st.sunIntensity >= st.moonIntensity
@@ -405,7 +429,7 @@ class GlCityRenderer : GLSurfaceView.Renderer {
 
             // --- stars / Milky Way / moon disc / sun disc (index.js computeFrame sky uniforms) ---
             val na = st.nightAmount
-            val cover = Environment.CLEAR_COVER
+            val cover = st.cloudCover
             sun.nightAmount = na.toFloat()
             val moonWashStar = Environment.lerp(1.0, 0.55, min(1.0, st.moonIntensity / 0.14))
             sun.starIntensity = (Environment.lerp(0.55, 1.45, na) * moonWashStar).toFloat()
@@ -414,6 +438,18 @@ class GlCityRenderer : GLSurfaceView.Renderer {
             sun.moonBright = (2.0 * Environment.lerp(1.0, 0.4, min(1.0, cover * 1.1))).toFloat()
             sun.nightKey = (st.exposure * K_SKY).toFloat()
             sun.starSeed = ((1337 % 1000) * 0.37).toFloat()
+            // weather outputs: fog medium, wetness/snow, precipitation particles
+            sun.fogDensity = st.fogDensity.toFloat()
+            sun.skyFog = st.skyFog.toFloat()
+            sun.fogSunGlow = (st.fogSunGlow * 0.8).toFloat()
+            sun.wetness = st.wetness.toFloat()
+            sun.snowCover = st.snowCover.toFloat()
+            sun.precip = weather.precipitation.toFloat()
+            sun.precipMode = if (weather.snowCover >= weather.wetness && weather.snowCover > 0.02) 1f else 0f
+            sun.starFade = (1.0 - 0.6 * cover).toFloat()
+            sun.fogSkyCol[0] = (st.fogColor[0] * sK).toFloat()
+            sun.fogSkyCol[1] = (st.fogColor[1] * sK).toFloat()
+            sun.fogSkyCol[2] = (st.fogColor[2] * sK).toFloat()
             // sun disc: ATMOS.sunDiscRadiance x elevation lerp, tinted at golden hour (index.js)
             val lowSun = 1.0 - Environment.smoothstep(4.0, 20.0, st.sunAltDeg)
             val discLerp = Environment.lerp(0.34, 1.0, Environment.smoothstep(1.0, 16.0, st.sunAltDeg))
@@ -1494,6 +1530,11 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         hour = h.coerceIn(0f, 23.99f)
     }
 
+    /** environment.api.setWeather(w, false): smooth ~10 s transition like the site's UI switch. */
+    fun setWeather(name: String): Boolean = weather.set(name, false)
+
+    fun weatherName(): String = weather.name
+
     // ---------------------------------------------------------------- persistence
 
     fun editsState(): String {
@@ -1594,6 +1635,71 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         GLES30.glEnableVertexAttribArray(2)
     }
 
+    /** Precipitation.js: one seed quad per drop (rx, ry, rz, speed in [0,1)), deterministic. */
+    private fun buildPrecipBuffer() {
+        if (precipVbo != 0) return
+        val seeds = FloatArray(PRECIP_N * 4)
+        for (i in 0 until PRECIP_N) {
+            var h = i * 374761393 + 1442695041
+            h = (h xor (h shr 13)) * 1274126177
+            h = h xor (h shr 16)
+            val f1 = (h and 0x7fffffff) / 0x7fffffff.toFloat()
+            h = (h xor (h shr 13)) * 1274126177
+            h = h xor (h shr 16)
+            val f2 = (h and 0x7fffffff) / 0x7fffffff.toFloat()
+            h = (h xor (h shr 13)) * 1274126177
+            h = h xor (h shr 16)
+            val f3 = (h and 0x7fffffff) / 0x7fffffff.toFloat()
+            h = (h xor (h shr 13)) * 1274126177
+            h = h xor (h shr 16)
+            val f4 = (h and 0x7fffffff) / 0x7fffffff.toFloat()
+            seeds[i * 4] = f1; seeds[i * 4 + 1] = f2; seeds[i * 4 + 2] = f3; seeds[i * 4 + 3] = f4
+        }
+        val buf = java.nio.ByteBuffer.allocateDirect(seeds.size * 4).order(java.nio.ByteOrder.nativeOrder())
+        buf.asFloatBuffer().put(seeds)
+        val ids = IntArray(1)
+        GLES30.glGenBuffers(1, ids, 0)
+        precipVbo = ids[0]
+        GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, precipVbo)
+        GLES30.glBufferData(GLES30.GL_ARRAY_BUFFER, seeds.size * 4, buf, GLES30.GL_STATIC_DRAW)
+        GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, 0)
+    }
+
+    /** Rain / snow particles: camera-following volume, alpha from the weather precipitation. */
+    private fun drawPrecipitation(sun: SunState) {
+        if (progPrecip == 0 || precipVbo == 0 || sun.precip <= 0.005f) return
+        precipTime += 1.0 / 60.0
+        GLES30.glEnable(GLES30.GL_BLEND)
+        GLES30.glBlendFunc(GLES30.GL_SRC_ALPHA, GLES30.GL_ONE_MINUS_SRC_ALPHA)
+        GLES30.glDepthMask(false)
+        GLES30.glUseProgram(progPrecip)
+        GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, precipVbo)
+        GLES30.glVertexAttribPointer(0, 4, GLES30.GL_FLOAT, false, 16, 0)
+        GLES30.glEnableVertexAttribArray(0)
+        GLES30.glUniformMatrix4fv(u(progPrecip, "uVP"), 1, false, vpM, 0)
+        GLES30.glUniform3f(u(progPrecip, "uCenter"), camTarget[0], camTarget[1] + 10f, camTarget[2])
+        GLES30.glUniform3f(u(progPrecip, "uVolume"), PRECIP_VOLUME[0], PRECIP_VOLUME[1], PRECIP_VOLUME[2])
+        val wind = weather.windStrength.toFloat()
+        val wx = weather.state.windX.toFloat() * wind * 2.2f
+        val wz = weather.state.windZ.toFloat() * wind * 2.2f
+        val snow = sun.precipMode > 0.5f
+        val fall = if (snow) 1.3f else 9.2f
+        GLES30.glUniform3f(u(progPrecip, "uVel"), wx, -fall, wz)
+        GLES30.glUniform1f(u(progPrecip, "uTime"), precipTime.toFloat())
+        GLES30.glUniform1f(u(progPrecip, "uMode"), sun.precipMode)
+        GLES30.glUniform1f(u(progPrecip, "uSway"), if (snow) 0.9f else 0.0f)
+        GLES30.glUniform1f(u(progPrecip, "uSize"), if (snow) 4.2f else 1.8f)
+        // lit by the sky (brighter than the dark ground behind a drop), never brighter than day sky
+        val tint = if (snow) sun.zenith else floatArrayOf(
+            sun.zenith[0] * 0.6f + 0.35f, sun.zenith[1] * 0.6f + 0.38f, sun.zenith[2] * 0.6f + 0.42f)
+        GLES30.glUniform3f(u(progPrecip, "uTint"), tint[0], tint[1], tint[2])
+        GLES30.glUniform1f(u(progPrecip, "uAlpha"), if (snow) 0.62f * sun.precip else 0.34f * sun.precip)
+        GLES30.glDrawArrays(GLES30.GL_POINTS, 0, PRECIP_N)
+        GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, 0)
+        GLES30.glDepthMask(true)
+        GLES30.glDisable(GLES30.GL_BLEND)
+    }
+
     private fun drawLit(program: Int, vbo: Int, count: Int, sun: SunState, tintR: Float, tintG: Float, tintB: Float) {
         if (program == 0 || vbo == 0) return
         GLES30.glUseProgram(program)
@@ -1654,6 +1760,7 @@ class GlCityRenderer : GLSurfaceView.Renderer {
             camTarget[1] + camDist * sin(camPitch),
             camTarget[2] + camDist * cos(camPitch) * cos(camYaw))
         GLES30.glUniform1f(u(progBuilding, "uDayFactor"), sun.dayFactor)
+        GLES30.glUniform1f(u(progBuilding, "uFogDensity"), sun.fogDensity)
         for (b in buildings) {
             if (b.removed) continue
             val selected = selectedBuilding === b
@@ -1690,6 +1797,7 @@ class GlCityRenderer : GLSurfaceView.Renderer {
             camTarget[1] + camDist * sin(camPitch),
             camTarget[2] + camDist * cos(camPitch) * cos(camYaw))
         GLES30.glUniform1f(u(progBuilding, "uDayFactor"), sun.dayFactor)
+        GLES30.glUniform1f(u(progBuilding, "uFogDensity"), sun.fogDensity)
         GLES30.glUniform1f(u(progBuilding, "uSelected"), 0f)
         GLES30.glUniform1f(u(progBuilding, "uKind"), 9f) // vehicle mode
         val sim = trafficSim
@@ -1787,8 +1895,9 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         GLES30.glUniform1f(u(progWater, "uNightFactor"), sun.nightFactor)
         GLES30.glUniform3f(u(progWater, "uSkyFloor"), sun.waterFloor[0], sun.waterFloor[1], sun.waterFloor[2])
         GLES30.glUniform3f(u(progWater, "uNightSheen"), sun.waterSheen[0], sun.waterSheen[1], sun.waterSheen[2])
-        GLES30.glUniform2f(u(progWater, "uWind"), 0.7f, 0.3f) // the web default (clear weather)
-        GLES30.glUniform1f(u(progWater, "uRain"), 0f)         // clear-weather slice: no wetness yet
+        GLES30.glUniform2f(u(progWater, "uWind"), weather.state.windX.toFloat(), weather.state.windZ.toFloat())
+        GLES30.glUniform1f(u(progWater, "uRain"), weather.precipitation.toFloat()) // rain dimples + roughness
+        GLES30.glUniform1f(u(progWater, "uFogDensity"), sun.fogDensity)
         GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
         GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, texHeight)
         GLES30.glUniform1i(u(progWater, "uHeightTex"), 0)
@@ -1831,7 +1940,10 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         GLES30.glUniform1f(u(progSky, "uStarIntensity"), sun.starIntensity)
         GLES30.glUniform1f(u(progSky, "uStarSeed"), sun.starSeed)
         GLES30.glUniform1f(u(progSky, "uMilkyWay"), sun.milkyWay)
-        GLES30.glUniform1f(u(progSky, "uStarFade"), (1.0 - 0.6 * Environment.CLEAR_COVER).toFloat())
+        GLES30.glUniform1f(u(progSky, "uStarFade"), sun.starFade)
+        GLES30.glUniform1f(u(progSky, "uSkyFog"), sun.skyFog)
+        GLES30.glUniform4f(u(progSky, "uFogSun"), sun.skySun[0], sun.skySun[1], sun.skySun[2], sun.fogSunGlow)
+        GLES30.glUniform3f(u(progSky, "uFogColSky"), sun.fogSkyCol[0], sun.fogSkyCol[1], sun.fogSkyCol[2])
         GLES30.glUniform1f(u(progSky, "uNightKey"), sun.nightKey)
         GLES30.glUniform1f(u(progSky, "uTime"), frameNanos / 1_000_000_000f)
         GLES30.glUniform3f(u(progSky, "uMoonDir"), sun.moonDir[0], sun.moonDir[1], sun.moonDir[2])
@@ -1887,14 +1999,22 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         uniform vec3 uSunColor;
         uniform vec3 uAmbient;
         uniform vec3 uFogColor;
+        uniform float uFogDensity;
+        uniform float uWetness;
+        uniform float uSnow;
         uniform vec3 uCamPos;
         uniform vec3 uTint;
         out vec4 fragColor;
         void main() {
             float ndl = max(dot(normalize(vec3(0.0, 1.0, 0.0)), uSunDir), 0.0);
             vec3 col = vColor * uTint * (uAmbient + uSunColor * ndl);
+            // snow accumulation (WetSurfaces/snow hooks): ground whitens as the deck settles
+            col = mix(col, vec3(0.82, 0.85, 0.90) * (uAmbient + uSunColor * ndl) * 1.35, uSnow * 0.72);
+            // wet surfaces: albedo darkens and gets a sky sheen (the web's uWetness material hook)
+            col *= 1.0 - 0.38 * uWetness;
+            col += uAmbient * uWetness * 0.22;
             float d = length(uCamPos - vWorld);
-            float fog = 1.0 - exp(-d * 0.00056);
+            float fog = 1.0 - exp(-d * uFogDensity);
             fragColor = vec4(mix(col, uFogColor, fog), 1.0);
         }
     """.trimIndent()
@@ -1935,6 +2055,7 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         uniform vec3 uSunColor;
         uniform vec3 uAmbient;
         uniform vec3 uFogColor;
+        uniform float uFogDensity;
         uniform vec3 uCamPos;
         uniform vec3 uColor;
         uniform vec3 uScale;
@@ -1953,7 +2074,7 @@ class GlCityRenderer : GLSurfaceView.Renderer {
             float ndl = max(dot(n, uSunDir), 0.0);
             float hemi = 0.5 + 0.5 * n.y;
             float d = length(uCamPos - vWorld);
-            float fog = 1.0 - exp(-d * 0.00056);
+            float fog = 1.0 - exp(-d * uFogDensity);
             vec3 colOut;
             if (uKind < 8.5) {
                 // buildings: window grid on side faces
@@ -2020,6 +2141,7 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         uniform vec3 uHorizon;
         uniform vec3 uGlow;
         uniform vec3 uFogColor;
+        uniform float uFogDensity;
         uniform vec3 uSunDir;
         uniform vec3 uSunColor;    // sun colour x intensity, display-referred
         uniform vec3 uMoonDir;
@@ -2164,7 +2286,7 @@ class GlCityRenderer : GLSurfaceView.Renderer {
             float ign = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
             float grain = texture(uNoise, vWorld.xz * 0.9).g;
             edge = clamp(edge * 1.22 - 0.11 + (ign * 0.6 + grain * 0.4 - 0.5) * 0.30 * edge * (1.0 - edge) * 4.0, 0.0, 1.0);
-            float fog = 1.0 - exp(-dist * 0.00056);
+            float fog = 1.0 - exp(-dist * uFogDensity);
             col = mix(col, uFogColor, fog);
             fragColor = vec4(col, clamp(alpha, 0.0, 1.0) * edge);
         }
@@ -2202,6 +2324,9 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         uniform float uStarSeed;
         uniform float uMilkyWay;
         uniform float uStarFade;
+        uniform float uSkyFog;      // dome dissolve into the luminous fog colour
+        uniform vec4 uFogSun;      // xyz sun dir, w = fog glow strength
+        uniform vec3 uFogColSky;   // fog colour (milk) in display units for the dissolve
         uniform float uNightKey;
         uniform float uTime;
         uniform vec3 uMoonDir;
@@ -2314,7 +2439,67 @@ class GlCityRenderer : GLSurfaceView.Renderer {
                     col += uSunDisc * uSunTint * limb * edge;
                 }
             }
+            // dense fog / overcast: the dome dissolves into the luminous fog colour (shaders.js
+            // FS_SKY uSkyFog block) with a soft glow toward the sun so the frame keeps direction
+            if (uSkyFog > 0.001) {
+                float fogMix = uSkyFog * (0.72 + 0.28 * exp(-max(dir.y, 0.0) * 4.0));
+                float glow = uFogSun.w * pow(max(dot(dir, uFogSun.xyz), 0.0), 10.0);
+                col = mix(col, uFogColSky * (1.0 + glow), clamp(fogMix, 0.0, 1.0));
+            }
             fragColor = vec4(col, 1.0);
+        }
+    """.trimIndent()
+
+    private val VS_PRECIP = """
+        #version 300 es
+        precision highp float;
+        layout(location=0) in vec4 aSeed; // rx, ry, rz in [0,1), speed factor
+        uniform mat4 uVP;
+        uniform vec3 uCenter;   // volume centre (world) — the camera target
+        uniform vec3 uVolume;   // volume size (world)
+        uniform vec3 uVel;      // base velocity (world, m/s) incl. wind
+        uniform float uTime;
+        uniform float uMode;    // 0 = rain streak point, 1 = snow flake
+        uniform float uSway;    // lateral sway amplitude (snow)
+        uniform float uSize;    // point size (px)
+        out float vFade;
+        void main() {
+            float speed = mix(0.75, 1.25, aSeed.w);
+            vec3 vel = uVel * speed;
+            vec3 base = aSeed.xyz * uVolume;
+            vec3 travel = vel * uTime;
+            if (uMode > 0.5) {
+                float ph = aSeed.x * 37.0 + aSeed.z * 11.0;
+                travel.x += sin(uTime * 0.9 + ph) * uSway + sin(uTime * 2.3 + ph * 0.7) * uSway * 0.3;
+                travel.z += cos(uTime * 0.7 + ph * 1.3) * uSway + cos(uTime * 1.9 + ph) * uSway * 0.3;
+                travel.y += sin(uTime * 1.7 + ph * 3.1) * 0.12;
+            }
+            // wrap around the volume centre so moving the camera never makes drops pop (Precipitation.js)
+            vec3 h = uVolume * 0.5;
+            vec3 world = uCenter + mod(base + travel - uCenter + h, uVolume) - h;
+            gl_Position = uVP * vec4(world, 1.0);
+            float dist = length(world - uCenter);
+            float radius = length(uVolume) * 0.5;
+            vFade = (1.0 - smoothstep(radius * 0.55, radius, dist)) * smoothstep(1.5, 6.0, dist);
+            gl_PointSize = uMode > 0.5 ? uSize * mix(0.75, 1.35, aSeed.w) : uSize;
+        }
+    """.trimIndent()
+
+    private val FS_PRECIP = """
+        #version 300 es
+        precision mediump float;
+        in float vFade;
+        uniform float uMode;
+        uniform vec3 uTint;
+        uniform float uAlpha;
+        out vec4 fragColor;
+        void main() {
+            float a = uAlpha * vFade;
+            if (uMode > 0.5) {
+                vec2 d = gl_PointCoord - vec2(0.5);
+                a *= smoothstep(0.5, 0.12, length(d));
+            }
+            fragColor = vec4(uTint, a);
         }
     """.trimIndent()
 }

@@ -16,6 +16,7 @@ object GLES30 {
     const val GL_SRC_ALPHA = 0x0302
     const val GL_STATIC_DRAW = 0x88E4
     const val GL_TRIANGLES = 0x0004
+    const val GL_POINTS = 0x0000
     const val GL_VERTEX_SHADER = 0x8B31
     const val GL_CLAMP_TO_EDGE = 0x812F
     const val GL_HALF_FLOAT = 0x140B
@@ -73,6 +74,7 @@ object GLES30 {
     fun glUseProgram(p: Int): Unit = Unit
     fun glVertexAttribPointer(i: Int, sz: Int, t: Int, n: Boolean, st: Int, o: Int): Unit = Unit
     fun glViewport(x: Int, y: Int, w: Int, h: Int): Unit = Unit
+    fun glPointSize(v: Float): Unit = Unit
     fun glActiveTexture(t: Int): Unit = Unit
     fun glBindTexture(t: Int, tex: Int): Unit = Unit
     fun glDepthMask(f: Boolean): Unit = Unit

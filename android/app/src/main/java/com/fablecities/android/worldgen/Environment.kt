@@ -330,6 +330,18 @@ object Environment {
         val groundRad = DoubleArray(3)
         val fogColor = DoubleArray(3)
         var fogDensity = 0.0
+        var fogH = 620.0            // weather.state.fogH — height-fog scale (uFcFogParams / fogHeight)
+        var fogFloor = 0.38         // weather.state.fogFloor — uniform-haze floor
+        var fogSunGlow = 0.0        // forward-scatter glow of the sun through the fog medium
+        var fogMax = 0.80           // fog opacity ceiling
+        val fogWarm = DoubleArray(3) // directional aerial perspective, sun side
+        val fogCool = DoubleArray(3) // directional aerial perspective, away side
+        var wetness = 0.0           // weather.wetness * (1 - snowCover)
+        var snowCover = 0.0
+        var cloudCover = 0.30
+        var sunFactor = 1.0
+        var skyFog = 0.0
+        var overcastNight = 0.0
         var dayFactor = 1.0 // 1 by day, 0 at night (1 - nightFactor) — drives window lights
         var siderealAngle = 0.0 // celestial[12] — star cube spin (SkyDome.setStarRotation)
     }
@@ -341,8 +353,8 @@ object Environment {
     private val RAD = DoubleArray(3)
     private val TR = DoubleArray(3)
 
-    private fun skySample(dir: DoubleArray, camAlt: Double, sunDir: DoubleArray, moonDir: DoubleArray, moonSkyE: Double, scatter: Double) {
-        skyRadiance(dir, camAlt, sunDir, moonDir, SUN_E, moonSkyE, CLEAR_TURBIDITY, scatter, 10, 4, RAD, TR)
+    private fun skySample(dir: DoubleArray, camAlt: Double, sunDir: DoubleArray, moonDir: DoubleArray, moonSkyE: Double, scatter: Double, turb: Double) {
+        skyRadiance(dir, camAlt, sunDir, moonDir, SUN_E, moonSkyE, turb, scatter, 10, 4, RAD, TR)
     }
 
     private fun clampLum(c: DoubleArray, maxLum: Double) {
@@ -350,8 +362,8 @@ object Environment {
         if (l > maxLum) { val k = maxLum / l; c[0] *= k; c[1] *= k; c[2] *= k }
     }
 
-    /** Transcription of sampleSkyAverages (clear weather). fwdXZ = camera forward (horizontal). */
-    private fun sampleSkyAverages(camAlt: Double, moonSkyE: Double, nightAmount: Double, scatter: Double, fwdX: Double, fwdZ: Double, st: EnvState) {
+    /** Transcription of sampleSkyAverages (general weather). fwdXZ = camera forward (horizontal). */
+    private fun sampleSkyAverages(camAlt: Double, moonSkyE: Double, nightAmount: Double, scatter: Double, turb: Double, fwdX: Double, fwdZ: Double, st: EnvState) {
         val dir = DoubleArray(3)
         val sky = st.skyAvg; val hor = st.horizonAvg; val sunSide = st.sunSideAvg
         sky[0] = 0.0; sky[1] = 0.0; sky[2] = 0.0
@@ -372,7 +384,7 @@ object Environment {
                 val az = (i.toDouble() / n) * PI * 2 + 0.3
                 val ce = cos(ringElev[r])
                 dir[0] = ce * sin(az); dir[1] = sin(ringElev[r]); dir[2] = -ce * cos(az)
-                skySample(dir, camAlt, st.sunDir, st.moonDir, moonSkyE, scatter)
+                skySample(dir, camAlt, st.sunDir, st.moonDir, moonSkyE, scatter, turb)
                 val dot = dir[0] * sunHx + dir[2] * sunHz
                 val w = (ringW[r] / n) * (1 - 0.6 * lowSun * max(0.0, dot))
                 clampLum(RAD, 0.4)
@@ -388,7 +400,7 @@ object Environment {
             val elev = 1.6 * PI / 180.0
             val ce = cos(elev)
             dir[0] = ce * sin(az); dir[1] = sin(elev); dir[2] = -ce * cos(az)
-            skySample(dir, camAlt, st.sunDir, st.moonDir, moonSkyE, scatter)
+            skySample(dir, camAlt, st.sunDir, st.moonDir, moonSkyE, scatter, turb)
             clampLum(RAD, 0.7)
             val w = 0.55 + 0.45 * max(0.0, dir[0] * fwdX + dir[2] * fwdZ)
             hor[0] += RAD[0] * w; hor[1] += RAD[1] * w; hor[2] += RAD[2] * w
@@ -403,7 +415,7 @@ object Environment {
             for (dAz in doubleArrayOf(-30.0 * PI / 180.0, 0.0, 30.0 * PI / 180.0)) {
                 val az = azS + dAz
                 dir[0] = ce * sin(az); dir[1] = sin(elev); dir[2] = -ce * cos(az)
-                skySample(dir, camAlt, st.sunDir, st.moonDir, moonSkyE, scatter)
+                skySample(dir, camAlt, st.sunDir, st.moonDir, moonSkyE, scatter, turb)
                 clampLum(RAD, 1.4)
                 sunSide[0] += RAD[0] / 3; sunSide[1] += RAD[1] / 3; sunSide[2] += RAD[2] / 3
             }
@@ -415,9 +427,25 @@ object Environment {
         }
     }
 
-    /** Clear-weather transcription of environment/index.js computeFrame. `fwdXZ` is the camera
-     *  forward (horizontal components as used by the web horizon weighting). */
-    fun compute(hour: Double, doy: Int, latDeg: Double, camAlt: Double, fwdX: Double, fwdZ: Double, st: EnvState) {
+    /** Full-weather transcription of environment/index.js computeFrame. `fwdXZ` is the camera
+     *  forward (horizontal components as used by the web horizon weighting). Pass `w` = null for
+     *  the clear preset (bit-identical to the original clear-only port; pinned by the existing
+     *  EnvironmentParityTest goldens), or a live WeatherState (pinned by EnvWeatherGoldens). */
+    fun compute(hour: Double, doy: Int, latDeg: Double, camAlt: Double, fwdX: Double, fwdZ: Double, st: EnvState, w: WeatherState? = null) {
+        // weather inputs (clear preset values when w == null — identical literals, bit-exact path)
+        val wCover = if (w != null) clamp01(w.keys[WeatherPresets.I_COVER]) else CLEAR_COVER
+        val wTurb = if (w != null) w.keys[WeatherPresets.I_TURBIDITY] else CLEAR_TURBIDITY
+        val wSunF = if (w != null) w.keys[WeatherPresets.I_SUN] else CLEAR_SUN_FACTOR
+        val wFog = if (w != null) w.keys[WeatherPresets.I_FOG] else CLEAR_FOG
+        val wDiffuse = if (w != null) w.keys[WeatherPresets.I_DIFFUSE] else CLEAR_DIFFUSE
+        val wMilk = if (w != null) w.keys[WeatherPresets.I_MILK] else 0.0
+        val wSkyFog = if (w != null) w.keys[WeatherPresets.I_SKYFOG] else 0.0
+        val wFogH = if (w != null) w.keys[WeatherPresets.I_FOGH] else 620.0
+        val wFogFloor = if (w != null) w.keys[WeatherPresets.I_FOGFLOOR] else 0.38
+        val wPrecip = if (w != null) w.precipitation else 0.0
+        val wWetness = if (w != null) w.wetness else 0.0
+        val wSnow = if (w != null) w.snowCover else 0.0
+
         celestial(hour, doy, latDeg, CEL)
         st.sunAltDeg = CEL[0] * 180.0 / PI
         st.moonAltDeg = CEL[5] * 180.0 / PI
@@ -431,12 +459,12 @@ object Environment {
         val nightAmount = clamp01(1 - smoothstep(-13.0, -1.0, st.sunAltDeg))
         st.nightAmount = nightAmount
 
-        transmittanceToLight(st.sunDir, camAlt, CLEAR_TURBIDITY, SUN_T)
-        transmittanceToLight(st.sunDir, 2600.0, CLEAR_TURBIDITY, SUN_T_HIGH)
-        transmittanceToLight(st.moonDir, camAlt, CLEAR_TURBIDITY, MOON_T)
+        transmittanceToLight(st.sunDir, camAlt, wTurb, SUN_T)
+        transmittanceToLight(st.sunDir, 2600.0, wTurb, SUN_T_HIGH)
+        transmittanceToLight(st.moonDir, camAlt, wTurb, MOON_T)
         val sunUp = smoothstep(-1.8, 1.2, st.sunAltDeg)
         val sunMax = max(SUN_T[0], max(SUN_T[1], max(SUN_T[2], 1e-4)))
-        st.sunIntensity = SUN_E * sunMax.pow(lerp(1.0, 0.6, lowSun)) * sunUp * CLEAR_SUN_FACTOR
+        st.sunIntensity = SUN_E * sunMax.pow(lerp(1.0, 0.6, lowSun)) * sunUp * wSunF
         val sc = st.sunColor
         sc[0] = SUN_T[0] / sunMax; sc[1] = SUN_T[1] / sunMax; sc[2] = SUN_T[2] / sunMax
         run {
@@ -457,7 +485,7 @@ object Environment {
         }
         val moonUp = smoothstep(-1.0, 6.0, st.moonAltDeg)
         val moonMax = max(MOON_T[0], max(MOON_T[1], max(MOON_T[2], 1e-4)))
-        st.moonIntensity = MOON_LIGHT * st.moonIllum * moonMax * moonUp * lerp(1.0, CLEAR_SUN_FACTOR, 0.85)
+        st.moonIntensity = MOON_LIGHT * st.moonIllum * moonMax * moonUp * lerp(1.0, wSunF, 0.85)
         val mc = st.moonColor
         mc[0] = MOON_T[0] / moonMax; mc[1] = MOON_T[1] / moonMax; mc[2] = MOON_T[2] / moonMax
         mc[0] += (1 - mc[0]) * 0.6; mc[1] += (1 - mc[1]) * 0.6; mc[2] += (1 - mc[2]) * 0.6
@@ -465,18 +493,21 @@ object Environment {
         val moonSkyE = MOON_SKY_E * st.moonIllum * moonUp
 
         val baseNight = nightFactorForSun(st.sunAltDeg)
-        // overcastNight = 0 for the clear preset (cover 0.30 < 0.55)
-        st.nightFactor = clamp01(baseNight)
+        // real cities light up under a thick deck: overcast can push nightFactor above the
+        // clear-sky base so window lights and street lamps come on during a storm
+        val overcastNight = (1 - smoothstep(-2.0, 10.0, st.sunAltDeg)) * clamp01((wCover - 0.55) * 2.2) * 0.7
+        st.overcastNight = overcastNight
+        st.nightFactor = clamp01(max(baseNight, overcastNight))
         st.dayFactor = 1.0 - st.nightFactor
 
         var exposure = exposureForSun(st.sunAltDeg)
-        exposure *= 1 + 0.10 * smoothstep(0.45, 0.95, CLEAR_COVER) * (1 - st.nightFactor) + 0.06 * 0.0
+        exposure *= 1 + 0.10 * smoothstep(0.45, 0.95, wCover) * (1 - st.nightFactor) + 0.06 * wPrecip
         exposure *= lerp(1.0, 0.93, smoothstep(16.0, 42.0, st.sunAltDeg))
         val moonIrr = st.moonIntensity * max(0.0, st.moonDir[1])
         exposure *= 1 - 0.5 * clamp01(moonIrr / 0.12) * nightAmount
         st.exposure = exposure
 
-        sampleSkyAverages(camAlt, moonSkyE, nightAmount, scatter, fwdX, fwdZ, st)
+        sampleSkyAverages(camAlt, moonSkyE, nightAmount, scatter, wTurb, fwdX, fwdZ, st)
 
         // choose the shadow-casting light
         val lightToward = DoubleArray(3)
@@ -499,15 +530,24 @@ object Environment {
             st.lightDir[0] /= l; st.lightDir[1] /= l; st.lightDir[2] /= l
         }
 
-        // hemisphere sky: overcast lerp + zero diffuse (sunFactor=1) + moon ambient
+        // hemisphere sky: overcast lerp + blocked-sunlight diffuse skylight + moon ambient
         val skyAvg = st.skyAvg
-        val overLum = luminance(skyAvg) * 1.15
+        val skyLum = luminance(skyAvg)
+        val overLum = skyLum * 1.15
+        val sunIrrClear = SUN_E * sunMax * sunUp * max(0.0, st.sunDir[1])
+        val diffuseE = sunIrrClear * (1.0 - wSunF) * wDiffuse / PI
+        val diffuseCol = DoubleArray(3)
+        for (c in 0 until 3) diffuseCol[c] = sc[c] * diffuseE
+        run {
+            val l = luminance(diffuseCol)
+            for (c in 0 until 3) diffuseCol[c] += (l - diffuseCol[c]) * 0.6
+        }
         val hs = DoubleArray(3)
-        for (c in 0 until 3) hs[c] = lerp(skyAvg[c], overLum, CLEAR_COVER * 0.85)
+        for (c in 0 until 3) hs[c] = lerp(skyAvg[c], overLum, wCover * 0.85) + diffuseCol[c]
         hs[0] += mc[0] * st.moonIntensity * 0.033
         hs[1] += mc[1] * st.moonIntensity * 0.033
         hs[2] += mc[2] * st.moonIntensity * 0.033
-        val snow = 0.0
+        val snow = wSnow
         val albedo = DoubleArray(3)
         for (c in 0 until 3) albedo[c] = lerp(GROUND_ALBEDO[c], SNOW_ALBEDO[c], snow)
         val sunIrr = st.sunIntensity * max(0.0, st.sunDir[1]) + st.moonIntensity * max(0.0, st.moonDir[1]) * 0.5
@@ -533,7 +573,7 @@ object Environment {
             val k = floorMix * (1 - nightAmount * 0.5)
             for (c in 0 until 3) hcol[c] += (TWILIGHT_SKY[c] - hcol[c]) * k
         }
-        val goldenCool = lowSun * sunUp * (1 - 0.6 * CLEAR_COVER)
+        val goldenCool = lowSun * sunUp * (1 - 0.6 * wCover)
         run {
             val k = 0.45 * goldenCool
             for (c in 0 until 3) hcol[c] += (GOLDEN_SKY[c] - hcol[c]) * k
@@ -552,20 +592,49 @@ object Environment {
             for (c in 0 until 3) hgr[c] *= s
         }
 
-        // fog
+        // fog: clear air tinted from the sky; the fog/overcast medium is the luminous diffuser
         val lowSunFog = 1 - smoothstep(3.0, 20.0, st.sunAltDeg)
         val fogColor = st.fogColor
         val fm = lerp(0.45, 0.6, lowSunFog)
         for (c in 0 until 3) fogColor[c] = lerp(st.horizonAvg[c], skyAvg[c], fm)
         run {
             val l = luminance(fogColor)
-            val k = CLEAR_COVER * 0.45
+            val k = wCover * 0.45
             for (c in 0 until 3) fogColor[c] += (l - fogColor[c]) * k
         }
-        // milk = 0 for clear -> lerp no-op; twilight floor keeps the horizon from going grey-black
+        // milky medium: hemisphere sky + diffused sunlight, whitened, never darker than the fog
+        val milkC = DoubleArray(3)
+        for (c in 0 until 3) milkC[c] = skyAvg[c] * 1.05 + diffuseCol[c]
+        run {
+            val l = luminance(milkC)
+            for (c in 0 until 3) milkC[c] += (l - milkC[c]) * 0.35
+            milkC[0] = max(milkC[0], fogColor[0])
+            milkC[1] = max(milkC[1], fogColor[1])
+            milkC[2] = max(milkC[2], fogColor[2])
+            val k = wMilk
+            for (c in 0 until 3) fogColor[c] += (milkC[c] - fogColor[c]) * k
+        }
+        // twilight floor keeps the horizon from going grey-black before the sky
         fogColor[0] = max(fogColor[0], 0.010 * floorMix / exposure)
         fogColor[1] = max(fogColor[1], 0.015 * floorMix / exposure)
         fogColor[2] = max(fogColor[2], 0.034 * floorMix / exposure)
-        st.fogDensity = CLEAR_FOG * (1 + 0.25 * st.nightFactor)
+        st.fogDensity = wFog * (1 + 0.25 * st.nightFactor)
+        // height fog hugs the water level, settles lower at night
+        st.fogH = wFogH * (1 - 0.2 * st.nightFactor)
+        st.fogFloor = wFogFloor
+        st.fogSunGlow = wMilk * sunUp * 1.6 * smoothstep(0.02, 0.4, wSunF + 0.2)
+        st.fogMax = lerp(0.80, 1.0, clamp01(wMilk * 1.1))
+        // directional aerial perspective: warm haze sun-side, cool blue away (peaks at golden hour)
+        run {
+            val amp = lowSun * sunUp * (1 - 0.55 * wMilk)
+            st.fogWarm[0] = lerp(1.0, 1.22, amp); st.fogWarm[1] = lerp(1.0, 1.02, amp); st.fogWarm[2] = lerp(1.0, 0.80, amp)
+            st.fogCool[0] = lerp(1.0, 0.84, amp); st.fogCool[1] = lerp(1.0, 0.93, amp); st.fogCool[2] = lerp(1.0, 1.16, amp)
+        }
+        // wetness (rain) for lit materials; snow hides the wet look
+        st.wetness = wWetness * (1.0 - wSnow)
+        st.snowCover = wSnow
+        st.cloudCover = wCover
+        st.sunFactor = wSunF
+        st.skyFog = wSkyFog
     }
 }

@@ -28,7 +28,7 @@ open class WebViewClient {
     open fun onPageFinished(v: WebView, url: String): Unit = Unit
 }
 open class WebChromeClient
-class WebViewAssetLoader private constructor() {
+class WebViewAssetLoader {
     class Builder {
         fun setDomain(d: String): Builder = this
         fun addPathHandler(p: String, h: AssetsPathHandler): Builder = this

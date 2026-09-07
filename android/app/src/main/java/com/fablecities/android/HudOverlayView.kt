@@ -86,6 +86,17 @@ class HudOverlayView(context: Context) : View(context) {
             invalidate()
             return true
         }
+        // weather chip (top centre) — cycles the site's five weather presets
+        if (x in 640f..960f && y in 28f..106f) {
+            val gv = gameView ?: return false
+            val order = listOf("clear", "cloudy", "rain", "fog", "snow")
+            val cur = gv.renderer.weatherName()
+            val next = order[(order.indexOf(cur) + 1) % order.size]
+            gv.renderer.setWeather(next)
+            showMessage("Weather: $next")
+            invalidate()
+            return true
+        }
         // tool dock (bottom centre)
         if (x in 420f..1500f && y in 900f..1046f) {
             val index = ((x - 445f) / 208f).toInt().coerceIn(0, 4)
@@ -134,6 +145,10 @@ class HudOverlayView(context: Context) : View(context) {
         text(canvas, "¤${money() / 1000}k", 1320f, 64f, 21f, Color.rgb(255, 218, 126), true)
         text(canvas, "POP ${population()}", 1500f, 64f, 18f, Color.rgb(143, 222, 255), true)
         text(canvas, if (paused()) "PAUSED" else "${milestone()} • SIM LIVE", 1320f, 90f, 13f, Color.rgb(210, 220, 226), false)
+
+        val weatherChip = gv?.renderer?.weatherName()?.uppercase() ?: "CLEAR"
+        glass(canvas, RectF(640f, 28f, 960f, 106f))
+        text(canvas, weatherChip, 800f, 70f, 19f, Color.WHITE, true, Paint.Align.CENTER)
 
         glass(canvas, RectF(420f, 900f, 1500f, 1046f))
         Tool.entries.forEachIndexed { i, tool ->
