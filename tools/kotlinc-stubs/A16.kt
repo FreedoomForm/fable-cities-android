@@ -8,6 +8,7 @@ class Bitmap {
     fun recycle(): Unit = Unit
     fun setPremultiplied(v: Boolean): Unit = Unit
     fun copyPixelsToBuffer(dst: java.nio.Buffer): Unit = Unit
+    fun setPixels(pixels: IntArray, offset: Int, stride: Int, x: Int, y: Int, w: Int, h: Int): Unit = Unit
     companion object {
         fun createBitmap(w: Int, h: Int, cfg: Config): Bitmap = Bitmap()
         fun createScaledBitmap(src: Bitmap, w: Int, h: Int, filter: Boolean): Bitmap = Bitmap()
@@ -32,6 +33,11 @@ class Canvas {
     fun drawColor(c: Int, mode: PorterDuff.Mode): Unit = Unit
     fun drawRect(l: Float, t: Float, r: Float, b: Float, p: Paint): Unit = Unit
     fun drawCircle(cx: Float, cy: Float, r: Float, p: Paint): Unit = Unit
+    fun drawOval(l: Float, t: Float, r: Float, b: Float, p: Paint): Unit = Unit
+    fun drawPath(path: Path, p: Paint): Unit = Unit
+    fun rotate(deg: Float, px: Float, py: Float): Unit = Unit
+    fun restoreToCount(save: Int): Unit = Unit
+    fun drawBitmap(b: Bitmap, l: Float, t: Float, p: Paint): Unit = Unit
     fun drawLine(x0: Float, y0: Float, x1: Float, y1: Float, p: Paint): Unit = Unit
     fun drawRoundRect(l: Float, t: Float, r: Float, b: Float, rx: Float, ry: Float, p: Paint): Unit = Unit
     fun drawRoundRect(r: RectF, rx: Float, ry: Float, p: Paint): Unit = Unit
@@ -49,6 +55,8 @@ class Paint {
     constructor(flags: Int)
     var color: Int = 0
     var isAntiAlias: Boolean = false
+    var isDither: Boolean = false
+    var shader: Shader? = null
     var strokeCap: Cap = Cap.BUTT
     var strokeWidth: Float = 1f
     var textSize: Float = 12f

@@ -33,6 +33,7 @@ object GLES30 {
     const val GL_ONE_MINUS_SRC_ALPHA = 0x0303
     const val GL_SRC_ALPHA = 0x0302
     const val GL_STATIC_DRAW = 0x88E4
+    const val GL_DYNAMIC_DRAW = 0x88E8
     const val GL_TRIANGLES = 0x0004
     const val GL_POINTS = 0x0000
     const val GL_TEXTURE_3D = 0x806F

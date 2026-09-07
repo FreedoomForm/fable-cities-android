@@ -53,15 +53,19 @@ object TerrainGfx {
         return px
     }
 
+    /** Per-layer mean sRGB colour (textures.js loadLayerArrays avg — the undergrowth ground-tint driver). */
+    class LayerArrays(val albedo: ByteArray, val normal: ByteArray, val avg: Array<DoubleArray>)
+
     /**
      * The two layer arrays, interleaved per layer: albedo RGBA = colour RGB + AO in A,
      * normal RGBA = tangent-normal RGB + roughness in A (loadLayerArrays packing).
-     * Returns (albedo, normal).
+     * avg = the same every-32nd-pixel mean the web computes for the undergrowth tint.
      */
-    fun loadLayerArrays(assets: AssetManager): Pair<ByteArray, ByteArray> {
+    fun loadLayerArrays(assets: AssetManager): LayerArrays {
         val px = LAYER_SIZE * LAYER_SIZE
         val albedo = ByteArray(px * 4 * LAYERS.size)
         val normal = ByteArray(px * 4 * LAYERS.size)
+        val avg = Array(LAYERS.size) { doubleArrayOf(0.5, 0.5, 0.5) }
         LAYERS.forEachIndexed { li, layer ->
             val (dir, _) = layer
             val col = decodeLayer(assets, dir, "color.jpg")
@@ -71,6 +75,7 @@ object TerrainGfx {
             val rou = decodeLayer(assets, dir, "roughness.jpg") ?: IntArray(px) { 0xFF808080.toInt() }
             val ao = decodeLayer(assets, dir, "ao.jpg")     // optional on the web (.catch → 255)
             val off = li * px * 4
+            var sr = 0.0; var sg = 0.0; var sb = 0.0; var cnt = 0
             for (i in 0 until px) {
                 val c = col[i]; val n = nor[i]; val r = rou[i]
                 albedo[off + i * 4] = ((c shr 16) and 0xFF).toByte()      // R (getPixels is 0xAARRGGBB)
@@ -81,9 +86,14 @@ object TerrainGfx {
                 normal[off + i * 4 + 1] = ((n shr 8) and 0xFF).toByte()
                 normal[off + i * 4 + 2] = (n and 0xFF).toByte()
                 normal[off + i * 4 + 3] = ((r shr 16) and 0xFF).toByte()
+                // textures.js: `if ((i & 0x7c) === 0)` — every 32nd pixel of the 4-byte stride stream
+                if ((i * 4) and 0x7c == 0) {
+                    sr += ((c shr 16) and 0xFF).toDouble(); sg += ((c shr 8) and 0xFF).toDouble(); sb += (c and 0xFF).toDouble(); cnt++
+                }
             }
+            avg[li] = doubleArrayOf(sr / cnt / 255.0, sg / cnt / 255.0, sb / cnt / 255.0)
         }
-        return Pair(albedo, normal)
+        return LayerArrays(albedo, normal, avg)
     }
 
     /** terrain/index.js curvatureAt — 8 m Laplacian of the heightmap, 0.5 flat. */

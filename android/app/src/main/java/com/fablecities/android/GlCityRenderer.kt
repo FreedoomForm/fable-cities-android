@@ -12,6 +12,8 @@ import com.fablecities.android.worldgen.WeatherPresets
 import com.fablecities.android.worldgen.GroundControl
 import com.fablecities.android.worldgen.Heightmap
 import com.fablecities.android.worldgen.Vegetation
+import com.fablecities.android.worldgen.hash2Signed
+import com.fablecities.android.worldgen.SimplexNoise
 import com.fablecities.android.worldgen.PuddleField
 import com.fablecities.android.worldgen.Rng
 import com.fablecities.android.worldgen.RoadNetBuilder
@@ -129,12 +131,27 @@ class GlCityRenderer : GLSurfaceView.Renderer {
     private var progClouds = 0
     private var progPuddle = 0
     private var progTrees = 0
+    private var progUndergrowth = 0
     private var treeVbo = 0
     private var treeIbo = 0
     private var treeIdxCount = 0
     private var treeInstVbo = 0
     private var treeInstCount = 0
     private val texLeaf = IntArray(5)
+    // --- undergrowth (Vegetation.js _buildUndergrowth / _updateUndergrowth) ---
+    private var underVbo = 0
+    private var underIbo = 0
+    private var underIdxCount = 0
+    private var underInstVbo = 0
+    private var underInstCount = 0
+    private var texUnderAtlas = 0
+    private var underFocusX = 1e9f
+    private var underFocusZ = 1e9f
+    private var underRadius = 64f
+    @Volatile private var underDirty = true
+    @Volatile private var forest: Vegetation.Forest? = null
+    @Volatile private var groundTintFn: ((Double, Double, DoubleArray) -> Unit)? = null
+    @Volatile private var clusterNoise: SimplexNoise? = null
     private var pudVbo = 0
     private var pudIbo = 0
     private var pudIdxCount = 0
@@ -250,6 +267,7 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         progClouds = buildProgram(VS_SKY, FS_CLOUDS, "clouds")
         progPuddle = buildProgram(TerrainShaders.VS_PUDDLE, TerrainShaders.FS_PUDDLE, "puddle")
         progTrees = buildProgram(TerrainShaders.VS_TREES, TerrainShaders.FS_TREES, "trees")
+        progUndergrowth = buildProgram(TerrainShaders.VS_UNDERGROWTH, TerrainShaders.FS_UNDERGROWTH, "undergrowth")
         buildPrecipBuffer()
         buildCloudTextures()
 
@@ -507,6 +525,8 @@ class GlCityRenderer : GLSurfaceView.Renderer {
 
         drawTerrain(sun)
         drawCityGround(sun)
+        updateUndergrowth(sun)
+        drawUndergrowth(sun)
         drawTrees(sun)
         drawEditQuads(sun)
         drawBuildings(sun)
@@ -1402,6 +1422,14 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         val removed = roadCells.remove(idx)
         if (!removed) roadCells.add(idx)
         selectedBuilding = null
+        // terrain/index.js roads:changed → vegetation.clearPolyline(corridor width + 3); a cell road
+        // is a 24 m square corridor → the flattenRect-style clear with the same +3 margin
+        forest?.let { f ->
+            val hw = cellSize / 2f + 1.5f
+            f.clearRect((center[0] - hw).toDouble(), (center[1] - hw).toDouble(),
+                (center[0] + hw).toDouble(), (center[1] + hw).toDouble())
+            repackTreeInstances()
+        }
         rebuildEditMeshes()
         // player roads are local streets: 24 m cell x ¤0.30/m/week (economy.js ROAD_COST.local)
         simEconomy.extraRoadCost = demoRoadCost + roadCells.size * cellSize * 0.30
@@ -1440,6 +1468,11 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         simServices.place(type, center[0].toDouble(), center[1].toDouble(), y.toDouble(), true, doubleArrayOf(0.0))
         simEconomy.e.money -= def.cost // web place(): economy.money -= def.cost (we passed free to skip double-deduction)
         buildings.add(Building(center[0], y, center[1], def.w.toFloat(), def.d.toFloat(), def.height.toFloat(), 3, cityYaw, rng.nextInt(10000), idx))
+        // terrain/index.js service:added → vegetation.clearOriented(s.x, s.z, s.w||16, s.d||16, 0, 5)
+        forest?.let { f ->
+            f.clearOriented(center[0].toDouble(), center[1].toDouble(), 16.0, 16.0, 0.0, 5.0)
+            repackTreeInstances()
+        }
         val label = def.name
         val next = SERVICE_TYPES[serviceOrder[(serviceTypeIdx + 1) % serviceOrder.size]]!!.name
         serviceTypeIdx = (serviceTypeIdx + 1) % serviceOrder.size
@@ -2045,11 +2078,13 @@ class GlCityRenderer : GLSurfaceView.Renderer {
      *  the GL thread consumes everything in uploadWorldGfx() at the top of the next frame. */
     @Volatile private var splatReady = false
     @Volatile private var pendingGfxUpload = false
-    @Volatile private var pendingLayerArrays: Pair<ByteArray, ByteArray>? = null
+    @Volatile private var pendingLayerArrays: TerrainGfx.LayerArrays? = null
     @Volatile private var pendingCtrl: Pair<ByteArray, ByteArray>? = null
     @Volatile private var pendingNrm: ByteArray? = null
     @Volatile private var pendingTreeCanopy: FloatArray? = null
     @Volatile private var pendingLeafCards: List<LeafTextures.Card>? = null
+    @Volatile private var pendingUnderAtlas: LeafTextures.Atlas? = null
+    @Volatile private var pendingUnderMesh: Pair<FloatArray, IntArray>? = null
     @Volatile private var pendingTreeMeshIdx: IntArray? = null
     @Volatile private var pendingTreeVerts: FloatArray? = null
     @Volatile private var pendingTreeInst: FloatArray? = null
@@ -2059,24 +2094,53 @@ class GlCityRenderer : GLSurfaceView.Renderer {
             val t0 = System.nanoTime()
             try {
                 val ctx = appContext
-                if (ctx != null) {
-                    pendingLayerArrays = TerrainGfx.loadLayerArrays(ctx.assets)
+                val layers = if (ctx != null) {
+                    TerrainGfx.loadLayerArrays(ctx.assets)
                 } else {
                     Log.w(TAG, "no appContext — splat layers unavailable")
+                    null
                 }
+                pendingLayerArrays = layers
                 val baked = TerrainGfx.bakeControlMaps(worldHeight, 1337)
                 pendingCtrl = baked
                 pendingNrm = TerrainGfx.bakeNormalMap(worldHeight)
                 // the Vegetation.js placement consumes the control maps + shore field
                 val ground = GroundControl(worldHeight, 1337)
                 val shore = WaterMath.computeShoreDistance(worldHeight)
+                val groundInfoFn = { x: Double, z: Double ->
+                    Vegetation.groundInfo(worldHeight, baked.first, baked.second, TerrainGfx.CONTROL_RES, shore, x, z)
+                }
+                // terrain/index.js groundTint — mean ground albedo, tinted by the per-layer tints
+                if (layers != null) {
+                    val LAYER_TINT = arrayOf(
+                        doubleArrayOf(0.46, 0.55, 0.40), doubleArrayOf(0.50, 0.51, 0.38),
+                        doubleArrayOf(0.55, 0.49, 0.38), doubleArrayOf(0.90, 0.88, 0.90),
+                        doubleArrayOf(0.51, 0.47, 0.38), doubleArrayOf(0.52, 0.48, 0.40),
+                        doubleArrayOf(0.90, 0.88, 0.90), doubleArrayOf(0.32, 0.30, 0.22))
+                    groundTintFn = { x: Double, z: Double, out: DoubleArray ->
+                        val g = groundInfoFn(x, z)
+                        val w = doubleArrayOf(g.grass, g.dry, g.dirt, g.rock, g.sand, g.wet * 0.35, 0.0, g.forest * 0.5 * g.grass)
+                        var sw = 0.0; out[0] = 0.0; out[1] = 0.0; out[2] = 0.0
+                        for (i in 0 until 8) {
+                            val wi = w[i]
+                            if (wi <= 0.001) continue
+                            val a = layers.avg[i]; val t = LAYER_TINT[i]
+                            out[0] += wi * a[0] * t[0]; out[1] += wi * a[1] * t[1]; out[2] += wi * a[2] * t[2]; sw += wi
+                        }
+                        if (sw > 0.0) { out[0] /= sw; out[1] /= sw; out[2] /= sw }
+                        else { out[0] = 0.3; out[1] = 0.38; out[2] = 0.18 }
+                    }
+                }
                 val trees = Vegetation.distribute(
                     worldHeight, 1337, 1.0, worldHeight.half,
                     { x, z, h, slope -> ground.forestMask(x, z, h, slope) },
-                    { x, z -> Vegetation.groundInfo(worldHeight, baked.first, baked.second, TerrainGfx.CONTROL_RES, shore, x, z) },
+                    groundInfoFn,
                 )
+                // canopy bake BEFORE the clearing events (the site bakes ctrl2.r at terrain build,
+                // then the roads/buildings events fire and remove trees without re-baking)
                 pendingTreeCanopy = Vegetation.canopyCoverage(trees, worldHeight.half, TerrainGfx.CONTROL_RES)
                 pendingLeafCards = LeafTextures.allPalettes(256, 1337)
+                pendingUnderAtlas = LeafTextures.undergrowthAtlas(1024, 1337)
                 // shared crossed-card mesh: 3 quads at 0/60/120 degrees, per-quad layer bias in pos.z
                 val verts = FloatArray(3 * 4 * 5)
                 val idx = IntArray(3 * 6)
@@ -2103,9 +2167,56 @@ class GlCityRenderer : GLSurfaceView.Renderer {
                 }
                 pendingTreeMeshIdx = idx
                 pendingTreeVerts = verts
-                val inst = FloatArray(trees.size * 12)
+                // undergrowth crossed-card mesh: 3 quads at (k/3)·π + 0.29 with UP-FACING normals
+                // (Vegetation.js _buildUndergrowth: turf must be lit by the sky, not by card facing)
+                run {
+                    val uVerts = FloatArray(3 * 4 * 8) // pos(3) + normal(3) + uv(2)
+                    val uIdx = IntArray(3 * 6)
+                    var uo = 0
+                    var uio = 0
+                    for (q in 0 until 3) {
+                        val a = (q.toDouble() / 3.0) * Math.PI + 0.29
+                        val ca = cos(a).toFloat()
+                        val sa = sin(a).toFloat()
+                        val base = q * 4
+                        // PlaneGeometry(1,1) + translate(0, 0.5, 0); uv.y = 1 at the top
+                        val corners = floatArrayOf(-0.5f, 0f, 0.5f, 0f, 0.5f, 1f, -0.5f, 1f)
+                        val uvs = floatArrayOf(0f, 0f, 1f, 0f, 1f, 1f, 0f, 1f)
+                        for (v in 0 until 4) {
+                            val lx = corners[v * 2]
+                            val ly = corners[v * 2 + 1]
+                            uVerts[uo++] = lx * ca
+                            uVerts[uo++] = ly
+                            uVerts[uo++] = lx * sa
+                            uVerts[uo++] = 0f; uVerts[uo++] = 1f; uVerts[uo++] = 0f // normal forced up
+                            uVerts[uo++] = uvs[v * 2]
+                            uVerts[uo++] = uvs[v * 2 + 1]
+                        }
+                        uIdx[uio++] = base; uIdx[uio++] = base + 1; uIdx[uio++] = base + 2
+                        uIdx[uio++] = base; uIdx[uio++] = base + 2; uIdx[uio++] = base + 3
+                    }
+                    pendingUnderMesh = Pair(uVerts, uIdx)
+                }
+                // --- the site's clearing events (terrain/index.js roads:changed / building:added /
+                //     zones:changed / service:added) — every prebuilt road and block loses its trees
+                val forest = Vegetation.Forest(trees, worldHeight.half, worldHeight)
+                for (road in demo.roads) {
+                    if (road.world.size < 2) continue
+                    forest.clearPolyline(road.world, DemoCity.halfWidth(road.type) * 2 + 3.0)
+                }
+                for (b in demo.blocks) {
+                    // demo service blocks clear like the site's service:added (16×16 pad, margin 5)
+                    if (b.kind == DemoCity.Z_SERVICE) forest.clearOriented(b.x.toDouble(), b.z.toDouble(), 16.0, 16.0, 0.0, 5.0)
+                    else forest.clearOriented(b.x.toDouble(), b.z.toDouble(), b.w.toDouble(), b.d.toDouble(), b.yaw.toDouble(), 1.5)
+                }
+                this.forest = forest
+                clusterNoise = SimplexNoise(hash2Signed(1337, 909))
+                // pack ALIVE trees only (Vegetation.update() skips !t.alive when writing instances)
+                val alive = trees.count { it.alive != 0 }
+                val inst = FloatArray(alive * 12)
                 var o = 0
                 for ((i, t) in trees.withIndex()) {
+                    if (t.alive == 0) continue
                     inst[o++] = t.x.toFloat()
                     inst[o++] = t.y.toFloat()
                     inst[o++] = t.z.toFloat()
@@ -2121,7 +2232,7 @@ class GlCityRenderer : GLSurfaceView.Renderer {
                 }
                 pendingTreeInst = inst
                 pendingGfxUpload = true
-                Log.d(TAG, "world gfx computed in ${(System.nanoTime() - t0) / 1_000_000} ms (bg)")
+                Log.d(TAG, "world gfx computed in ${(System.nanoTime() - t0) / 1_000_000} ms (bg, trees ${trees.size}->${alive} alive)")
             } catch (e: Exception) {
                 Log.e(TAG, "world gfx build failed", e)
             }
@@ -2135,8 +2246,8 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         val ctrlPair = pendingCtrl
         val nrm = pendingNrm
         if (layers != null && ctrlPair != null && nrm != null) {
-            texAlbedoArr = uploadTexArray(TerrainGfx.LAYER_SIZE, TerrainGfx.LAYERS.size, layers.first)
-            texNormalArr = uploadTexArray(TerrainGfx.LAYER_SIZE, TerrainGfx.LAYERS.size, layers.second)
+            texAlbedoArr = uploadTexArray(TerrainGfx.LAYER_SIZE, TerrainGfx.LAYERS.size, layers.albedo)
+            texNormalArr = uploadTexArray(TerrainGfx.LAYER_SIZE, TerrainGfx.LAYERS.size, layers.normal)
             val (ctrl, ctrl2) = ctrlPair
             ctrlData = ctrl
             ctrl2Data = ctrl2
@@ -2184,9 +2295,50 @@ class GlCityRenderer : GLSurfaceView.Renderer {
             treeInstVbo = upload(inst)
             treeInstCount = inst.size / 12
         }
+        // --- undergrowth: atlas (uploaded row-FLIPPED so the site's cell mapping holds — the web
+        //     CanvasTexture is flipY=true), crossed-card mesh, instance buffer
+        val atlas = pendingUnderAtlas
+        val um = pendingUnderMesh
+        if (atlas != null && um != null) {
+            val b = atlas.bitmap
+            val w = b.width; val h = b.height
+            val row = ByteArray(w * 4)
+            val buf = java.nio.ByteBuffer.allocateDirect(b.byteCount).order(ByteOrder.nativeOrder())
+            val src = IntArray(w)
+            for (y in 0 until h) {
+                b.getPixels(src, 0, w, 0, y, w, 1)
+                for (x in 0 until w) {
+                    val c = src[x]
+                    row[x * 4] = (c and 0xFF).toByte()
+                    row[x * 4 + 1] = ((c shr 8) and 0xFF).toByte()
+                    row[x * 4 + 2] = ((c shr 16) and 0xFF).toByte()
+                    row[x * 4 + 3] = ((c ushr 24) and 0xFF).toByte()
+                }
+                buf.position((h - 1 - y) * w * 4)
+                buf.put(row)
+            }
+            buf.position(0)
+            texUnderAtlas = uploadTex2D(w, h, GLES30.GL_RGBA8, GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE,
+                buf, true, true)
+            val (uv, ui) = um
+            underVbo = upload(uv)
+            val uIdxBuf = ByteBuffer.allocateDirect(ui.size * 4).order(ByteOrder.nativeOrder())
+            for (v in ui) uIdxBuf.putInt(v)
+            uIdxBuf.position(0)
+            val uIbo = IntArray(1)
+            GLES30.glGenBuffers(1, uIbo, 0)
+            GLES30.glBindBuffer(GLES30.GL_ELEMENT_ARRAY_BUFFER, uIbo[0])
+            GLES30.glBufferData(GLES30.GL_ELEMENT_ARRAY_BUFFER, ui.size * 4, uIdxBuf, GLES30.GL_STATIC_DRAW)
+            GLES30.glBindBuffer(GLES30.GL_ELEMENT_ARRAY_BUFFER, 0)
+            underIbo = uIbo[0]
+            underIdxCount = ui.size
+            underInstVbo = upload(FloatArray(1))
+            underInstCount = 0
+        }
         pendingLayerArrays = null; pendingCtrl = null; pendingNrm = null
         pendingTreeCanopy = null; pendingLeafCards = null; pendingTreeVerts = null
         pendingTreeMeshIdx = null; pendingTreeInst = null
+        pendingUnderAtlas = null; pendingUnderMesh = null
         Log.d(TAG, "world gfx uploaded (splat ready=$splatReady, trees=$treeInstCount)")
     }
 
@@ -2238,6 +2390,146 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         GLES30.glBindBuffer(GLES30.GL_ELEMENT_ARRAY_BUFFER, 0)
         for (loc in 2..4) GLES30.glVertexAttribDivisor(loc, 0)
         GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, 0)
+    }
+
+    /**
+     * The site's undergrowth (Vegetation.js _buildUndergrowth + _updateUndergrowth): a 64 m turf
+     * patch that follows the camera focus, placed bit-exactly (per-cell rng chain, meadow/fern
+     * density model, clearMask + road blockers), drawn as instanced crossed cards with the
+     * root-shadow gradient, stochastic alpha test and the sky-floor clamp.
+     */
+    private fun updateUndergrowth(sun: SunState) {
+        if (progUndergrowth == 0 || underVbo == 0 || underInstVbo == 0) return
+        val f = forest ?: return
+        val cn = clusterNoise ?: return
+        val c0 = ctrlData ?: return
+        val c20 = ctrl2Data ?: return
+        val eye = FloatArray(3)
+        camEye(eye)
+        val dirX = (camTarget[0] - eye[0]); val dirY = (camTarget[1] - eye[1]); val dirZ = (camTarget[2] - eye[2])
+        val dl = sqrt(dirX * dirX + dirY * dirY + dirZ * dirZ).coerceAtLeast(1e-4f)
+        // focus = the look-at point pulled up to 55 m ahead of the camera along the view ray
+        // (the web clamps the focus distance at 55 m so near-horizontal views keep turf nearby)
+        val reach = min(dl, 55f)
+        val fx = eye[0] + (dirX / dl) * reach
+        val fz = eye[2] + (dirZ / dl) * reach
+        val camHeight = eye[1] - terrainHeight(eye[0], eye[2])
+        if (camHeight > 170.0) {
+            if (underInstCount != 0) underInstCount = 0
+            return
+        }
+        val moved = sqrt((fx - underFocusX) * (fx - underFocusX) + (fz - underFocusZ) * (fz - underFocusZ)) > 6f
+        if (!moved && !underDirty) return
+        underFocusX = fx; underFocusZ = fz
+        underDirty = false
+        val groundInfoFn = { x: Double, z: Double ->
+            Vegetation.groundInfo(worldHeight, c0, c20, TerrainGfx.CONTROL_RES, shoreData(), x, z)
+        }
+        val patch = Vegetation.undergrowthPatch(
+            worldHeight, 1337, 1.0, worldHeight.half, cn, groundInfoFn,
+            groundTintFn, { x, z -> f.isCleared(x, z) },
+            { x, z -> roadDistance(x.toFloat(), z.toFloat()) < 1.0f },
+            fx.toDouble(), fz.toDouble(), camHeight.toDouble(),
+        ) ?: return
+        // pack + upload (GL thread): pos(3) yaw/sx/sy(3) var(1) | colour(3) pad(1)
+        val n = patch.instances.size
+        val inst = FloatArray(max(1, n) * 12)
+        var o = 0
+        for (g in patch.instances) {
+            inst[o++] = g.x.toFloat(); inst[o++] = g.y.toFloat(); inst[o++] = g.z.toFloat()
+            inst[o++] = g.yaw.toFloat(); inst[o++] = g.sx.toFloat(); inst[o++] = g.sy.toFloat()
+            inst[o++] = g.variant.toFloat(); inst[o++] = 0f
+            inst[o++] = g.r.toFloat(); inst[o++] = g.g.toFloat(); inst[o++] = g.b.toFloat()
+            inst[o++] = 0f
+        }
+        GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, underInstVbo)
+        val ubuf = ByteBuffer.allocateDirect(inst.size * 4).order(ByteOrder.nativeOrder()).asFloatBuffer()
+        ubuf.put(inst).position(0)
+        GLES30.glBufferData(GLES30.GL_ARRAY_BUFFER, inst.size * 4, ubuf, GLES30.GL_DYNAMIC_DRAW)
+        GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, 0)
+        underInstCount = n
+    }
+
+    private fun shoreData(): ByteArray {
+        if (cachedShoreData == null) cachedShoreData = WaterMath.computeShoreDistance(worldHeight)
+        return cachedShoreData!!
+    }
+    private var cachedShoreData: ByteArray? = null
+
+    private fun drawUndergrowth(sun: SunState) {
+        if (progUndergrowth == 0 || underVbo == 0 || underInstVbo == 0 || underInstCount == 0) return
+        GLES30.glUseProgram(progUndergrowth)
+        GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, underVbo)
+        GLES30.glEnableVertexAttribArray(0)
+        GLES30.glVertexAttribPointer(0, 3, GLES30.GL_FLOAT, false, 32, 0)
+        GLES30.glEnableVertexAttribArray(1)
+        GLES30.glVertexAttribPointer(1, 3, GLES30.GL_FLOAT, false, 32, 12)
+        GLES30.glEnableVertexAttribArray(2)
+        GLES30.glVertexAttribPointer(2, 2, GLES30.GL_FLOAT, false, 32, 24)
+        GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, underInstVbo)
+        GLES30.glEnableVertexAttribArray(3)
+        GLES30.glVertexAttribPointer(3, 4, GLES30.GL_FLOAT, false, 48, 0)
+        GLES30.glVertexAttribDivisor(3, 1)
+        GLES30.glEnableVertexAttribArray(4)
+        GLES30.glVertexAttribPointer(4, 4, GLES30.GL_FLOAT, false, 48, 16)
+        GLES30.glVertexAttribDivisor(4, 1)
+        GLES30.glEnableVertexAttribArray(5)
+        GLES30.glVertexAttribPointer(5, 4, GLES30.GL_FLOAT, false, 48, 32)
+        GLES30.glVertexAttribDivisor(5, 1)
+        val eye = FloatArray(3)
+        camEye(eye)
+        GLES30.glUniformMatrix4fv(u(progUndergrowth, "uVP"), 1, false, vpM, 0)
+        GLES30.glUniform1f(u(progUndergrowth, "uTime"), pudTime)
+        GLES30.glUniform2f(u(progUndergrowth, "uWindDir"), weather.state.windX.toFloat(), weather.state.windZ.toFloat())
+        GLES30.glUniform1f(u(progUndergrowth, "uWindStrength"), 0.15f + sun.windStrength * 0.85f)
+        GLES30.glUniform2f(u(progUndergrowth, "uGrassCenter"), underFocusX, underFocusZ)
+        GLES30.glUniform1f(u(progUndergrowth, "uGrassRadius"), underRadius)
+        GLES30.glUniform3f(u(progUndergrowth, "uSunDir"), sun.dir[0], sun.dir[1], sun.dir[2])
+        GLES30.glUniform3f(u(progUndergrowth, "uSunColor"), sun.color[0], sun.color[1], sun.color[2])
+        GLES30.glUniform3f(u(progUndergrowth, "uAmbient"), sun.ambient[0], sun.ambient[1], sun.ambient[2])
+        GLES30.glUniform3f(u(progUndergrowth, "uFogColor"), sun.horizon[0], sun.horizon[1], sun.horizon[2])
+        GLES30.glUniform1f(u(progUndergrowth, "uFogDensity"), sun.fogDensity)
+        GLES30.glUniform3f(u(progUndergrowth, "uCamPos"), eye[0], eye[1], eye[2])
+        GLES30.glUniform1f(u(progUndergrowth, "uNight"), sun.nightFactor)
+        GLES30.glUniform1f(u(progUndergrowth, "uShadowStrength"), sun.cloudShadowStrength)
+        GLES30.glUniform3f(u(progUndergrowth, "uLightToward"), sun.cloudLightToward[0], sun.cloudLightToward[1], sun.cloudLightToward[2])
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, texUnderAtlas)
+        GLES30.glUniform1i(u(progUndergrowth, "uAtlas"), 0)
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE1)
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, texCloudShadow)
+        GLES30.glUniform1i(u(progUndergrowth, "uCloudShadow"), 1)
+        GLES30.glDisable(GLES30.GL_CULL_FACE) // DoubleSide cards
+        GLES30.glBindBuffer(GLES30.GL_ELEMENT_ARRAY_BUFFER, underIbo)
+        GLES30.glDrawElementsInstanced(GLES30.GL_TRIANGLES, underIdxCount, GLES30.GL_UNSIGNED_INT, 0, underInstCount)
+        GLES30.glBindBuffer(GLES30.GL_ELEMENT_ARRAY_BUFFER, 0)
+        GLES30.glEnable(GLES30.GL_CULL_FACE)
+        for (loc in 3..5) GLES30.glVertexAttribDivisor(loc, 0)
+        GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, 0)
+    }
+
+    /** Repack tree instances after a runtime clear (Vegetation.update() skips !alive trees). */
+    private fun repackTreeInstances() {
+        val f = forest ?: return
+        val inst = FloatArray(f.aliveCount() * 12)
+        var o = 0
+        for ((i, t) in f.trees.withIndex()) {
+            if (t.alive == 0) continue
+            inst[o++] = t.x.toFloat(); inst[o++] = t.y.toFloat(); inst[o++] = t.z.toFloat()
+            inst[o++] = t.yaw.toFloat(); inst[o++] = t.sxz.toFloat(); inst[o++] = t.sy.toFloat()
+            inst[o++] = t.kind.toFloat(); inst[o++] = 0f
+            inst[o++] = t.r.toFloat(); inst[o++] = t.g.toFloat(); inst[o++] = t.b.toFloat()
+            inst[o++] = ((i * 2654435761L) and 0xFFFF).toFloat() / 65535f * 6.28f
+        }
+        if (treeInstVbo != 0) {
+            val tbuf = ByteBuffer.allocateDirect(inst.size * 4).order(ByteOrder.nativeOrder()).asFloatBuffer()
+            tbuf.put(inst).position(0)
+            GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, treeInstVbo)
+            GLES30.glBufferData(GLES30.GL_ARRAY_BUFFER, inst.size * 4, tbuf, GLES30.GL_DYNAMIC_DRAW)
+            GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, 0)
+        }
+        treeInstCount = inst.size / 12
+        underDirty = true
     }
 
     /** effects/PuddleField.js: drainage raster + merged feathered pool discs from the demo roads. */

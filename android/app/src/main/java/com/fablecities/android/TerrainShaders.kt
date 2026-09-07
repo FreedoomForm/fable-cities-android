@@ -700,4 +700,115 @@ float fxPuddleField(vec2 xz) {
             fragColor = vec4(mix(col, uFogColor, fog), 1.0);
         }
     """.trimIndent()
+
+    /**
+     * Undergrowth (Vegetation.js _buildUndergrowth + _updateUndergrowth, GLSL ES 3.0): instanced
+     * crossed cards with the web material's exact behaviour — 8-cell atlas remap, root-shadow
+     * gradient (bottom fifth darkens into the turf), mip alpha boost 0.45, stochastic alpha test
+     * at 0.42, the camera-radius alpha fade, windPatch(0.2, [0, 0.9]) sway, up-facing normals and
+     * the SKY_FLOOR indirect clamp. The atlas is uploaded row-flipped so the site's flipY cell
+     * mapping reproduces texel-for-texel.
+     */
+    val VS_UNDERGROWTH = """
+        #version 300 es
+        layout(location=0) in vec3 aPos;      // card corner (y 0..1), 3 cards baked rotated
+        layout(location=1) in vec3 aNormal;   // forced up (0,1,0) — turf is lit by the sky
+        layout(location=2) in vec2 aUv;
+        layout(location=3) in vec4 aInstA;    // x, y (ground), z, yaw
+        layout(location=4) in vec4 aInstB;    // sx, sy, variant, 0
+        layout(location=5) in vec4 aInstC;    // r, g, b, 0
+        uniform mat4 uVP;
+        uniform float uTime;
+        uniform vec2 uWindDir;
+        uniform float uWindStrength;
+        out vec2 vUv;
+        out float vCardY;
+        out vec3 vWorld;
+        out vec3 vTint;
+        flat out float aVar;
+        void main() {
+            float yaw = aInstA.w;
+            float c = cos(yaw), s = sin(yaw);
+            vec3 p = aPos;
+            // windPatch(shader, windUniforms, 0.2, [0.0, 0.9]) — the exact web sway
+            float phase = dot(aInstA.xz, vec2(0.031, 0.047)) + uTime * 1.15;
+            float heightF = smoothstep(0.0, 0.9, p.y);
+            float sway = (sin(phase) * 0.6 + sin(phase * 2.17 + 1.3) * 0.4) * uWindStrength * 0.2 * heightF;
+            vec3 local = vec3(p.x * aInstB.x, p.y * aInstB.y, p.z * aInstB.x);
+            local.xz += uWindDir * sway;
+            local += aNormal * sin(uTime * 3.3 + phase * 4.0 + p.y * 2.0) * 0.04 * uWindStrength * heightF;
+            vec3 world = vec3(
+                aInstA.x + local.x * c - local.z * s,
+                aInstA.y + local.y,
+                aInstA.z + local.x * s + local.z * c);
+            vWorld = world;
+            vUv = aUv;
+            vCardY = aUv.y;
+            vTint = aInstC.rgb;
+            aVar = aInstB.z;
+            gl_Position = uVP * vec4(world, 1.0);
+        }
+    """.trimIndent()
+
+    val FS_UNDERGROWTH = """
+        #version 300 es
+        precision highp float;
+        in vec2 vUv;
+        in float vCardY;
+        in vec3 vWorld;
+        in vec3 vTint;
+        flat in float aVar;
+        uniform sampler2D uAtlas;
+        uniform vec2 uGrassCenter;
+        uniform float uGrassRadius;
+        uniform vec3 uSunDir;
+        uniform vec3 uSunColor;
+        uniform vec3 uAmbient;
+        uniform vec3 uFogColor;
+        uniform float uFogDensity;
+        uniform vec3 uCamPos;
+        uniform float uNight;
+        uniform sampler2D uCloudShadow;
+        uniform float uShadowStrength;
+        uniform vec3 uLightToward;
+        out vec4 fragColor;
+        void main() {
+            // vMapUv * vec2(0.25, 0.5) + cell * vec2(0.25, 0.5) — the site's 8-cell remap
+            float col = mod(aVar, 4.0);
+            float row = floor(aVar * 0.25 + 0.01);
+            vec2 cellUv = vUv * vec2(0.25, 0.5) + vec2(col, row) * vec2(0.25, 0.5);
+            vec4 tex = texture(uAtlas, cellUv);
+            // MIP_ALPHA_BOOST (uMipBoost 0.45): keep cutout coverage as the cards shrink
+            vec2 tsz = vec2(textureSize(uAtlas, 0));
+            vec2 ddx = dFdx(cellUv * tsz); vec2 ddy = dFdy(cellUv * tsz);
+            float lodF = 0.5 * log2(max(dot(ddx, ddx), dot(ddy, ddy)) + 1e-6);
+            tex.a *= 1.0 + max(lodF, 0.0) * 0.45;
+            // camera-radius alpha fade (uGrassRadius 0.5 → 0.95)
+            tex.a *= 1.0 - smoothstep(uGrassRadius * 0.5, uGrassRadius * 0.95, distance(vWorld.xz, uGrassCenter));
+            // STOCHASTIC_ALPHATEST at alphaTest 0.42 — interleaved-gradient jitter dissolves card edges
+            float ignA = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
+            if (tex.a < 0.42 * (0.62 + 0.76 * ignA)) discard;
+            // root shadow: the bottom fifth of every card darkens towards the ground
+            vec3 alb = tex.rgb * vTint * mix(0.84, 1.0, smoothstep(0.0, 0.3, vCardY));
+            // up-facing normal (NO_FLIP_NORMAL): turf is lit by the sky, not by card facing
+            vec3 n = vec3(0.0, 1.0, 0.0);
+            float ndl = max(dot(n, uSunDir), 0.0);
+            float cs = 1.0;
+            if (uShadowStrength > 0.001) {
+                float t = (1000.0 - vWorld.y) / max(uLightToward.y, 0.05);
+                cs = texture(uCloudShadow, (vWorld.xz + uLightToward.xz * t) / 22000.0).r;
+            }
+            vec3 col3 = alb * (uAmbient * (0.75 + 0.5 * n.y) + uSunColor * ndl * cs);
+            // SKY_FLOOR: nothing lit by an open sky is darker than its sky bounce, tinted by the
+            // SURFACE (albMin) so shadowed undergrowth never turns blue
+            vec3 skyFill = uAmbient;
+            vec3 albMin = max(alb, alb * 0.80 + vec3(0.030, 0.038, 0.022));
+            col3 = max(col3, albMin * skyFill * 2.10);
+            // night: turf sinks into the sky fill like everything else
+            col3 = mix(col3, alb * uAmbient * 1.15, uNight * 0.75);
+            float d = length(uCamPos - vWorld);
+            float fog = 1.0 - exp(-d * uFogDensity);
+            fragColor = vec4(mix(col3, uFogColor, fog), 1.0);
+        }
+    """.trimIndent()
 }

@@ -1,6 +1,7 @@
 package com.fablecities.android.worldgen
 
 import kotlin.math.abs
+import kotlin.math.ceil
 import kotlin.math.cos
 import kotlin.math.exp
 import kotlin.math.floor
@@ -28,11 +29,13 @@ import kotlin.math.sqrt
 object Vegetation {
 
     class Tree(
-        val x: Double, val y: Double, val z: Double,
+        val x: Double, var y: Double, val z: Double,
         val sxz: Double, val sy: Double, val yaw: Double,
         val kind: Int, val species: Int, val horizon: Boolean,
         val r: Double, val g: Double, val b: Double,
-    ) { var alive = 1 }
+    ) {
+        var alive = 1
+    }
 
     class Result(val trees: List<Tree>, val canopy: FloatArray, val buildMs: Long)
 
@@ -252,6 +255,265 @@ object Vegetation {
     private fun smoothstep(a: Double, b: Double, v: Double): Double {
         val t = ((v - a) / (b - a)).coerceIn(0.0, 1.0)
         return t * t * (3.0 - 2.0 * t)
+    }
+
+    // -------------------------------------------------------------------------------------------
+    // Clearing (Vegetation.js lines 850-931) — trees removed individually, clearMask for the
+    // undergrowth, a 32 m spatial grid over the in-map trees for fast queries. All ops are exact
+    // ports (evaluation order and clamp semantics included) so the SAME trees die for the SAME edit.
+    // -------------------------------------------------------------------------------------------
+
+    /**
+     * Mutable forest state: the distributed trees + the site's spatial grid and 4 m clear mask.
+     * The renderer repacks its instance buffer from `trees` (skipping alive == 0) after each edit,
+     * exactly like Vegetation.update() skips !t.alive when it writes instances.
+     */
+    class Forest(
+        val trees: List<Tree>,
+        val half: Double,
+        private val hm: Heightmap,
+    ) {
+        val cell = 32
+        val maskCell = 4
+        val maskN = ceil((half * 2.0) / maskCell).toInt()
+        val clearMask = ByteArray(maskN * maskN)
+        private val grid = HashMap<Int, ArrayList<Int>>()
+        var undergrowthDirty = true
+            private set
+
+        init {
+            // spatial grid (32 m cells) for fast clearing (in-map only) — JS _distribute tail
+            for ((i, t) in trees.withIndex()) {
+                if (t.horizon) continue
+                val k = cellKey(t.x, t.z)
+                grid.getOrPut(k) { ArrayList() }.add(i)
+            }
+        }
+
+        private fun cellKey(x: Double, z: Double): Int =
+            (floor((x + half) / cell).toInt() shl 12) or floor((z + half) / cell).toInt()
+
+        private fun forEachTreeIn(x0: Double, z0: Double, x1: Double, z1: Double, fn: (Tree) -> Unit) {
+            val c0x = floor((x0 + half) / cell).toInt()
+            val c1x = floor((x1 + half) / cell).toInt()
+            val c0z = floor((z0 + half) / cell).toInt()
+            val c1z = floor((z1 + half) / cell).toInt()
+            for (cz in c0z..c1z) for (cx in c0x..c1x) {
+                val a = grid[(cx shl 12) or cz] ?: continue
+                for (i in a) fn(trees[i])
+            }
+        }
+
+        private fun markMask(x0: Double, z0: Double, x1: Double, z1: Double, test: ((Double, Double) -> Boolean)?) {
+            val n = maskN
+            val c = maskCell
+            val h = half
+            val i0 = floor((x0 + h) / c).toInt().coerceIn(0, n - 1)
+            val i1 = floor((x1 + h) / c).toInt().coerceIn(0, n - 1)
+            val j0 = floor((z0 + h) / c).toInt().coerceIn(0, n - 1)
+            val j1 = floor((z1 + h) / c).toInt().coerceIn(0, n - 1)
+            for (j in j0..j1) for (i in i0..i1) {
+                val x = -h + (i + 0.5) * c
+                val z = -h + (j + 0.5) * c
+                if (test == null || test(x, z)) clearMask[j * n + i] = 1
+            }
+            undergrowthDirty = true
+        }
+
+        /** True when undergrowth must not grow at (x,z) (roads, lots, service pads, flattened areas). */
+        fun isCleared(x: Double, z: Double): Boolean {
+            val i = floor((x + half) / maskCell).toInt()
+            val j = floor((z + half) / maskCell).toInt()
+            if (i < 0 || j < 0 || i >= maskN || j >= maskN) return false
+            return clearMask[j * maskN + i].toInt() == 1
+        }
+
+        fun clearRect(x0: Double, z0: Double, x1: Double, z1: Double): Int {
+            val ax = min(x0, x1); val bx = max(x0, x1); val az = min(z0, z1); val bz = max(z0, z1)
+            var n = 0
+            forEachTreeIn(ax, az, bx, bz) { t ->
+                if (t.alive != 0 && t.x >= ax && t.x <= bx && t.z >= az && t.z <= bz) { t.alive = 0; n++ }
+            }
+            markMask(ax, az, bx, bz, null)
+            return n
+        }
+
+        fun clearCircle(x: Double, z: Double, r: Double): Int {
+            var n = 0
+            val r2 = r * r
+            forEachTreeIn(x - r, z - r, x + r, z + r) { t ->
+                if (t.alive != 0 && (t.x - x) * (t.x - x) + (t.z - z) * (t.z - z) <= r2) { t.alive = 0; n++ }
+            }
+            markMask(x - r, z - r, x + r, z + r) { px, pz ->
+                (px - x) * (px - x) + (pz - z) * (pz - z) <= (r + 2) * (r + 2)
+            }
+            return n
+        }
+
+        /** Clear a yaw-rotated rectangle (building / service footprint) with a margin. */
+        fun clearOriented(x: Double, z: Double, w: Double, d: Double, yaw: Double = 0.0, margin: Double = 0.0): Int {
+            val hw = w / 2.0 + margin
+            val hd = d / 2.0 + margin
+            val c = cos(yaw); val s = sin(yaw)
+            val r = hypot(hw, hd)
+            val inside: (Double, Double) -> Boolean = { px, pz ->
+                val dx = px - x; val dz = pz - z
+                val lx = dx * c + dz * s
+                val lz = -dx * s + dz * c
+                abs(lx) <= hw && abs(lz) <= hd
+            }
+            var n = 0
+            forEachTreeIn(x - r, z - r, x + r, z + r) { t ->
+                if (t.alive != 0 && inside(t.x, t.z)) { t.alive = 0; n++ }
+            }
+            markMask(x - r, z - r, x + r, z + r, inside)
+            return n
+        }
+
+        /** Clear trees along a polyline of [x, z] points with a total corridor width. */
+        fun clearPolyline(points: List<DoubleArray>, width: Double): Int {
+            val r = width / 2.0
+            var n = 0
+            for (i in 0 until points.size - 1) {
+                val a = points[i]; val b = points[i + 1]
+                val abx = b[0] - a[0]; val abz = b[1] - a[1]
+                val len2 = abx * abx + abz * abz
+                val len2s = if (len2 == 0.0) 1.0 else len2
+                val minx = min(a[0], b[0]) - r; val maxx = max(a[0], b[0]) + r
+                val minz = min(a[1], b[1]) - r; val maxz = max(a[1], b[1]) + r
+                val distOk = { px: Double, pz: Double, rr: Double ->
+                    val u = (((px - a[0]) * abx + (pz - a[1]) * abz) / len2s).coerceIn(0.0, 1.0)
+                    val qx = px - (a[0] + abx * u)
+                    val qz = pz - (a[1] + abz * u)
+                    qx * qx + qz * qz <= rr * rr
+                }
+                forEachTreeIn(minx, minz, maxx, maxz) { t ->
+                    if (t.alive != 0 && distOk(t.x, t.z, r)) { t.alive = 0; n++ }
+                }
+                markMask(minx, minz, maxx, maxz) { px, pz -> distOk(px, pz, r + 2) }
+            }
+            return n
+        }
+
+        /** Re-snap tree heights after a terrain edit inside a rect. */
+        fun resnap(x0: Double, z0: Double, x1: Double, z1: Double) {
+            forEachTreeIn(min(x0, x1), min(z0, z1), max(x0, x1), max(z0, z1)) { t ->
+                t.y = hm.getHeight(t.x, t.z) - 0.12
+            }
+            undergrowthDirty = true
+        }
+
+        fun aliveCount(): Int { var n = 0; for (t in trees) n += t.alive; return n }
+    }
+
+    // -------------------------------------------------------------------------------------------
+    // Undergrowth placement (Vegetation.js _updateUndergrowth, lines 1026-1113) — the camera-
+    // focused 64 m turf patch. Bit-exact: per-cell rng chain hash2(hash2(seed, cx*73856093),
+    // cz*19349663), the meadow/fern density model, the near-focus multiplier, the 8 atlas
+    // variants with their size ranges and the ground-tint blend (55 % towards the mean albedo).
+    // -------------------------------------------------------------------------------------------
+
+    class UndergrowthInstance(
+        val x: Double, val y: Double, val z: Double,
+        val yaw: Double, val sx: Double, val sy: Double,
+        val variant: Int, val r: Double, val g: Double, val b: Double,
+    )
+
+    class UndergrowthPatch(val instances: List<UndergrowthInstance>, val fx: Double, val fz: Double)
+
+    /** Mean atlas tuft colour (sRGB) — the ground tint is expressed relative to it. */
+    val TUFT_AVG = doubleArrayOf(0.24, 0.32, 0.16)
+
+    /**
+     * Build the turf patch around the focus point (fx, fz). Returns null when the camera is too
+     * high (> 170 m — the web empties the mesh) or the patch is empty.
+     */
+    fun undergrowthPatch(
+        hm: Heightmap,
+        seed: Int,
+        density: Double,
+        half: Double,
+        clusterNoise: SimplexNoise,
+        groundInfoFn: (Double, Double) -> GroundInfo,
+        groundTintFn: ((Double, Double, DoubleArray) -> Unit)?,
+        isClearedFn: (Double, Double) -> Boolean,
+        isBlockedFn: ((Double, Double) -> Boolean)?,
+        fx: Double,
+        fz: Double,
+        camHeight: Double,
+    ): UndergrowthPatch? {
+        if (camHeight > 170.0) return null
+        val cap = Math.round(52000.0 * density.coerceIn(0.5, 1.3)).toInt()
+        val R = 64.0
+        val cell = 8.0
+        val out = ArrayList<UndergrowthInstance>(min(cap, 8192))
+        val c0x = floor((fx - R) / cell).toInt()
+        val c1x = floor((fx + R) / cell).toInt()
+        val c0z = floor((fz - R) / cell).toInt()
+        val c1z = floor((fz + R) / cell).toInt()
+        val perCell = 96.0 * density
+        val wl = hm.waterLevel
+        var broke = false
+        outer@ for (cz in c0z..c1z) for (cx in c0x..c1x) {
+            val ccx = (cx + 0.5) * cell
+            val ccz = (cz + 0.5) * cell
+            val dFocus = v8Hypot(ccx - fx, ccz - fz)
+            if (dFocus > R + 6) continue
+            if (abs(ccx) > half || abs(ccz) > half) continue
+            val rng = Rng(hash2Signed(hash2Signed(seed, cx * 73856093), cz * 19349663))
+            val info = groundInfoFn(ccx, ccz)
+            val cluster = smoothstep(-0.35, 0.45, clusterNoise.fbm2D(ccx / 19.0, ccz / 19.0, 2))
+            val meadow = (info.grass + info.dry * 0.8) * (1.0 - smoothstep(0.25, 0.4, info.slope)) *
+                (0.35 + 0.65 * cluster) * (1.0 - 0.85 * info.sand)
+            val fern = info.forest * smoothstep(0.4, 0.8, info.forest) * (1.0 - smoothstep(0.3, 0.45, info.slope)) * 0.45
+            // ~4x density close to the focus point, tapering to 1x at ~45 m
+            val near = 1.0 + 7.0 * (1.0 - smoothstep(14.0, 55.0, dFocus))
+            val nFern = jsRound(perCell * 0.35 * fern * near).toInt()
+            val count = jsRound(perCell * meadow.coerceIn(0.0, 1.0) * near).toInt() + nFern
+            if (count == 0) continue
+            // ground tint → tuft colour multiplier (55 % towards the ground albedo)
+            var mr = 1.0; var mg = 1.0; var mb = 1.0
+            if (groundTintFn != null) {
+                val tint = DoubleArray(3)
+                groundTintFn(ccx, ccz, tint)
+                mr = GroundControl.lerp(1.0, (tint[0] / TUFT_AVG[0]).coerceIn(0.78, 1.30), 0.55)
+                mg = GroundControl.lerp(1.0, (tint[1] / TUFT_AVG[1]).coerceIn(0.78, 1.30), 0.55)
+                mb = GroundControl.lerp(1.0, (tint[2] / TUFT_AVG[2]).coerceIn(0.78, 1.30), 0.55)
+            }
+            val dryFrac = info.dry / max(0.05, info.grass + info.dry)
+            for (k in 0 until count) {
+                val x = cx * cell + rng.next() * cell
+                val z = cz * cell + rng.next() * cell
+                val isFern = k < nFern
+                val h = hm.getHeight(x, z)
+                if (h < wl + 0.5) continue
+                if (isClearedFn(x, z)) continue
+                if (isBlockedFn != null && isBlockedFn(x, z)) continue
+                val dryPick = rng.next() < dryFrac
+                val u = rng.next()
+                var v: Int; var sx: Double; var sy: Double
+                // grass is TALLER than it is wide — upright tufts dominate the mix
+                if (isFern) { v = 3; sx = rng.range(0.85, 1.45); sy = sx * rng.range(0.80, 1.15) }
+                else if (u < 0.40) { v = if (dryPick) 2 else 0; sx = rng.range(0.30, 0.52); sy = rng.range(0.44, 0.86) }
+                else if (u < 0.60) { v = 1; sx = rng.range(0.34, 0.60); sy = rng.range(0.52, 1.00) }
+                else if (u < 0.82) { v = if (dryPick) 7 else 4; sx = rng.range(0.62, 1.10); sy = rng.range(0.24, 0.44) }
+                else if (u < 0.90) { v = 5; sx = rng.range(0.34, 0.58); sy = rng.range(0.20, 0.34) }
+                else { v = if (dryPick) 2 else 6; sx = rng.range(0.28, 0.50); sy = rng.range(0.40, 0.72) }
+                val yaw = rng.range(0.0, Math.PI)
+                val br = rng.range(0.66, 1.14) * (if (dryPick) 0.88 else 1.0)
+                val hs = rng.range(-0.14, 0.14)
+                val blend = if (isFern) 0.4 else 1.0
+                out.add(UndergrowthInstance(
+                    x, h - 0.07, z, yaw, sx, sy, v,
+                    (br * (1 + hs) * GroundControl.lerp(1.0, mr, blend)).coerceIn(0.18, 1.25),
+                    (br * (1 + hs * 0.15) * GroundControl.lerp(1.0, mg, blend)).coerceIn(0.18, 1.25),
+                    (br * (1 - hs * 1.35) * GroundControl.lerp(1.0, mb, blend)).coerceIn(0.18, 1.25),
+                ))
+                if (out.size >= cap) { broke = true; break@outer }
+            }
+        }
+        if (broke) return UndergrowthPatch(out.subList(0, cap), fx, fz)
+        return UndergrowthPatch(out, fx, fz)
     }
 }
 

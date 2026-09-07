@@ -122,7 +122,7 @@ class VegetationParityTest {
 }
 
 /** small shim so the test file stays self-contained */
-private object VegetationGround {
+object VegetationGround {
     fun shoreAt(hm: Heightmap, shore: ByteArray, x: Double, z: Double): Double =
         com.fablecities.android.worldgen.GroundControlShore.shoreAt(hm, shore, x, z)
 }
