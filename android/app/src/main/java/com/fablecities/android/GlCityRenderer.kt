@@ -16,6 +16,7 @@ import com.fablecities.android.worldgen.hash2Signed
 import com.fablecities.android.worldgen.SimplexNoise
 import com.fablecities.android.worldgen.v8Hypot
 import com.fablecities.android.worldgen.WetLights
+import com.fablecities.android.worldgen.Props
 import com.fablecities.android.worldgen.PuddleField
 import com.fablecities.android.worldgen.Rng
 import com.fablecities.android.worldgen.RoadNetBuilder
@@ -153,6 +154,16 @@ class GlCityRenderer : GLSurfaceView.Renderer {
     private val wetLights = WetLights()
     private val wetLightPosBuf = FloatArray(12 * 4)
     private val wetLightColBuf = FloatArray(12 * 3)
+    // --- street furniture (props/PropScatter.js scatter, native box compositions) ---
+    private var propBoxVbo = 0
+    private var propBoxCount = 0
+    private var propPitVbo = 0
+    private var propPitCount = 0
+    private class PropCar(val van: Boolean, val x: Float, val y: Float, val z: Float,
+                          val yaw: Float, val sx: Float, val sy: Float, val sz: Float,
+                          val r: Float, val g: Float, val b: Float, val seed: Int)
+    private val propCars = ArrayList<PropCar>()
+    private var propTreeExtra = 0 // street trees appended to the tree instance buffer
     private var treeVbo = 0
     private var treeIbo = 0
     private var treeIdxCount = 0
@@ -562,6 +573,58 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         }
     }
 
+    /** The scattered street furniture: box compositions + mulch pit decals + parked cars. */
+    private fun drawProps(sun: SunState) {
+        if (propPitVbo != 0 && propPitCount > 0) {
+            GLES30.glDisable(GLES30.GL_CULL_FACE)
+            drawLit(progFlat, propPitVbo, propPitCount, sun, 1f, 1f, 1f)
+            GLES30.glEnable(GLES30.GL_CULL_FACE)
+        }
+        if (propBoxVbo != 0 && propBoxCount > 0) {
+            drawLit(progFlat, propBoxVbo, propBoxCount, sun, 1f, 1f, 1f)
+        }
+        // parked cars via the vehicle shader path (per-car uniforms, per-kind mesh)
+        if (propCars.isNotEmpty() && progBuilding != 0) {
+            GLES30.glUseProgram(progBuilding)
+            GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, carVbo)
+            bindAttribs(32)
+            GLES30.glUniformMatrix4fv(u(progBuilding, "uVP"), 1, false, vpM, 0)
+            GLES30.glUniform3f(u(progBuilding, "uSunDir"), sun.dir[0], sun.dir[1], sun.dir[2])
+            GLES30.glUniform3f(u(progBuilding, "uSunColor"), sun.color[0], sun.color[1], sun.color[2])
+            GLES30.glUniform3f(u(progBuilding, "uAmbient"), sun.ambient[0], sun.ambient[1], sun.ambient[2])
+            GLES30.glUniform3f(u(progBuilding, "uFogColor"), sun.horizon[0], sun.horizon[1], sun.horizon[2])
+            val eye = FloatArray(3)
+            camEye(eye)
+            GLES30.glUniform3f(u(progBuilding, "uCamPos"), eye[0], eye[1], eye[2])
+            GLES30.glUniform1f(u(progBuilding, "uDayFactor"), sun.dayFactor)
+            GLES30.glUniform1f(u(progBuilding, "uFogDensity"), sun.fogDensity)
+            GLES30.glActiveTexture(GLES30.GL_TEXTURE4)
+            GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, texCloudShadow)
+            GLES30.glUniform1i(u(progBuilding, "uCloudShadow"), 4)
+            GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
+            GLES30.glUniform1f(u(progBuilding, "uShadowStrength"), sun.cloudShadowStrength)
+            GLES30.glUniform3f(u(progBuilding, "uLightToward"), sun.cloudLightToward[0], sun.cloudLightToward[1], sun.cloudLightToward[2])
+            GLES30.glUniform1f(u(progBuilding, "uSelected"), 0f)
+            GLES30.glUniform1f(u(progBuilding, "uKind"), 9f) // vehicle mode
+            for (c in propCars) {
+                val vbo = if (c.van) vanVbo else carVbo
+                val count = if (c.van) vanCount else carCount
+                if (vbo == 0) continue
+                GLES30.glUniform3f(u(progBuilding, "uPos"), c.x, c.y, c.z)
+                GLES30.glUniform3f(u(progBuilding, "uScale"), c.sx, c.sy, c.sz)
+                GLES30.glUniform1f(u(progBuilding, "uYaw"), c.yaw)
+                GLES30.glUniform3f(u(progBuilding, "uColor"), c.r, c.g, c.b)
+                GLES30.glUniform1f(u(progBuilding, "uSeed"), c.seed.toFloat())
+                if (vbo != carVbo) {
+                    GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, vbo)
+                    bindAttribs(32)
+                }
+                GLES30.glDrawArrays(GLES30.GL_TRIANGLES, 0, count)
+            }
+            GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, 0)
+        }
+    }
+
     /** Collect vehicle lamp glares and refresh the WetLights 12-slot emitter feed. */
     private fun updateWetLights(sun: SunState, dt: Float) {
         val gl = wetLights.glares
@@ -938,6 +1001,7 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         drawBuildings(sun)
         drawVehicles(sun)
         drawLamps(sun)
+        drawProps(sun)
         drawPuddles(sun)
         drawWater(sun)
         drawClouds(sun)
@@ -2611,6 +2675,12 @@ class GlCityRenderer : GLSurfaceView.Renderer {
     @Volatile private var pendingLeafCards: List<LeafTextures.Card>? = null
     @Volatile private var pendingUnderAtlas: LeafTextures.Atlas? = null
     @Volatile private var pendingUnderMesh: Pair<FloatArray, IntArray>? = null
+    @Volatile private var pendingPropBoxes: FloatArray? = null
+    @Volatile private var pendingPropPits: FloatArray? = null
+    @Volatile private var pendingPropCarCount: Int = 0
+    private val propCarList = ArrayList<PropCar>()
+    private var treeInstTotal = 0
+    private val propStreetTreeList = ArrayList<FloatArray>()
     @Volatile private var pendingTreeMeshIdx: IntArray? = null
     @Volatile private var pendingTreeVerts: FloatArray? = null
     @Volatile private var pendingTreeInst: FloatArray? = null
@@ -2737,9 +2807,156 @@ class GlCityRenderer : GLSurfaceView.Renderer {
                 }
                 this.forest = forest
                 clusterNoise = SimplexNoise(hash2Signed(1337, 909))
+
+                // ---- the site's street furniture (PropScatter.segment over the demo roads) ----
+                val propSegs = demo.roads.mapIndexed { ri, r ->
+                    Props.Seg("d$ri", r.type, r.world, DemoCity.halfWidth(r.type).toDouble(),
+                        when (r.type) { "avenue" -> 9.0; "highway" -> 15.4; "path" -> 1.2; else -> 3.8 },
+                        when (r.type) { "avenue" -> 2.8; "local" -> 2.0; else -> 0.0 })
+                }
+                val propResult = Props.scatterStreet(1337, propSegs, 1.0,
+                    { x, z -> worldHeight.getHeight(x, z) },
+                    { x, z -> worldHeight.getHeight(x, z) < worldHeight.waterLevel },
+                    { x, z, pad ->
+                        for (b in demo.blocks) {
+                            val dx = x - b.x; val dz = z - b.z
+                            if (kotlin.math.abs(dx) + kotlin.math.abs(dz) > b.w / 2 + b.d / 2 + pad + 2) continue
+                            val c = cos(b.yaw.toDouble()); val sv = sin(b.yaw.toDouble())
+                            val lx = dx * c - dz * sv; val lz = dx * sv + dz * c
+                            if (kotlin.math.abs(lx) <= b.w / 2 + pad && kotlin.math.abs(lz) <= b.d / 2 + pad) return@scatterStreet true
+                        }
+                        false
+                    })
+                val propBoxes = ArrayList<Float>(8192)
+                val propPits = ArrayList<Float>(1024)
+                var extraTrees = 0
+                val streetTrees = ArrayList<FloatArray>() // x, z, yaw, s, r, g, b, kindIdx
+                val pc = floatArrayOf(0.35f, 0.24f, 0.16f) // bench wood
+                fun pushBoxW(arr: ArrayList<Float>, cx: Double, cy: Double, cz: Double,
+                             sx: Float, sy: Float, sz: Float, yaw: Double, col: FloatArray) {
+                    val c0 = cos(yaw).toFloat(); val s0 = sin(yaw).toFloat()
+                    val hx = sx / 2f; val hy = sy / 2f; val hz = sz / 2f
+                    val fx = cx.toFloat(); val fy = cy.toFloat(); val fz = cz.toFloat()
+                    val corners = arrayOf(
+                        floatArrayOf(-hx, -hy, hz), floatArrayOf(hx, -hy, hz), floatArrayOf(hx, hy, hz), floatArrayOf(-hx, hy, hz),
+                        floatArrayOf(hx, -hy, -hz), floatArrayOf(-hx, -hy, -hz), floatArrayOf(-hx, hy, -hz), floatArrayOf(hx, hy, -hz))
+                    // rotate corners into world space around yaw
+                    val wc = Array(8) { k ->
+                        val p = corners[k]
+                        floatArrayOf(fx + p[0] * c0 - p[2] * s0, fy + p[1], fz + p[0] * s0 + p[2] * c0)
+                    }
+                    val quad = intArrayOf(0, 1, 2, 0, 2, 3, 4, 6, 5, 4, 7, 6, 0, 4, 5, 0, 5, 1, 3, 2, 6, 3, 6, 7, 1, 5, 6, 1, 6, 2, 0, 3, 7, 0, 7, 4)
+                    for (ii in quad) {
+                        arr.add(wc[ii][0]); arr.add(wc[ii][1]); arr.add(wc[ii][2])
+                        arr.add(col[0]); arr.add(col[1]); arr.add(col[2])
+                        arr.add(0f); arr.add(0f)
+                    }
+                }
+                for (g in propResult.items) {
+                    val gy = worldHeight.getHeight(g.x, g.z)
+                    when (g.kind) {
+                        "tree_broad", "tree_broad_b", "tree_upright", "tree_upright_b", "tree_small", "tree_conifer" -> {
+                            val kindIdx = when (g.kind) {
+                                "tree_broad" -> 0; "tree_broad_b" -> 1; "tree_upright" -> 2; "tree_upright_b" -> 3
+                                "tree_small" -> 5; else -> 6
+                            }
+                            val t = g.tint
+                            streetTrees.add(floatArrayOf(g.x.toFloat(), g.z.toFloat(), g.yaw.toFloat(),
+                                g.s.toFloat(), t?.get(0)?.toFloat() ?: 0.66f, t?.get(1)?.toFloat() ?: 0.7f,
+                                t?.get(2)?.toFloat() ?: 0.58f, kindIdx.toFloat()))
+                        }
+                    }
+                    when (g.kind) {
+                        "tree_pit" -> {
+                            // flat dark mulch quad in the pit
+                            val c0 = cos(g.yaw).toFloat(); val s0 = sin(g.yaw).toFloat()
+                            val hw2 = 1.1f * g.s.toFloat(); val hd2 = 0.8f * g.s.toFloat()
+                            val corners = arrayOf(
+                                floatArrayOf(-hw2, 0f, -hd2), floatArrayOf(hw2, 0f, -hd2),
+                                floatArrayOf(hw2, 0f, hd2), floatArrayOf(-hw2, 0f, hd2))
+                            val pitY = (gy + 0.045).toFloat()
+                            val seq = intArrayOf(0, 1, 2, 0, 2, 3)
+                            for (ii in seq) {
+                                val p = corners[ii]
+                                propPits.add((g.x + p[0] * c0 - p[2] * s0).toFloat())
+                                propPits.add(pitY)
+                                propPits.add((g.z + p[0] * s0 + p[2] * c0).toFloat())
+                                propPits.add(0.16f); propPits.add(0.14f); propPits.add(0.12f)
+                                propPits.add(0f); propPits.add(0f)
+                            }
+                        }
+                        "tree_broad", "tree_broad_b", "tree_upright", "tree_upright_b", "tree_small", "tree_conifer" -> extraTrees++
+                        "bench" -> {
+                            pushBoxW(propBoxes, g.x, gy + 0.28, g.z, 1.8f, 0.12f, 0.5f, g.yaw, pc) // seat
+                            pushBoxW(propBoxes, g.x, gy + 0.55, g.z, 1.8f, 0.45f, 0.09f, g.yaw, pc) // back
+                            pushBoxW(propBoxes, g.x, gy + 0.12, g.z, 0.12f, 0.26f, 0.44f, g.yaw, floatArrayOf(0.2f, 0.2f, 0.21f)) // legs
+                        }
+                        "bin", "bin_rust" -> {
+                            val col = if (g.kind == "bin") floatArrayOf(0.19f, 0.26f, 0.22f) else floatArrayOf(0.42f, 0.26f, 0.16f)
+                            pushBoxW(propBoxes, g.x, gy + 0.45, g.z, 0.5f, 0.9f, 0.5f, g.yaw, col)
+                        }
+                        "hydrant", "hydrant_aged" -> {
+                            val col = if (g.kind == "hydrant") floatArrayOf(0.76f, 0.16f, 0.12f) else floatArrayOf(0.5f, 0.24f, 0.18f)
+                            pushBoxW(propBoxes, g.x, gy + 0.36, g.z, 0.3f, 0.72f, 0.3f, g.yaw, col)
+                            pushBoxW(propBoxes, g.x, gy + 0.76, g.z, 0.4f, 0.1f, 0.16f, g.yaw, col)
+                        }
+                        "planter" -> {
+                            pushBoxW(propBoxes, g.x, gy + 0.25, g.z, 1.4f, 0.5f, 0.8f, g.yaw, floatArrayOf(0.55f, 0.53f, 0.5f))
+                            pushBoxW(propBoxes, g.x, gy + 0.56, g.z, 1.3f, 0.2f, 0.7f, g.yaw, floatArrayOf(0.28f, 0.4f, 0.2f))
+                        }
+                        "cycle_stand" -> pushBoxW(propBoxes, g.x, gy + 0.4, g.z, 0.06f, 0.8f, 0.6f, g.yaw, floatArrayOf(0.45f, 0.47f, 0.5f))
+                        "news_box" -> pushBoxW(propBoxes, g.x, gy + 0.4, g.z, 0.5f, 0.8f, 0.45f, g.yaw, floatArrayOf(0.55f, 0.32f, 0.1f))
+                        "sign_post" -> pushBoxW(propBoxes, g.x, gy + 1.3, g.z, 0.08f, 2.6f, 0.08f, g.yaw, floatArrayOf(0.5f, 0.51f, 0.53f))
+                        "sign_speed30", "sign_speed50", "sign_priority", "sign_noparking", "sign_parking", "sign_crossing", "sign_busstop" -> {
+                            pushBoxW(propBoxes, g.x, gy + 2.45, g.z, 0.42f, 0.42f, 0.05f, g.yaw, floatArrayOf(0.85f, 0.82f, 0.2f))
+                        }
+                        "utility_box" -> pushBoxW(propBoxes, g.x, gy + 0.6, g.z, 0.9f, 1.2f, 0.5f, g.yaw, floatArrayOf(0.42f, 0.47f, 0.42f))
+                        "bus_shelter" -> {
+                            pushBoxW(propBoxes, g.x, gy + 1.2, g.z, 0.1f, 2.4f, 0.1f, g.yaw, floatArrayOf(0.3f, 0.32f, 0.35f))
+                            pushBoxW(propBoxes, g.x + 2.2 * cos(g.yaw), gy + 1.2, g.z + 2.2 * sin(g.yaw), 0.1f, 2.4f, 0.1f, g.yaw, floatArrayOf(0.3f, 0.32f, 0.35f))
+                            pushBoxW(propBoxes, g.x + 1.1 * cos(g.yaw), gy + 2.45, g.z + 1.1 * sin(g.yaw), 2.6f, 0.12f, 1.2f, g.yaw, floatArrayOf(0.25f, 0.27f, 0.3f))
+                        }
+                        "lamp_classic" -> {
+                            pushBoxW(propBoxes, g.x, gy + 2.1, g.z, 0.1f, 4.2f, 0.1f, g.yaw, floatArrayOf(0.16f, 0.22f, 0.18f))
+                            pushBoxW(propBoxes, g.x, gy + 4.25, g.z, 0.28f, 0.2f, 0.28f, g.yaw, floatArrayOf(0.9f, 0.75f, 0.5f))
+                        }
+                        "bush_a", "bush_b" -> {
+                            val t = g.tint
+                            pushBoxW(propBoxes, g.x, gy + 0.3, g.z, 0.8f * g.s.toFloat(), 0.62f * g.s.toFloat(), 0.8f * g.s.toFloat(), g.yaw,
+                                floatArrayOf(t?.get(0)?.toFloat() ?: 0.3f, t?.get(1)?.toFloat() ?: 0.4f, t?.get(2)?.toFloat() ?: 0.25f))
+                        }
+                    }
+                }
+                // parked cars (drawn like vehicles, tinted by the web carPalette hex)
+                for (g in propResult.items) {
+                    if (g.kind != "car_sedan" && g.kind != "car_hatch" && g.kind != "car_estate" && g.kind != "car_van") continue
+                    val hex = g.tintHex ?: 0xf2f3f4.toDouble()
+                    val rr = ((hex.toLong() shr 16) and 0xFF).toDouble() / 255.0
+                    val gg = ((hex.toLong() shr 8) and 0xFF).toDouble() / 255.0
+                    val bb = (hex.toLong() and 0xFF).toDouble() / 255.0
+                    val isVan = g.kind == "car_van"
+                    val scale = if (g.kind == "car_hatch") 0.88 else 1.0
+                    val carY = (worldHeight.getHeight(g.x, g.z) + 0.05).toFloat()
+                    propCars.add(PropCar(isVan, g.x.toFloat(), carY, g.z.toFloat(), g.yaw.toFloat(),
+                        scale.toFloat(), 1f, scale.toFloat(), rr.toFloat(), gg.toFloat(), bb.toFloat(), (g.x.hashCode() and 0xFFFF)))
+                }
+                val pbArr = FloatArray(propBoxes.size)
+                for (i in pbArr.indices) pbArr[i] = propBoxes[i]
+                pendingPropBoxes = pbArr
+                val ppArr = FloatArray(propPits.size)
+                for (i in ppArr.indices) ppArr[i] = propPits[i]
+                pendingPropPits = ppArr
+                pendingPropCarCount = propCars.size
+                propCarList.clear()
+                propCarList.addAll(propCars)
+                propTreeExtra = extraTrees
+                propStreetTreeList.clear()
+                propStreetTreeList.addAll(streetTrees)
+                Log.d(TAG, "props: ${propResult.items.size} items, $extraTrees street trees, ${propCars.size} parked cars")
+
                 // pack ALIVE trees only (Vegetation.update() skips !t.alive when writing instances)
                 val alive = trees.count { it.alive != 0 }
-                val inst = FloatArray(alive * 12)
+                val inst = FloatArray((alive + extraTrees) * 12)
                 var o = 0
                 for ((i, t) in trees.withIndex()) {
                     if (t.alive == 0) continue
@@ -2756,9 +2973,32 @@ class GlCityRenderer : GLSurfaceView.Renderer {
                     inst[o++] = t.b.toFloat()
                     inst[o++] = ((i * 2654435761L) and 0xFFFF).toFloat() / 65535f * 6.28f
                 }
+                // street trees from the props scatter (PropScatter kinds → the 9 palettes)
+                var propPacked = 0
+                for (g in propResult.items) {
+                    val kindIdx = when (g.kind) {
+                        "tree_broad" -> 0; "tree_broad_b" -> 1; "tree_upright" -> 2; "tree_upright_b" -> 3
+                        "tree_small" -> 5; "tree_conifer" -> 6
+                        else -> -1
+                    }
+                    if (kindIdx < 0) continue
+                    if (o + 12 > inst.size) break
+                    val gy = worldHeight.getHeight(g.x, g.z)
+                    inst[o++] = g.x.toFloat(); inst[o++] = (gy - 0.02).toFloat(); inst[o++] = g.z.toFloat()
+                    inst[o++] = g.yaw.toFloat()
+                    inst[o++] = (g.s * 0.9).toFloat(); inst[o++] = (g.s * 1.1).toFloat()
+                    inst[o++] = kindIdx.toFloat(); inst[o++] = 0f
+                    val t = g.tint
+                    inst[o++] = t?.get(0)?.toFloat() ?: 0.66f
+                    inst[o++] = t?.get(1)?.toFloat() ?: 0.7f
+                    inst[o++] = t?.get(2)?.toFloat() ?: 0.58f
+                    inst[o++] = ((propPacked * 40503L) and 0xFFFF).toFloat() / 65535f * 6.28f
+                    propPacked++
+                }
+                treeInstTotal = o / 12
                 pendingTreeInst = inst
                 pendingGfxUpload = true
-                Log.d(TAG, "world gfx computed in ${(System.nanoTime() - t0) / 1_000_000} ms (bg, trees ${trees.size}->${alive} alive)")
+                Log.d(TAG, "world gfx computed in ${(System.nanoTime() - t0) / 1_000_000} ms (bg, trees ${trees.size}->${alive} alive + $propPacked street trees)")
             } catch (e: Exception) {
                 Log.e(TAG, "world gfx build failed", e)
             }
@@ -2861,10 +3101,23 @@ class GlCityRenderer : GLSurfaceView.Renderer {
             underInstVbo = upload(FloatArray(1))
             underInstCount = 0
         }
+        val pb = pendingPropBoxes
+        if (pb != null && pb.isNotEmpty()) {
+            if (propBoxVbo != 0) GLES30.glDeleteBuffers(1, intArrayOf(propBoxVbo), 0)
+            propBoxVbo = upload(pb)
+            propBoxCount = pb.size / 8
+        }
+        val pp = pendingPropPits
+        if (pp != null && pp.isNotEmpty()) {
+            if (propPitVbo != 0) GLES30.glDeleteBuffers(1, intArrayOf(propPitVbo), 0)
+            propPitVbo = upload(pp)
+            propPitCount = pp.size / 8
+        }
         pendingLayerArrays = null; pendingCtrl = null; pendingNrm = null
         pendingTreeCanopy = null; pendingLeafCards = null; pendingTreeVerts = null
         pendingTreeMeshIdx = null; pendingTreeInst = null
         pendingUnderAtlas = null; pendingUnderMesh = null
+        pendingPropBoxes = null; pendingPropPits = null
         Log.d(TAG, "world gfx uploaded (splat ready=$splatReady, trees=$treeInstCount)")
     }
 
@@ -3037,7 +3290,7 @@ class GlCityRenderer : GLSurfaceView.Renderer {
     /** Repack tree instances after a runtime clear (Vegetation.update() skips !alive trees). */
     private fun repackTreeInstances() {
         val f = forest ?: return
-        val inst = FloatArray(f.aliveCount() * 12)
+        val inst = FloatArray((f.aliveCount() + propStreetTreeList.size) * 12)
         var o = 0
         for ((i, t) in f.trees.withIndex()) {
             if (t.alive == 0) continue
@@ -3046,6 +3299,14 @@ class GlCityRenderer : GLSurfaceView.Renderer {
             inst[o++] = t.kind.toFloat(); inst[o++] = 0f
             inst[o++] = t.r.toFloat(); inst[o++] = t.g.toFloat(); inst[o++] = t.b.toFloat()
             inst[o++] = ((i * 2654435761L) and 0xFFFF).toFloat() / 65535f * 6.28f
+        }
+        for ((k, st) in propStreetTreeList.withIndex()) {
+            val gy = terrainHeight(st[0], st[1])
+            inst[o++] = st[0]; inst[o++] = gy - 0.02f; inst[o++] = st[1]
+            inst[o++] = st[2]; inst[o++] = st[3] * 0.9f; inst[o++] = st[3] * 1.1f
+            inst[o++] = st[7]; inst[o++] = 0f
+            inst[o++] = st[4]; inst[o++] = st[5]; inst[o++] = st[6]
+            inst[o++] = ((k * 40503L) and 0xFFFF).toFloat() / 65535f * 6.28f
         }
         if (treeInstVbo != 0) {
             val tbuf = ByteBuffer.allocateDirect(inst.size * 4).order(ByteOrder.nativeOrder()).asFloatBuffer()
