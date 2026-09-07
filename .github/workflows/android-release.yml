@@ -120,6 +120,8 @@ jobs:
             # artifact/app-debug.apk after v4 strips the android/app/build root.
             ls -la artifact || true
             adb install -r artifact/app-debug.apk
+            # keep the immersive-mode confirmation ("Viewing full screen") out of the screenshots
+            adb shell settings put global immersive_mode_confirmations dismissed || true
             # ---- GATE 1: web-parity launcher (WebView + three.js, slow first boot on swiftshader) ----
             adb logcat -c
             adb shell am start -W -n com.fablecities.android/.ParityActivity
