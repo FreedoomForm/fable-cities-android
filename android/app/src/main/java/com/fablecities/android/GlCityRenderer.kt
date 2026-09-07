@@ -277,7 +277,7 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         buildTerrain()
         buildRoadMesh()
         buildPuddles()
-        buildTrees()
+        buildTreesAsync()
         loadBuildings()
         buildWater()
         buildStars()
@@ -465,6 +465,7 @@ class GlCityRenderer : GLSurfaceView.Renderer {
             Log.d("GlCityRenderer", "frame avg %.2f ms (p99 %.2f ms, ~%.0f fps)".format(fs[0], fs[1], 1000f / fs[0]))
         }
 
+        if (pendingTreeUpload) uploadTrees()
         pudTime += dt
         if (!paused) {
             hour += dt / 20f // World.js: secondsPerHour = 20 at speed 1
@@ -2064,7 +2065,82 @@ class GlCityRenderer : GLSurfaceView.Renderer {
             ByteBuffer.allocateDirect(nrm.size).put(nrm).position(0), true, true)
     }
 
-    /** The Vegetation.js forest: placement (bit-exact) + canopy re-bake of ctrl2.r + instanced cards. */
+    /** The Vegetation.js forest: placement (bit-exact) + canopy re-bake of ctrl2.r + instanced cards.
+     *  The CPU side (placement + canopy + leaf textures + instance packing) runs on a BACKGROUND
+     *  thread so the first world frame lands before it finishes; the uploads happen on the GL
+     *  thread when it reports done (pendingTreeUpload). */
+    @Volatile private var pendingTreeUpload = false
+    @Volatile private var pendingTreeVerts: FloatArray? = null
+    @Volatile private var pendingTreeCanopy: FloatArray? = null
+    @Volatile private var pendingLeafCards: List<LeafTextures.Card>? = null
+
+    private fun buildTreesAsync() {
+        val ctrl = ctrlData ?: return
+        val ctrl2 = ctrl2Data ?: return
+        Thread({
+            val t0 = System.nanoTime()
+            val ground = GroundControl(worldHeight, 1337)
+            val shore = WaterMath.computeShoreDistance(worldHeight)
+            val trees = Vegetation.distribute(
+                worldHeight, 1337, 1.0, worldHeight.half,
+                { x, z, h, slope -> ground.forestMask(x, z, h, slope) },
+                { x, z -> Vegetation.groundInfo(worldHeight, ctrl, ctrl2, TerrainGfx.CONTROL_RES, shore, x, z) },
+            )
+            val canopy = Vegetation.canopyCoverage(trees, worldHeight.half, TerrainGfx.CONTROL_RES)
+            val cards = LeafTextures.allPalettes(256, 1337)
+            // shared crossed-card mesh: 3 quads at 0/60/120 degrees, per-quad layer bias in pos.z
+            val verts = FloatArray(3 * 4 * 5)
+            val idx = IntArray(3 * 6)
+            var vo = 0
+            var io = 0
+            for (q in 0 until 3) {
+                val a = q * (Math.PI / 3.0)
+                val ca = cos(a).toFloat()
+                val sa = sin(a).toFloat()
+                val base = q * 4
+                val corners = floatArrayOf(-0.5f, 0f, 0.5f, 0f, 0.5f, 1f, -0.5f, 1f)
+                val uvs = floatArrayOf(0f, 0f, 1f, 0f, 1f, 1f, 0f, 1f)
+                for (v in 0 until 4) {
+                    val lx = corners[v * 2]
+                    val ly = corners[v * 2 + 1]
+                    verts[vo++] = lx * ca
+                    verts[vo++] = ly
+                    verts[vo++] = lx * sa
+                    verts[vo++] = uvs[v * 2]
+                    verts[vo++] = uvs[v * 2 + 1]
+                }
+                idx[io++] = base; idx[io++] = base + 1; idx[io++] = base + 2
+                idx[io++] = base; idx[io++] = base + 2; idx[io++] = base + 3
+            }
+            val inst = FloatArray(trees.size * 12)
+            var o = 0
+            for ((i, t) in trees.withIndex()) {
+                inst[o++] = t.x.toFloat()
+                inst[o++] = t.y.toFloat()
+                inst[o++] = t.z.toFloat()
+                inst[o++] = t.yaw.toFloat()
+                inst[o++] = t.sxz.toFloat()
+                inst[o++] = t.sy.toFloat()
+                inst[o++] = t.kind.toFloat()
+                inst[o++] = 0f
+                inst[o++] = t.r.toFloat()
+                inst[o++] = t.g.toFloat()
+                inst[o++] = t.b.toFloat()
+                inst[o++] = ((i * 2654435761L) and 0xFFFF).toFloat() / 65535f * 6.28f
+            }
+            pendingTreeCanopy = canopy
+            pendingLeafCards = cards
+            pendingTreeMeshIdx = idx
+            pendingTreeVerts = verts
+            pendingTreeInst = inst
+            pendingTreeUpload = true
+            Log.d(TAG, "trees: ${trees.size} computed in ${(System.nanoTime() - t0) / 1_000_000} ms (bg)")
+        }, "vegetation-build").start()
+    }
+
+    @Volatile private var pendingTreeMeshIdx: IntArray? = null
+    @Volatile private var pendingTreeInst: FloatArray? = null
+
     private fun buildTrees() {
         val ctrl = ctrlData ?: return
         val ctrl2 = ctrl2Data ?: return
@@ -2076,17 +2152,24 @@ class GlCityRenderer : GLSurfaceView.Renderer {
             { x, z, h, slope -> ground.forestMask(x, z, h, slope) },
             { x, z -> Vegetation.groundInfo(worldHeight, ctrl, ctrl2, TerrainGfx.CONTROL_RES, shore, x, z) },
         )
-        // the site re-bakes ctrl2.r (canopy) from the REAL crown coverage → forest floor only under canopy
-        val canopy = Vegetation.canopyCoverage(trees, worldHeight.half, TerrainGfx.CONTROL_RES)
+    }
+
+    /** GL-thread upload of the background-computed forest + the canopy re-bake of ctrl2.r. */
+    private fun uploadTrees() {
+        val canopy = pendingTreeCanopy ?: return
+        val cards = pendingLeafCards ?: return
+        val verts = pendingTreeVerts ?: return
+        val idx = pendingTreeMeshIdx ?: return
+        val inst = pendingTreeInst ?: return
+        val ctrl2 = ctrl2Data ?: return
+        pendingTreeCanopy = null; pendingLeafCards = null; pendingTreeVerts = null
+        pendingTreeMeshIdx = null; pendingTreeInst = null
+        pendingTreeUpload = false
         canopyData = canopy
-        val c2 = ctrl2
-        for (k in canopy.indices) c2[k * 4] = (255.0 * canopy[k]).toInt().toByte()
+        for (k in canopy.indices) ctrl2[k * 4] = (255.0 * canopy[k]).toInt().toByte()
         texControl2 = uploadTex2D(TerrainGfx.CONTROL_RES, TerrainGfx.CONTROL_RES, GLES30.GL_RGBA8,
             GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE,
-            ByteBuffer.allocateDirect(c2.size).put(c2).position(0), false, false)
-
-        // ---- leaf palettes ----
-        val cards = LeafTextures.allPalettes(256, 1337)
+            ByteBuffer.allocateDirect(ctrl2.size).put(ctrl2).position(0), false, false)
         for (i in 0 until 5) {
             val b = cards[i].bitmap
             val buf = java.nio.ByteBuffer.allocateDirect(b.byteCount).order(ByteOrder.nativeOrder())
@@ -2094,31 +2177,6 @@ class GlCityRenderer : GLSurfaceView.Renderer {
             buf.position(0)
             texLeaf[i] = uploadTex2D(256, 256, GLES30.GL_RGBA8, GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE,
                 buf, true, true)
-        }
-
-        // ---- shared crossed-card mesh: 3 quads at 0/60/120°, per-quad layer bias in pos.z ----
-        val verts = FloatArray(3 * 4 * 5)
-        val idx = IntArray(3 * 6)
-        var vo = 0
-        var io = 0
-        for (q in 0 until 3) {
-            val a = q * (PI / 3.0)
-            val ca = cos(a).toFloat()
-            val sa = sin(a).toFloat()
-            val base = q * 4
-            val corners = floatArrayOf(-0.5f, 0f, 0.5f, 0f, 0.5f, 1f, -0.5f, 1f)
-            val uvs = floatArrayOf(0f, 0f, 1f, 0f, 1f, 1f, 0f, 1f)
-            for (v in 0 until 4) {
-                val lx = corners[v * 2]
-                val ly = corners[v * 2 + 1]
-                verts[vo++] = lx * ca
-                verts[vo++] = ly
-                verts[vo++] = lx * sa
-                verts[vo++] = uvs[v * 2]
-                verts[vo++] = uvs[v * 2 + 1]
-            }
-            idx[io++] = base; idx[io++] = base + 1; idx[io++] = base + 2
-            idx[io++] = base; idx[io++] = base + 2; idx[io++] = base + 3
         }
         treeVbo = upload(verts)
         val idxBuf = ByteBuffer.allocateDirect(idx.size * 4).order(ByteOrder.nativeOrder())
@@ -2131,27 +2189,9 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         GLES30.glBindBuffer(GLES30.GL_ELEMENT_ARRAY_BUFFER, 0)
         treeIbo = ibo[0]
         treeIdxCount = idx.size
-
-        // ---- per-instance data: pos xyz, yaw | sxz, sy, kind, 0 | r, g, b, windPhase ----
-        val inst = FloatArray(trees.size * 12)
-        var o = 0
-        for ((i, t) in trees.withIndex()) {
-            inst[o++] = t.x.toFloat()
-            inst[o++] = t.y.toFloat()
-            inst[o++] = t.z.toFloat()
-            inst[o++] = t.yaw.toFloat()
-            inst[o++] = t.sxz.toFloat()
-            inst[o++] = t.sy.toFloat()
-            inst[o++] = t.kind.toFloat()
-            inst[o++] = 0f
-            inst[o++] = t.r.toFloat()
-            inst[o++] = t.g.toFloat()
-            inst[o++] = t.b.toFloat()
-            inst[o++] = ((i * 2654435761L) and 0xFFFF).toFloat() / 65535f * 6.28f
-        }
         treeInstVbo = upload(inst)
-        treeInstCount = trees.size
-        Log.d(TAG, "trees: $treeInstCount instances, canopy rebaked, ${(System.nanoTime() - t0) / 1_000_000} ms")
+        treeInstCount = inst.size / 12
+        Log.d(TAG, "trees: $treeInstCount instances uploaded, canopy rebaked")
     }
 
     /** the site's forest (Vegetation.js placement), instanced crossed cards with wind sway */
