@@ -9,6 +9,33 @@ permissions:
   contents: write
 
 jobs:
+  changes:
+    name: Detect web-source changes
+    runs-on: ubuntu-latest
+    outputs:
+      web: ${{ steps.c.outputs.web }}
+    steps:
+      - name: Check out commit
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - name: Did the web sources change?
+        id: c
+        run: |
+          set -e
+          BEFORE="${{ github.event.before }}"
+          if [ -n "$BEFORE" ] && [ "$BEFORE" != "0000000000000000000000000000000000000000" ] && git cat-file -e "$BEFORE" 2>/dev/null; then
+            CHANGED="$(git diff --name-only "$BEFORE" "$GITHUB_SHA" || true)"
+          else
+            CHANGED="$(git diff --name-only HEAD~1 HEAD 2>/dev/null || echo 'src/')"
+          fi
+          echo "changed: $CHANGED" | head -40
+          if echo "$CHANGED" | grep -qE '^(src/|public/|index.html|vite\.config\.js|package\.json|package-lock\.json|tools/check\.mjs|tools/shot\.mjs|tools/shotpage\.mjs|\.github/workflows/)'; then
+            echo "web=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "web=false" >> "$GITHUB_OUTPUT"
+          fi
+
   build-test:
     name: Build APK + unit tests
     runs-on: ubuntu-latest
@@ -192,6 +219,10 @@ jobs:
 
   web-check:
     name: Browser verification loop (check + screenshots)
+    needs: changes
+    # the APK bundles the web dist, but when the web sources are untouched the dist is
+    # byte-identical to the last browser-verified build — skip the soak to save the runner
+    if: needs.changes.outputs.web == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Check out commit
