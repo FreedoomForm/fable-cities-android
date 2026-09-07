@@ -49,6 +49,12 @@ class WetLights {
     private val lamps = ArrayList<DoubleArray>()
     private var lampTimer = -1.0
 
+    /** harvested lamp count / candidate vehicle-lamp count (the web's stats object) */
+    var statsLamps = 0
+        private set
+    var statsVehicles = 0
+        private set
+
     private val candidates = ArrayList<Emitter>()
 
     /** Re-read the street-lamp instances (the set only changes when the road network changes). */
@@ -58,6 +64,7 @@ class WetLights {
             if (l[1] < -5000.0) continue
             lamps.add(doubleArrayOf(l[0], l[1], l[2]))
         }
+        statsLamps = lamps.size
     }
 
     class VehicleGlares {
@@ -142,6 +149,8 @@ class WetLights {
             cand.add(e)
         }
 
+        // stats are taken BEFORE the frustum cull (the web reads cand.length right after the loops)
+        statsVehicles = cand.size - statsLamps
         // in-frustum wins — rank by the mirrored-camera angular deviation x p13 near-field
         // prominence; cosA < 0.2 (~78° off-axis) stays outside any framing
         cand.sortWith(compareByDescending<Emitter> { it.cosA * it.prom }.thenBy { it.d2 })
