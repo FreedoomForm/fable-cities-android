@@ -122,6 +122,7 @@ jobs:
             adb install -r artifact/app-debug.apk
             # keep the immersive-mode confirmation ("Viewing full screen") out of the screenshots
             adb shell settings put global immersive_mode_confirmations dismissed || true
+            adb shell settings put global policy_control immersive.full=* || true
             # ---- GATE 1: web-parity launcher (WebView + three.js, slow first boot on swiftshader) ----
             adb logcat -c
             adb shell am start -W -n com.fablecities.android/.ParityActivity
