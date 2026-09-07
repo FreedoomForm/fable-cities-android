@@ -14,6 +14,8 @@ object GLES30 {
     fun glPolygonOffset(factor: Float, units: Float): Unit = Unit
     fun glUniform1fv(location: Int, count: Int, value: FloatArray, offset: Int): Unit = Unit
     fun glDrawElements(mode: Int, count: Int, type: Int, offsets: Int): Unit = Unit
+    fun glVertexAttribDivisor(index: Int, divisor: Int): Unit = Unit
+    fun glDrawElementsInstanced(mode: Int, count: Int, type: Int, indices: Int, instanceCount: Int): Unit = Unit
     fun glTexParameterf(t: Int, pname: Int, param: Float): Unit = Unit
     fun glGetString(name: Int): String? = ""
     const val GL_ARRAY_BUFFER = 0x8892

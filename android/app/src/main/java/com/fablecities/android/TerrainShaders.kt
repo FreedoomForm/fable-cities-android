@@ -595,4 +595,109 @@ float fxPuddleField(vec2 xz) {
             fragColor = vec4(mix(col, uFogColor, fog), 1.0);
         }
     """.trimIndent()
+
+    // ---------------------------------------------------------------- trees ---------------------
+    // Instanced crossed-card trees carrying the Vegetation.js placement: per-instance pos/yaw/
+    // scale/colour, wind sway on the crown, wrap-lit canopy (normals lean towards the sky like
+    // the site's leaf material), cloud shadows, night fill, fog.
+
+    val VS_TREES = """
+        #version 300 es
+        layout(location=0) in vec3 aPos;      // card corner: x in [-0.5, 0.5], y in [0, 1], z = layer bias
+        layout(location=1) in vec2 aUv;
+        layout(location=2) in vec4 aInstA;    // x, y (ground), z, yaw
+        layout(location=3) in vec4 aInstB;    // sxz, sy, kind, 0
+        layout(location=4) in vec4 aInstC;    // r, g, b, windPhase
+        uniform mat4 uVP;
+        uniform float uTime;
+        uniform float uWindAmp;
+        out vec2 vUv;
+        out vec3 vWorld;
+        out vec3 vTint;
+        out float vKind;
+        flat out float vLayer;
+        void main() {
+            float yaw = aInstA.w;
+            float c = cos(yaw), s = sin(yaw);
+            vec3 p = aPos;
+            float sy = aInstB.y;
+            float sxz = aInstB.x;
+            // wind sway: the crown bends, the base does not (Vegetation.js windUniforms semantics)
+            float bend = pow(max(p.y, 0.0), 1.5) * uWindAmp;
+            float ph = aInstC.w + uTime * 1.35;
+            vec2 sway = vec2(sin(ph) + 0.4 * sin(ph * 2.33 + 1.7), cos(ph * 0.87) + 0.4 * sin(ph * 1.91)) * bend;
+            vec3 local = vec3(p.x * sxz, p.y * sy, p.z * 0.35);
+            vec3 world = vec3(
+                aInstA.x + local.x * c - local.z * s + sway.x,
+                aInstA.y + local.y + sway.y * 0.4,
+                aInstA.z + local.x * s + local.z * c + sway.y);
+            vWorld = world;
+            vUv = aUv;
+            vTint = aInstC.rgb;
+            vKind = aInstB.z;
+            vLayer = aPos.z;
+            gl_Position = uVP * vec4(world, 1.0);
+        }
+    """.trimIndent()
+
+    val FS_TREES = """
+        #version 300 es
+        precision highp float;
+        in vec2 vUv;
+        in vec3 vWorld;
+        in vec3 vTint;
+        in float vKind;
+        flat in float vLayer;
+        uniform vec3 uSunDir;
+        uniform vec3 uSunColor;
+        uniform vec3 uAmbient;
+        uniform vec3 uFogColor;
+        uniform float uFogDensity;
+        uniform vec3 uCamPos;
+        uniform sampler2D uLeafTex0;
+        uniform sampler2D uLeafTex1;
+        uniform sampler2D uLeafTex2;
+        uniform sampler2D uLeafTex3;
+        uniform sampler2D uLeafTex4;
+        uniform sampler2D uCloudShadow;
+        uniform float uShadowStrength;
+        uniform vec3 uLightToward;
+        uniform float uNight;
+        out vec4 fragColor;
+
+        vec4 leafSample(float kind) {
+            vec2 uv = vec2(vUv.x, 1.0 - vUv.y);
+            if (kind < 0.5) return texture(uLeafTex0, uv);
+            if (kind < 1.5) return texture(uLeafTex1, uv);
+            if (kind < 2.5) return texture(uLeafTex2, uv);
+            if (kind < 3.5) return texture(uLeafTex3, uv);
+            if (kind < 4.5) return texture(uLeafTex4, uv);
+            if (kind < 5.5) return texture(uLeafTex0, uv);
+            if (kind < 6.5) return texture(uLeafTex1, uv);
+            if (kind < 7.5) return texture(uLeafTex3, uv);
+            if (kind < 8.5) return texture(uLeafTex4, uv);
+            return texture(uLeafTex0, uv);
+        }
+
+        void main() {
+            vec4 tex = leafSample(vKind);
+            if (tex.a < 0.35) discard;
+            // canopy shading: cards lean their normal to the sky (the site's leaf material trick)
+            vec3 n = normalize(mix(vec3(0.0, 1.0, 0.0), vec3(0.0, 0.62, 0.55), 0.35 + 0.3 * abs(fract(vLayer * 7.13) - 0.5)));
+            float ndl = max(dot(n, uSunDir), 0.0);
+            float cs = 1.0;
+            if (uShadowStrength > 0.001) {
+                float t = (1000.0 - vWorld.y) / max(uLightToward.y, 0.05);
+                cs = texture(uCloudShadow, (vWorld.xz + uLightToward.xz * t) / 22000.0).r;
+            }
+            // cheap wrap transmission so backlit foliage glows (makeLeafMaterial wrap term)
+            float wrap = clamp((dot(n, uSunDir) + 0.4) / 1.4, 0.0, 1.0);
+            vec3 col = tex.rgb * vTint * (uAmbient * (0.75 + 0.5 * n.y) + uSunColor * mix(ndl, wrap, 0.35) * cs);
+            // night: foliage sinks into the sky fill like everything else
+            col = mix(col, tex.rgb * vTint * uAmbient * 1.15, uNight * 0.75);
+            float d = length(uCamPos - vWorld);
+            float fog = 1.0 - exp(-d * uFogDensity);
+            fragColor = vec4(mix(col, uFogColor, fog), 1.0);
+        }
+    """.trimIndent()
 }

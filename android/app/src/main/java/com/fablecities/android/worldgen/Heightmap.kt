@@ -117,6 +117,21 @@ class Heightmap(val size: Int = 2048, val spacing: Int = 2, seed: Int = 1337) {
     private var outerGrid: CoarseGrid? = null
     private var farGrid: CoarseGrid? = null
 
+    /** Direct read of the 8 m outer horizon grid (Vegetation.js reads hm.outer.getHeight). */
+    fun outerHeight(x: Double, z: Double): Double {
+        if (outerGrid == null) buildOuterGrids()
+        return outerGrid!!.getHeight(x, z)
+    }
+
+    /** getSlope over getHeightAny (Heightmap.js getSlopeAny) — distance-adaptive stencil. */
+    fun getSlopeAny(x: Double, z: Double): Double {
+        val r = max(abs(x), abs(z))
+        val e = if (r <= half) spacing.toDouble() else if (r <= half * 2.0) 8.0 else 32.0
+        val dx = (getHeightAny(x + e, z) - getHeightAny(x - e, z)) / (2.0 * e)
+        val dz = (getHeightAny(x, z + e) - getHeightAny(x, z - e)) / (2.0 * e)
+        return 1.0 - 1.0 / sqrt(1.0 + dx * dx + dz * dz)
+    }
+
     /** Heightmap.js _buildOuterGrids — coarse horizon rings outside the playable map. */
     private fun buildOuterGrids() {
         val outer = CoarseGrid(8, half * 2.0)

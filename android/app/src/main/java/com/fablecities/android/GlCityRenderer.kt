@@ -9,7 +9,9 @@ import com.fablecities.android.worldgen.CloudShadowMap
 import com.fablecities.android.worldgen.Clouds
 import com.fablecities.android.worldgen.Environment
 import com.fablecities.android.worldgen.WeatherPresets
+import com.fablecities.android.worldgen.GroundControl
 import com.fablecities.android.worldgen.Heightmap
+import com.fablecities.android.worldgen.Vegetation
 import com.fablecities.android.worldgen.PuddleField
 import com.fablecities.android.worldgen.Rng
 import com.fablecities.android.worldgen.RoadNetBuilder
@@ -126,6 +128,13 @@ class GlCityRenderer : GLSurfaceView.Renderer {
     // --- volumetric clouds (CloudLayer + CloudShadowMap): baked CPU textures + raymarch dome ---
     private var progClouds = 0
     private var progPuddle = 0
+    private var progTrees = 0
+    private var treeVbo = 0
+    private var treeIbo = 0
+    private var treeIdxCount = 0
+    private var treeInstVbo = 0
+    private var treeInstCount = 0
+    private val texLeaf = IntArray(5)
     private var pudVbo = 0
     private var pudIbo = 0
     private var pudIdxCount = 0
@@ -154,6 +163,9 @@ class GlCityRenderer : GLSurfaceView.Renderer {
     private var texControl2 = 0
     private var texTNormal = 0
     private var texDrainage = 0
+    private var ctrlData: ByteArray? = null
+    private var ctrl2Data: ByteArray? = null
+    private var canopyData: FloatArray? = null
     /** application context — needed to decode the splat layer JPEGs from the APK assets */
     @Volatile var appContext: android.content.Context? = null
     private var texStars = 0
@@ -237,6 +249,7 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         progPrecip = buildProgram(VS_PRECIP, FS_PRECIP, "precip")
         progClouds = buildProgram(VS_SKY, FS_CLOUDS, "clouds")
         progPuddle = buildProgram(TerrainShaders.VS_PUDDLE, TerrainShaders.FS_PUDDLE, "puddle")
+        progTrees = buildProgram(TerrainShaders.VS_TREES, TerrainShaders.FS_TREES, "trees")
         buildPrecipBuffer()
         buildCloudTextures()
 
@@ -264,6 +277,7 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         buildTerrain()
         buildRoadMesh()
         buildPuddles()
+        buildTrees()
         loadBuildings()
         buildWater()
         buildStars()
@@ -493,6 +507,7 @@ class GlCityRenderer : GLSurfaceView.Renderer {
 
         drawTerrain(sun)
         drawCityGround(sun)
+        drawTrees(sun)
         drawEditQuads(sun)
         drawBuildings(sun)
         drawVehicles(sun)
@@ -546,6 +561,7 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         var skyFog = 0f           // dome dissolve into the luminous fog colour (0 clear .. 0.92 fog)
         var fogSunGlow = 0f       // forward-scatter sun glow through the medium (uFogSun.w = x0.8)
         var wetness = 0f          // weather.wetness * (1 - snowCover) — wet-surface darkening
+        var windStrength = 0f     // weather.windStrength — tree sway driver
         var snowCover = 0f        // snow accumulation — ground whitening
         var precip = 0f           // smoothed rain|snow — particle system alpha
         var precipMode = 0f       // 0 rain, 1 snow (by the dominant type)
@@ -658,6 +674,7 @@ class GlCityRenderer : GLSurfaceView.Renderer {
             sun.skyFog = st.skyFog.toFloat()
             sun.fogSunGlow = (st.fogSunGlow * 0.8).toFloat()
             sun.wetness = st.wetness.toFloat()
+            sun.windStrength = weather.windStrength.toFloat()
             sun.snowCover = st.snowCover.toFloat()
             sun.precip = weather.precipitation.toFloat()
             sun.precipMode = if (weather.snowCover >= weather.wetness && weather.snowCover > 0.02) 1f else 0f
@@ -2036,16 +2053,154 @@ class GlCityRenderer : GLSurfaceView.Renderer {
             Log.w(TAG, "no appContext — splat layers unavailable")
         }
         val (ctrl, ctrl2) = TerrainGfx.bakeControlMaps(worldHeight, 1337)
+        ctrlData = ctrl
+        ctrl2Data = ctrl2
         texControl = uploadTex2D(TerrainGfx.CONTROL_RES, TerrainGfx.CONTROL_RES, GLES30.GL_RGBA8,
             GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE,
             ByteBuffer.allocateDirect(ctrl.size).put(ctrl).position(0), false, false)
-        texControl2 = uploadTex2D(TerrainGfx.CONTROL_RES, TerrainGfx.CONTROL_RES, GLES30.GL_RGBA8,
-            GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE,
-            ByteBuffer.allocateDirect(ctrl2.size).put(ctrl2).position(0), false, false)
         val nrm = TerrainGfx.bakeNormalMap(worldHeight)
         texTNormal = uploadTex2D(worldHeight.N - 1, worldHeight.N - 1, GLES30.GL_RGBA8,
             GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE,
             ByteBuffer.allocateDirect(nrm.size).put(nrm).position(0), true, true)
+    }
+
+    /** The Vegetation.js forest: placement (bit-exact) + canopy re-bake of ctrl2.r + instanced cards. */
+    private fun buildTrees() {
+        val ctrl = ctrlData ?: return
+        val ctrl2 = ctrl2Data ?: return
+        val ground = GroundControl(worldHeight, 1337)
+        val shore = WaterMath.computeShoreDistance(worldHeight)
+        val t0 = System.nanoTime()
+        val trees = Vegetation.distribute(
+            worldHeight, 1337, 1.0, worldHeight.half,
+            { x, z, h, slope -> ground.forestMask(x, z, h, slope) },
+            { x, z -> Vegetation.groundInfo(worldHeight, ctrl, ctrl2, TerrainGfx.CONTROL_RES, shore, x, z) },
+        )
+        // the site re-bakes ctrl2.r (canopy) from the REAL crown coverage → forest floor only under canopy
+        val canopy = Vegetation.canopyCoverage(trees, worldHeight.half, TerrainGfx.CONTROL_RES)
+        canopyData = canopy
+        val c2 = ctrl2
+        for (k in canopy.indices) c2[k * 4] = (255.0 * canopy[k]).toInt().toByte()
+        texControl2 = uploadTex2D(TerrainGfx.CONTROL_RES, TerrainGfx.CONTROL_RES, GLES30.GL_RGBA8,
+            GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE,
+            ByteBuffer.allocateDirect(c2.size).put(c2).position(0), false, false)
+
+        // ---- leaf palettes ----
+        val cards = LeafTextures.allPalettes(256, 1337)
+        for (i in 0 until 5) {
+            val b = cards[i].bitmap
+            val buf = java.nio.ByteBuffer.allocateDirect(b.byteCount).order(ByteOrder.nativeOrder())
+            b.copyPixelsToBuffer(buf)
+            buf.position(0)
+            texLeaf[i] = uploadTex2D(256, 256, GLES30.GL_RGBA8, GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE,
+                buf, true, true)
+        }
+
+        // ---- shared crossed-card mesh: 3 quads at 0/60/120°, per-quad layer bias in pos.z ----
+        val verts = FloatArray(3 * 4 * 5)
+        val idx = IntArray(3 * 6)
+        var vo = 0
+        var io = 0
+        for (q in 0 until 3) {
+            val a = q * (PI / 3.0)
+            val ca = cos(a).toFloat()
+            val sa = sin(a).toFloat()
+            val base = q * 4
+            val corners = floatArrayOf(-0.5f, 0f, 0.5f, 0f, 0.5f, 1f, -0.5f, 1f)
+            val uvs = floatArrayOf(0f, 0f, 1f, 0f, 1f, 1f, 0f, 1f)
+            for (v in 0 until 4) {
+                val lx = corners[v * 2]
+                val ly = corners[v * 2 + 1]
+                verts[vo++] = lx * ca
+                verts[vo++] = ly
+                verts[vo++] = lx * sa
+                verts[vo++] = uvs[v * 2]
+                verts[vo++] = uvs[v * 2 + 1]
+            }
+            idx[io++] = base; idx[io++] = base + 1; idx[io++] = base + 2
+            idx[io++] = base; idx[io++] = base + 2; idx[io++] = base + 3
+        }
+        treeVbo = upload(verts)
+        val idxBuf = ByteBuffer.allocateDirect(idx.size * 4).order(ByteOrder.nativeOrder())
+        for (v in idx) idxBuf.putInt(v)
+        idxBuf.position(0)
+        val ibo = IntArray(1)
+        GLES30.glGenBuffers(1, ibo, 0)
+        GLES30.glBindBuffer(GLES30.GL_ELEMENT_ARRAY_BUFFER, ibo[0])
+        GLES30.glBufferData(GLES30.GL_ELEMENT_ARRAY_BUFFER, idx.size * 4, idxBuf, GLES30.GL_STATIC_DRAW)
+        GLES30.glBindBuffer(GLES30.GL_ELEMENT_ARRAY_BUFFER, 0)
+        treeIbo = ibo[0]
+        treeIdxCount = idx.size
+
+        // ---- per-instance data: pos xyz, yaw | sxz, sy, kind, 0 | r, g, b, windPhase ----
+        val inst = FloatArray(trees.size * 12)
+        var o = 0
+        for ((i, t) in trees.withIndex()) {
+            inst[o++] = t.x.toFloat()
+            inst[o++] = t.y.toFloat()
+            inst[o++] = t.z.toFloat()
+            inst[o++] = t.yaw.toFloat()
+            inst[o++] = t.sxz.toFloat()
+            inst[o++] = t.sy.toFloat()
+            inst[o++] = t.kind.toFloat()
+            inst[o++] = 0f
+            inst[o++] = t.r.toFloat()
+            inst[o++] = t.g.toFloat()
+            inst[o++] = t.b.toFloat()
+            inst[o++] = ((i * 2654435761L) and 0xFFFF).toFloat() / 65535f * 6.28f
+        }
+        treeInstVbo = upload(inst)
+        treeInstCount = trees.size
+        Log.d(TAG, "trees: $treeInstCount instances, canopy rebaked, ${(System.nanoTime() - t0) / 1_000_000} ms")
+    }
+
+    /** the site's forest (Vegetation.js placement), instanced crossed cards with wind sway */
+    private fun drawTrees(sun: SunState) {
+        if (progTrees == 0 || treeVbo == 0 || treeInstVbo == 0 || treeInstCount == 0) return
+        GLES30.glUseProgram(progTrees)
+        GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, treeVbo)
+        GLES30.glEnableVertexAttribArray(0)
+        GLES30.glVertexAttribPointer(0, 3, GLES30.GL_FLOAT, false, 20, 0)
+        GLES30.glEnableVertexAttribArray(1)
+        GLES30.glVertexAttribPointer(1, 2, GLES30.GL_FLOAT, false, 20, 12)
+        GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, treeInstVbo)
+        GLES30.glEnableVertexAttribArray(2)
+        GLES30.glVertexAttribPointer(2, 4, GLES30.GL_FLOAT, false, 48, 0)
+        GLES30.glVertexAttribDivisor(2, 1)
+        GLES30.glEnableVertexAttribArray(3)
+        GLES30.glVertexAttribPointer(3, 4, GLES30.GL_FLOAT, false, 48, 16)
+        GLES30.glVertexAttribDivisor(3, 1)
+        GLES30.glEnableVertexAttribArray(4)
+        GLES30.glVertexAttribPointer(4, 4, GLES30.GL_FLOAT, false, 48, 32)
+        GLES30.glVertexAttribDivisor(4, 1)
+        val eye = FloatArray(3)
+        camEye(eye)
+        GLES30.glUniformMatrix4fv(u(progTrees, "uVP"), 1, false, vpM, 0)
+        GLES30.glUniform1f(u(progTrees, "uTime"), pudTime)
+        GLES30.glUniform1f(u(progTrees, "uWindAmp"), 0.06f + sun.windStrength * 0.5f)
+        GLES30.glUniform3f(u(progTrees, "uSunDir"), sun.dir[0], sun.dir[1], sun.dir[2])
+        GLES30.glUniform3f(u(progTrees, "uSunColor"), sun.color[0], sun.color[1], sun.color[2])
+        GLES30.glUniform3f(u(progTrees, "uAmbient"), sun.ambient[0], sun.ambient[1], sun.ambient[2])
+        GLES30.glUniform3f(u(progTrees, "uFogColor"), sun.horizon[0], sun.horizon[1], sun.horizon[2])
+        GLES30.glUniform1f(u(progTrees, "uFogDensity"), sun.fogDensity)
+        GLES30.glUniform3f(u(progTrees, "uCamPos"), eye[0], eye[1], eye[2])
+        GLES30.glUniform1f(u(progTrees, "uNight"), sun.nightFactor)
+        GLES30.glUniform1f(u(progTrees, "uShadowStrength"), sun.cloudShadowStrength)
+        GLES30.glUniform3f(u(progTrees, "uLightToward"), sun.cloudLightToward[0], sun.cloudLightToward[1], sun.cloudLightToward[2])
+        for (i in 0 until 5) {
+            GLES30.glActiveTexture(GLES30.GL_TEXTURE0 + i)
+            GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, texLeaf[i])
+            GLES30.glUniform1i(u(progTrees, "uLeafTex$i"), i)
+        }
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE5)
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, texCloudShadow)
+        GLES30.glUniform1i(u(progTrees, "uCloudShadow"), 5)
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
+        GLES30.glBindBuffer(GLES30.GL_ELEMENT_ARRAY_BUFFER, treeIbo)
+        GLES30.glDrawElementsInstanced(GLES30.GL_TRIANGLES, treeIdxCount, GLES30.GL_UNSIGNED_INT, 0, treeInstCount)
+        GLES30.glBindBuffer(GLES30.GL_ELEMENT_ARRAY_BUFFER, 0)
+        for (loc in 2..4) GLES30.glVertexAttribDivisor(loc, 0)
+        GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, 0)
     }
 
     /** effects/PuddleField.js: drainage raster + merged feathered pool discs from the demo roads. */
