@@ -10,6 +10,7 @@ import com.fablecities.android.worldgen.Clouds
 import com.fablecities.android.worldgen.Environment
 import com.fablecities.android.worldgen.WeatherPresets
 import com.fablecities.android.worldgen.Heightmap
+import com.fablecities.android.worldgen.PuddleField
 import com.fablecities.android.worldgen.Rng
 import com.fablecities.android.worldgen.RoadNetBuilder
 import com.fablecities.android.worldgen.SimBuilding
@@ -124,6 +125,12 @@ class GlCityRenderer : GLSurfaceView.Renderer {
     )
     // --- volumetric clouds (CloudLayer + CloudShadowMap): baked CPU textures + raymarch dome ---
     private var progClouds = 0
+    private var progPuddle = 0
+    private var pudVbo = 0
+    private var pudIbo = 0
+    private var pudIdxCount = 0
+    private var pudTime = 0f
+    private var pudDrainXf = FloatArray(4) // originX, originZ, 1/spanMetres, hasMap (PuddleField.js)
     private var texCloudNoise = 0 // 64³ RGBA8 Perlin-Worley (GL_TEXTURE_3D)
     private var texCloudWeather = 0
     private var texCloudCirrus = 0
@@ -141,6 +148,14 @@ class GlCityRenderer : GLSurfaceView.Renderer {
     private var texShore = 0
     private var texNoise = 0
     private var texWNormal = 0
+    private var texAlbedoArr = 0
+    private var texNormalArr = 0
+    private var texControl = 0
+    private var texControl2 = 0
+    private var texTNormal = 0
+    private var texDrainage = 0
+    /** application context — needed to decode the splat layer JPEGs from the APK assets */
+    @Volatile var appContext: android.content.Context? = null
     private var texStars = 0
     private var texMoon = 0
     private val starRotM = FloatArray(9) // world → celestial frame (uStarRot)
@@ -214,13 +229,14 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         GLES30.glCullFace(GLES30.GL_BACK)
         GLES30.glClearColor(0.03f, 0.05f, 0.08f, 1f)
 
-        progTerrain = buildProgram(VS_LIT, FS_LIT, "terrain")
-        progFlat = buildProgram(VS_LIT, FS_LIT, "flat")
+        progTerrain = buildProgram(TerrainShaders.VS_TERRAIN, TerrainShaders.FS_TERRAIN, "terrain")
+        progFlat = buildProgram(VS_LIT, TerrainShaders.FS_LIT_WET, "flat")
         progBuilding = buildProgram(VS_BUILDING, FS_BUILDING, "building")
         progWater = buildProgram(VS_WATER, FS_WATER, "water")
         progSky = buildProgram(VS_SKY, FS_SKY, "sky")
         progPrecip = buildProgram(VS_PRECIP, FS_PRECIP, "precip")
         progClouds = buildProgram(VS_SKY, FS_CLOUDS, "clouds")
+        progPuddle = buildProgram(TerrainShaders.VS_PUDDLE, TerrainShaders.FS_PUDDLE, "puddle")
         buildPrecipBuffer()
         buildCloudTextures()
 
@@ -244,8 +260,10 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         camYawGoal = camYaw
         camPitch = 0.85f; camPitchGoal = 0.85f
         camDist = 430f; camDistGoal = 430f
+        buildTerrainSplat()
         buildTerrain()
         buildRoadMesh()
+        buildPuddles()
         loadBuildings()
         buildWater()
         buildStars()
@@ -433,6 +451,7 @@ class GlCityRenderer : GLSurfaceView.Renderer {
             Log.d("GlCityRenderer", "frame avg %.2f ms (p99 %.2f ms, ~%.0f fps)".format(fs[0], fs[1], 1000f / fs[0]))
         }
 
+        pudTime += dt
         if (!paused) {
             hour += dt / 20f // World.js: secondsPerHour = 20 at speed 1
             if (hour >= 24f) {
@@ -477,6 +496,7 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         drawEditQuads(sun)
         drawBuildings(sun)
         drawVehicles(sun)
+        drawPuddles(sun)
         drawWater(sun)
         drawClouds(sun)
         drawPrecipitation(sun)
@@ -837,98 +857,15 @@ class GlCityRenderer : GLSurfaceView.Renderer {
                 val z0 = -mapHalf + j * step
                 val x1 = x0 + step
                 val z1 = z0 + step
-                // two triangles, positions + colors (pos3, col3, padded to 8 floats: pos3 col3 nY1 pad1)
+                // two triangles; the 8-layer splat fragment shader owns the colour now
+                // (the CPU terrainColor() approximation was retired with the splat port)
                 o = emitQuad(data, o,
                     x0, terrainHeight(x0, z0), z0, x1, terrainHeight(x1, z0), z0,
-                    x1, terrainHeight(x1, z1), z1, x0, terrainHeight(x0, z1), z1, true)
+                    x1, terrainHeight(x1, z1), z1, x0, terrainHeight(x0, z1), z1)
             }
         }
         terrainCount = o / 8
         terrainVbo = upload(data)
-    }
-
-    private fun terrainColor(x: Float, z: Float, h: Float, out: FloatArray, off: Int) {
-        // Ground palette rules ported from the site's TerrainMaterial.js splat shader: the exact
-        // tint constants (olive meadow / straw grass, damp bank soil, ochre->granite rock strata,
-        // ragged sand, silt bed, wandering snow line at 172 m) driven by the real heightfield.
-        val n1 = fbm(x * 0.0105f + 11.7f, z * 0.0105f - 5.3f)   // ~95 m macro cover patches (nzMacro)
-        val n2 = fbm(x * 0.0233f - 7.1f, z * 0.0233f + 13.9f)   // ~43 m mid mottling (nzMid)
-        val n3 = fbm(x * 0.00233f + 3.1f, z * 0.00233f - 9.7f)  // ~430 m regional colour (nzReg)
-        val nH = fbm(x * 0.00087f + 21.3f, z * 0.00087f + 4.9f) // ~1150 m huge (nzHuge)
-
-        // slope (1 - normal.y) from central differences of the real heightfield
-        val e = 4f
-        val dhx = (terrainHeight(x + e, z) - terrainHeight(x - e, z)) / (2 * e)
-        val dhz = (terrainHeight(x, z + e) - terrainHeight(x, z - e)) / (2 * e)
-        val invLen = 1f / sqrt(1f + dhx * dhx + dhz * dhz)
-        val slope = 1f - invLen
-        val northness = (dhz * invLen * 2.5f).coerceIn(0f, 1f) * smooth01((slope - 0.06f) / 0.19f)
-
-        // regional colour drift: cool damp green <-> warm olive/khaki (site region mix)
-        val regionMix = smooth01((n3 * 0.65f + nH * 0.35f - 0.30f) / 0.42f)
-        val regionR = lerpF(0.95f, 1.03f, regionMix) * (0.96f + 0.08f * n3)
-        val regionG = 1.00f * (0.96f + 0.08f * n3)
-        val regionB = lerpF(0.94f, 0.90f, regionMix) * (0.96f + 0.08f * n3)
-
-        // grass: olive meadow <-> straw in 30-95 m patches
-        val grassT = smooth01((n1 * 0.7f + 0.15f - 0.30f) / 0.48f)
-        var r = lerpF(0.44f, 0.60f, grassT) * regionR
-        var g = lerpF(0.50f, 0.58f, grassT) * regionG
-        var b = lerpF(0.32f, 0.37f, grassT) * regionB
-
-        // weights (site thresholds): rock from ~36 deg, solid by ~53, jittered by noise
-        val jitter = (n2 - 0.5f) * 0.10f
-        val rockSlope = smooth01((slope - (0.19f + jitter)) / 0.21f) *
-            smooth01((0.42f + 0.8f * (n2 - 0.5f) + 0.6f * (n1 - 0.5f) - 0.20f) / 0.46f)
-        val rock = (rockSlope * lerpF(0.62f, 1f, smooth01((h - 14f) / 28f))).coerceIn(0f, 1f)
-
-        // sand: ragged noise-broken fingers at the waterline, flat ground only
-        val sandBreak = smooth01((0.35f + 0.42f * (n2 - 0.5f) + 0.34f * (n1 - 0.5f)) / 0.37f)
-        val sand = if (h > 0f) sandBreak * (1f - smooth01((slope - 0.10f) / 0.14f)) *
-            (1f - smooth01((h - 0.10f) / 0.14f)) else 0f
-        // silt bed below the waterline, wet darkening band at the waterline
-        val bed = if (h < 0f) smooth01((0.15f - h) / 2.35f) else 0f
-        val wMud = (bed * 0.55f * (1f - sand)).coerceIn(0f, 1f)
-        val wSand = (sand * (1f - wMud)).coerceIn(0f, 1f)
-        val wRock = rock.coerceIn(0f, 1f)
-        val rest = (1f - wMud - wSand - wRock).coerceIn(0f, 1f)
-
-        // rock: warm ochre low, cool granite high, horizontal strata bands
-        val rockMix = (smooth01((nH + 0.35f * (n2 - 0.5f) - 0.35f) / 0.30f) * 0.6f +
-            0.55f * smooth01((h - 30f) / 120f)).coerceIn(0f, 1f)
-        val rockR = lerpF(0.86f, 0.92f, rockMix) * lerpF(0.90f, 1.10f, n1)
-        val rockG = lerpF(0.79f, 0.90f, rockMix) * lerpF(0.90f, 1.10f, n1)
-        val rockB = lerpF(0.66f, 0.93f, rockMix) * lerpF(0.90f, 1.10f, n1)
-        val strataF = smooth01((slope - 0.3f) / 0.25f)
-        val strata = 1f - (0.16f) * strataF + 0.30f * strataF * smooth01(((h * 0.11f + n2 * 0.5f) % 1f) / 0.5f)
-        val sandR = lerpF(0.44f, 0.58f, n1) * regionR
-        val sandG = lerpF(0.40f, 0.53f, n1) * regionG
-        val sandB = lerpF(0.33f, 0.43f, n1) * regionB
-        val mudR = 0.52f; val mudG = 0.48f; val mudB = 0.40f
-
-        // snow: line wanders ±100/44 m around 172 m, lower on north faces, none on cliffs
-        val snowLine = 172f + 100f * (n1 - 0.5f) + 44f * (nH - 0.5f) - 25f * northness
-        val snowSlope = 1f - smooth01((slope + 0.16f * (n2 - 0.5f) - 0.16f) / 0.46f)
-        val snow = smooth01((h - (snowLine - 70f)) / 150f) * snowSlope
-        val snowW = (snow * (1f - 0.42f * wRock)).coerceIn(0f, 1f)
-        val keep = 1f - snowW
-
-        // blend layers (grass fills the rest)
-        r = r * rest + rockR * wRock * strata + sandR * wSand + mudR * wMud
-        g = g * rest + rockG * wRock * strata + sandG * wSand + mudG * wMud
-        b = b * rest + rockB * wRock * strata + sandB * wSand + mudB * wMud
-        // snow replaces everything but a little rock
-        val snowShade = 0.84f + 0.16f * n2
-        val scR = 0.74f * snowShade; val scG = 0.78f * snowShade; val scB = 0.85f * snowShade
-        r = lerpF(r * keep, scR, snowW)
-        g = lerpF(g * keep, scG, snowW)
-        b = lerpF(b * keep, scB, snowW)
-        // wet band: darken whatever lies at the waterline
-        val wetK = (1f - smooth01((h - 0.15f) / (2.05f + 1.3f * n2))) * smooth01((h + 1.1f) / 1.05f)
-        val dark = 1f - 0.38f * wetK
-        out[off] = (r * dark).coerceIn(0f, 1f)
-        out[off + 1] = (g * dark).coerceIn(0f, 1f)
-        out[off + 2] = (b * dark).coerceIn(0f, 1f)
     }
 
     private fun smooth01(v: Float): Float {
@@ -940,26 +877,16 @@ class GlCityRenderer : GLSurfaceView.Renderer {
 
     private fun emitQuad(data: FloatArray, o0: Int,
                          ax: Float, ay: Float, az: Float, bx: Float, by: Float, bz: Float,
-                         cx: Float, cy: Float, cz: Float, dx: Float, dy: Float, dz: Float,
-                         colored: Boolean): Int {
-        val c = FloatArray(3)
+                         cx: Float, cy: Float, cz: Float, dx: Float, dy: Float, dz: Float): Int {
         var o = o0
         val tris = arrayOf(
             floatArrayOf(ax, ay, az, bx, by, bz, cx, cy, cz),
             floatArrayOf(ax, ay, az, cx, cy, cz, dx, dy, dz)
         )
         for (t in tris) {
-            var sx = 0f; var sz = 0f
-            for (k in 0 until 3) sx += t[k * 3] / 3f
-            for (k in 0 until 3) sz += t[k * 3 + 2] / 3f
             for (k in 0 until 3) {
                 data[o] = t[k * 3]; data[o + 1] = t[k * 3 + 1]; data[o + 2] = t[k * 3 + 2]
-                if (colored) {
-                    terrainColor(sx, sz, t[k * 3 + 1], c, 0)
-                    data[o + 3] = c[0]; data[o + 4] = c[1]; data[o + 5] = c[2]
-                } else {
-                    data[o + 3] = 1f; data[o + 4] = 1f; data[o + 5] = 1f
-                }
+                data[o + 3] = 1f; data[o + 4] = 1f; data[o + 5] = 1f
                 data[o + 6] = 1f; data[o + 7] = 0f
                 o += 8
             }
@@ -2031,33 +1958,248 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         GLES30.glDisable(GLES30.GL_BLEND)
     }
 
-    private fun drawLit(program: Int, vbo: Int, count: Int, sun: SunState, tintR: Float, tintG: Float, tintB: Float) {
+    private fun drawLit(
+        program: Int, vbo: Int, count: Int, sun: SunState, tintR: Float, tintG: Float, tintB: Float,
+        puddles: Boolean = false, tracks: Boolean = false
+    ) {
         if (program == 0 || vbo == 0) return
         GLES30.glUseProgram(program)
         GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, vbo)
         bindAttribs(32)
+        val eye = FloatArray(3)
+        camEye(eye)
         GLES30.glUniformMatrix4fv(u(program, "uVP"), 1, false, vpM, 0)
         GLES30.glUniform3f(u(program, "uSunDir"), sun.dir[0], sun.dir[1], sun.dir[2])
         GLES30.glUniform3f(u(program, "uSunColor"), sun.color[0], sun.color[1], sun.color[2])
         GLES30.glUniform3f(u(program, "uAmbient"), sun.ambient[0], sun.ambient[1], sun.ambient[2])
         GLES30.glUniform3f(u(program, "uFogColor"), sun.horizon[0], sun.horizon[1], sun.horizon[2])
-        GLES30.glUniform3f(u(program, "uCamPos"),
-            camTarget[0] + camDist * cos(camPitch) * sin(camYaw),
-            camTarget[1] + camDist * sin(camPitch),
-            camTarget[2] + camDist * cos(camPitch) * cos(camYaw))
+        GLES30.glUniform1f(u(program, "uFogDensity"), sun.fogDensity)
+        GLES30.glUniform3f(u(program, "uCamPos"), eye[0], eye[1], eye[2])
         GLES30.glUniform3f(u(program, "uTint"), tintR, tintG, tintB)
+        // WetSurfaces.js global wet/snow + cloud shadow — these were declared but never fed before
+        GLES30.glUniform1f(u(program, "uWetness"), sun.wetness)
+        GLES30.glUniform1f(u(program, "uSnow"), sun.snowCover)
+        GLES30.glUniform1f(u(program, "uShadowStrength"), sun.cloudShadowStrength)
+        GLES30.glUniform3f(u(program, "uLightToward"), sun.cloudLightToward[0], sun.cloudLightToward[1], sun.cloudLightToward[2])
+        // the PuddleField.js drainage map: R pool, G ploughed tyre band, B road corridor
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE5)
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, texDrainage)
+        GLES30.glUniform1i(u(program, "uFxPoolMap"), 5)
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE6)
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, texCloudShadow)
+        GLES30.glUniform1i(u(program, "uCloudShadow"), 6)
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
+        GLES30.glUniform4f(u(program, "uFxPoolXf"), pudDrainXf[0], pudDrainXf[1], pudDrainXf[2], pudDrainXf[3])
+        GLES30.glUniform1f(u(program, "uFxTime"), pudTime)
+        GLES30.glUniform1f(u(program, "uFxPuddle"), if (puddles) 1f else 0f)
+        GLES30.glUniform1f(u(program, "uFxTrack"), if (tracks) 1f else 0f)
         GLES30.glDrawArrays(GLES30.GL_TRIANGLES, 0, count)
         GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, 0)
     }
 
-    private fun drawTerrain(sun: SunState) = drawLit(progTerrain, terrainVbo, terrainCount, sun, 1f, 1f, 1f)
-    private fun drawCityGround(sun: SunState) = drawLit(progFlat, cityGroundVbo, cityGroundCount, sun, 1f, 1f, 1f)
+    // ---------------------------------------------------------------- terrain splat + puddles ----
+
+    private fun uploadTexArray(size: Int, layers: Int, data: ByteArray): Int {
+        val handles = IntArray(1)
+        GLES30.glGenTextures(1, handles, 0)
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D_ARRAY, handles[0])
+        GLES30.glPixelStorei(GLES30.GL_UNPACK_ALIGNMENT, 1)
+        GLES30.glTexImage3D(GLES30.GL_TEXTURE_2D_ARRAY, 0, GLES30.GL_RGBA8, size, size, layers, 0,
+            GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE,
+            ByteBuffer.allocateDirect(data.size).put(data).position(0))
+        GLES30.glGenerateMipmap(GLES30.GL_TEXTURE_2D_ARRAY)
+        GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D_ARRAY, GLES30.GL_TEXTURE_MIN_FILTER, GLES30.GL_LINEAR_MIPMAP_LINEAR)
+        GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D_ARRAY, GLES30.GL_TEXTURE_MAG_FILTER, GLES30.GL_LINEAR)
+        GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D_ARRAY, GLES30.GL_TEXTURE_WRAP_S, GLES30.GL_REPEAT)
+        GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D_ARRAY, GLES30.GL_TEXTURE_WRAP_T, GLES30.GL_REPEAT)
+        // anisotropy is worth a lot on grazing ground views; guarded by the extension string
+        val ext = GLES30.glGetString(GLES30.GL_EXTENSIONS) ?: ""
+        if (ext.contains("texture_filter_anisotropic")) {
+            GLES30.glTexParameterf(GLES30.GL_TEXTURE_2D_ARRAY, 0x84FE, 4f) // GL_TEXTURE_MAX_ANISOTROPY_EXT
+        }
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D_ARRAY, 0)
+        return handles[0]
+    }
+
+    /** The site's 8-layer PBR arrays + control/normal maps (terrain/textures.js + terrain/index.js). */
+    private fun buildTerrainSplat() {
+        val ctx = appContext
+        if (ctx != null) {
+            try {
+                val (alb, nor) = TerrainGfx.loadLayerArrays(ctx.assets)
+                texAlbedoArr = uploadTexArray(TerrainGfx.LAYER_SIZE, TerrainGfx.LAYERS.size, alb)
+                texNormalArr = uploadTexArray(TerrainGfx.LAYER_SIZE, TerrainGfx.LAYERS.size, nor)
+            } catch (e: Exception) {
+                Log.e(TAG, "splat layer arrays failed", e)
+            }
+        } else {
+            Log.w(TAG, "no appContext — splat layers unavailable")
+        }
+        val (ctrl, ctrl2) = TerrainGfx.bakeControlMaps(worldHeight, 1337)
+        texControl = uploadTex2D(TerrainGfx.CONTROL_RES, TerrainGfx.CONTROL_RES, GLES30.GL_RGBA8,
+            GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE,
+            ByteBuffer.allocateDirect(ctrl.size).put(ctrl).position(0), false, false)
+        texControl2 = uploadTex2D(TerrainGfx.CONTROL_RES, TerrainGfx.CONTROL_RES, GLES30.GL_RGBA8,
+            GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE,
+            ByteBuffer.allocateDirect(ctrl2.size).put(ctrl2).position(0), false, false)
+        val nrm = TerrainGfx.bakeNormalMap(worldHeight)
+        texTNormal = uploadTex2D(worldHeight.N - 1, worldHeight.N - 1, GLES30.GL_RGBA8,
+            GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE,
+            ByteBuffer.allocateDirect(nrm.size).put(nrm).position(0), true, true)
+    }
+
+    /** effects/PuddleField.js: drainage raster + merged feathered pool discs from the demo roads. */
+    private fun buildPuddles() {
+        val segs = demo.roads.mapIndexed { i, r ->
+            PuddleField.SegIn(
+                "d$i", r.type, DemoCity.halfWidth(r.type).toDouble() * 2.0,
+                DoubleArray(r.world.size * 2) { k ->
+                    if (k % 2 == 0) r.world[k / 2][0] else r.world[k / 2][1]
+                }
+            )
+        }
+        // the roads are conformed into the heightmap, so the terrain height IS the road bed;
+        // pools get LIFT 0.022 over it (web fallback path, +0.05 → just over the +0.06 ribbons)
+        val res = PuddleField.build(segs, 1337, null, { x, z -> worldHeight.getHeight(x, z) })
+        if (res == null || res.pools.isEmpty()) {
+            Log.d(TAG, "puddles: empty field")
+            return
+        }
+        pudVbo = upload(res.verts)
+        val idxBuf = ByteBuffer.allocateDirect(res.indices.size * 4).order(ByteOrder.nativeOrder())
+        for (v in res.indices) idxBuf.putInt(v)
+        idxBuf.position(0)
+        val ibo = IntArray(1)
+        GLES30.glGenBuffers(1, ibo, 0)
+        GLES30.glBindBuffer(GLES30.GL_ELEMENT_ARRAY_BUFFER, ibo[0])
+        GLES30.glBufferData(GLES30.GL_ELEMENT_ARRAY_BUFFER, res.indices.size * 4, idxBuf, GLES30.GL_STATIC_DRAW)
+        GLES30.glBindBuffer(GLES30.GL_ELEMENT_ARRAY_BUFFER, 0)
+        pudIbo = ibo[0]
+        pudIdxCount = res.indices.size
+        texDrainage = uploadTex2D(res.mapSize, res.mapSize, GLES30.GL_RGBA8,
+            GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE,
+            ByteBuffer.allocateDirect(res.mapData.size).put(res.mapData).position(0), false, false)
+        pudDrainXf[0] = res.mapX0.toFloat()
+        pudDrainXf[1] = res.mapZ0.toFloat()
+        pudDrainXf[2] = (1.0 / res.mapSpan).toFloat()
+        pudDrainXf[3] = 1f
+        Log.d(TAG, "puddles: ${res.pools.size} pools, map ${res.mapSize}, ${res.buildMs} ms")
+    }
+
+    private fun camEye(out: FloatArray) {
+        out[0] = camTarget[0] + camDist * cos(camPitch) * sin(camYaw)
+        out[1] = camTarget[1] + camDist * sin(camPitch)
+        out[2] = camTarget[2] + camDist * cos(camPitch) * cos(camYaw)
+    }
+
+    /** the full 8-layer splat terrain (TerrainMaterial.js port) */
+    private fun drawSplat(sun: SunState) {
+        if (progTerrain == 0 || terrainVbo == 0) return
+        GLES30.glUseProgram(progTerrain)
+        GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, terrainVbo)
+        bindAttribs(32)
+        val eye = FloatArray(3)
+        camEye(eye)
+        GLES30.glUniformMatrix4fv(u(progTerrain, "uVP"), 1, false, vpM, 0)
+        GLES30.glUniform3f(u(progTerrain, "uSunDir"), sun.dir[0], sun.dir[1], sun.dir[2])
+        GLES30.glUniform3f(u(progTerrain, "uSunColor"), sun.color[0], sun.color[1], sun.color[2])
+        GLES30.glUniform3f(u(progTerrain, "uAmbient"), sun.ambient[0], sun.ambient[1], sun.ambient[2])
+        GLES30.glUniform3f(u(progTerrain, "uFogColor"), sun.horizon[0], sun.horizon[1], sun.horizon[2])
+        GLES30.glUniform1f(u(progTerrain, "uFogDensity"), sun.fogDensity)
+        GLES30.glUniform3f(u(progTerrain, "uCamPos"), eye[0], eye[1], eye[2])
+        GLES30.glUniform3f(u(progTerrain, "uTint"), 1f, 1f, 1f)
+        GLES30.glUniform1f(u(progTerrain, "uShadowStrength"), sun.cloudShadowStrength)
+        GLES30.glUniform3f(u(progTerrain, "uLightToward"), sun.cloudLightToward[0], sun.cloudLightToward[1], sun.cloudLightToward[2])
+        GLES30.glUniform1f(u(progTerrain, "uWetness"), sun.wetness)
+        GLES30.glUniform1f(u(progTerrain, "uSnow"), sun.snowCover)
+        GLES30.glUniform1f(u(progTerrain, "uNight"), sun.nightFactor)
+        GLES30.glUniform3f(u(progTerrain, "uMoonDir"), sun.moonDir[0], sun.moonDir[1], sun.moonDir[2])
+        GLES30.glUniform1f(u(progTerrain, "uSpacing"), worldHeight.spacing.toFloat())
+        GLES30.glUniform1f(u(progTerrain, "uHalf"), mapHalf)
+        GLES30.glUniform1f(u(progTerrain, "uSize"), worldHeight.size.toFloat())
+        GLES30.glUniform1f(u(progTerrain, "uShoreN"), worldHeight.N.toFloat())
+        GLES30.glUniform1f(u(progTerrain, "uWaterLevel"), 0f)
+        GLES30.glUniform1f(u(progTerrain, "uSnowLine"), 172f)
+        GLES30.glUniform2f(u(progTerrain, "uDetailFade"), 480f, 2200f)
+        GLES30.glUniform2f(u(progTerrain, "uNearFade"), 70f, 300f)
+        val scales = FloatArray(8)
+        for (i in 0 until 8) scales[i] = TerrainGfx.LAYERS[i].second
+        GLES30.glUniform1fv(u(progTerrain, "uScales[0]"), 8, scales, 0)
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D_ARRAY, texAlbedoArr)
+        GLES30.glUniform1i(u(progTerrain, "uAlbedo"), 0)
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE1)
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D_ARRAY, texNormalArr)
+        GLES30.glUniform1i(u(progTerrain, "uNormalArr"), 1)
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE2)
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, texControl)
+        GLES30.glUniform1i(u(progTerrain, "uControl"), 2)
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE3)
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, texControl2)
+        GLES30.glUniform1i(u(progTerrain, "uControl2"), 3)
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE4)
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, texTNormal)
+        GLES30.glUniform1i(u(progTerrain, "uTerrainNormal"), 4)
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE5)
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, texNoise)
+        GLES30.glUniform1i(u(progTerrain, "uNoise"), 5)
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE6)
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, texShore)
+        GLES30.glUniform1i(u(progTerrain, "uShore"), 6)
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE7)
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, texCloudShadow)
+        GLES30.glUniform1i(u(progTerrain, "uCloudShadow"), 7)
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
+        GLES30.glDrawArrays(GLES30.GL_TRIANGLES, 0, terrainCount)
+        GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, 0)
+    }
+
+    /** effects/PuddleField.js draw: feathered pool discs with wobble + rain rings + sky mirror */
+    private fun drawPuddles(sun: SunState) {
+        if (progPuddle == 0 || pudVbo == 0 || pudIbo == 0) return
+        val wet = ((sun.wetness - 0.12f) / 0.35f).coerceIn(0f, 1f)
+        if (wet <= 0.004f) return // pools appear once the ground is properly wet (PuddleField.update)
+        val eye = FloatArray(3)
+        camEye(eye)
+        GLES30.glEnable(GLES30.GL_BLEND)
+        GLES30.glBlendFunc(GLES30.GL_SRC_ALPHA, GLES30.GL_ONE_MINUS_SRC_ALPHA)
+        GLES30.glDepthMask(false)
+        GLES30.glEnable(GLES30.GL_POLYGON_OFFSET_FILL)
+        GLES30.glPolygonOffset(-4f, -6f)
+        GLES30.glUseProgram(progPuddle)
+        GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, pudVbo)
+        GLES30.glEnableVertexAttribArray(0)
+        GLES30.glVertexAttribPointer(0, 3, GLES30.GL_FLOAT, false, 16, 0)
+        GLES30.glEnableVertexAttribArray(1)
+        GLES30.glVertexAttribPointer(1, 1, GLES30.GL_FLOAT, false, 16, 12)
+        GLES30.glUniformMatrix4fv(u(progPuddle, "uVP"), 1, false, vpM, 0)
+        GLES30.glUniform3f(u(progPuddle, "uCamPos"), eye[0], eye[1], eye[2])
+        GLES30.glUniform1f(u(progPuddle, "uPudTime"), pudTime)
+        GLES30.glUniform1f(u(progPuddle, "uPudRain"), if (sun.precipMode < 0.5f) sun.precip else 0f)
+        GLES30.glUniform1f(u(progPuddle, "uPudWet"), wet)
+        GLES30.glUniform1f(u(progPuddle, "uPudFade"), (camDist * 0.6f).coerceIn(120f, 420f))
+        GLES30.glUniform3f(u(progPuddle, "uAmbient"), sun.ambient[0], sun.ambient[1], sun.ambient[2])
+        GLES30.glUniform3f(u(progPuddle, "uSunColor"), sun.color[0], sun.color[1], sun.color[2])
+        GLES30.glUniform3f(u(progPuddle, "uSunDir"), sun.dir[0], sun.dir[1], sun.dir[2])
+        GLES30.glUniform3f(u(progPuddle, "uFogColor"), sun.horizon[0], sun.horizon[1], sun.horizon[2])
+        GLES30.glUniform1f(u(progPuddle, "uFogDensity"), sun.fogDensity)
+        GLES30.glBindBuffer(GLES30.GL_ELEMENT_ARRAY_BUFFER, pudIbo)
+        GLES30.glDrawElements(GLES30.GL_TRIANGLES, pudIdxCount, GLES30.GL_UNSIGNED_INT, 0)
+        GLES30.glBindBuffer(GLES30.GL_ELEMENT_ARRAY_BUFFER, 0)
+        GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, 0)
+        GLES30.glDisable(GLES30.GL_POLYGON_OFFSET_FILL)
+        GLES30.glDepthMask(true)
+        GLES30.glDisable(GLES30.GL_BLEND)
+    }
+
+    private fun drawTerrain(sun: SunState) = drawSplat(sun)
+    private fun drawCityGround(sun: SunState) = drawLit(progFlat, cityGroundVbo, cityGroundCount, sun, 1f, 1f, 1f, puddles = true, tracks = true)
 
     private fun drawEditQuads(sun: SunState) {
         GLES30.glEnable(GLES30.GL_BLEND)
         GLES30.glBlendFunc(GLES30.GL_SRC_ALPHA, GLES30.GL_ONE_MINUS_SRC_ALPHA)
         drawLit(progFlat, editRoadVbo, editRoadCount, sun, 1f, 1f, 1f)
-        drawLit(progFlat, editZoneVbo, editZoneCount, sun, 0.55f, 0.55f, 0.55f)
+        drawLit(progFlat, editZoneVbo, editZoneCount, sun, 0.55f, 0.55f, 0.55f, puddles = false, tracks = false)
         GLES30.glDisable(GLES30.GL_BLEND)
     }
 

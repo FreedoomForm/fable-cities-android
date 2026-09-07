@@ -37,6 +37,7 @@ class FableCitiesView(context: Context) : GLSurfaceView(context) {
     }
 
     init {
+        renderer.appContext = context.applicationContext // splat layer JPEGs come from the APK assets
         setEGLContextClientVersion(3)
         setEGLConfigChooser(8, 8, 8, 8, 24, 0)
         setRenderer(renderer)

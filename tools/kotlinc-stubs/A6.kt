@@ -2,7 +2,10 @@ package android.content
 open class Context {
     companion object { const val MODE_PRIVATE = 0 }
     open fun getSharedPreferences(n: String, m: Int): SharedPreferences = SharedPreferences()
+    val applicationContext: Context get() = this
+    val assets: android.content.res.AssetManager = android.content.res.AssetManager()
 }
+
 class SharedPreferences {
     interface Editor {
         fun putInt(k: String, v: Int): Editor

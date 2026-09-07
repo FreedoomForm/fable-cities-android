@@ -1,5 +1,21 @@
 package android.opengl
 object GLES30 {
+
+    // --- terrain splat slice: 2D arrays, extra texture units, element buffers, anisotropy ---
+    const val GL_TEXTURE_2D_ARRAY = 0x8C1A
+    const val GL_TEXTURE5 = 0x84C5
+    const val GL_TEXTURE6 = 0x84C6
+    const val GL_TEXTURE7 = 0x84C7
+    const val GL_ELEMENT_ARRAY_BUFFER = 0x8893
+    const val GL_EXTENSIONS = 0x1F03
+    const val GL_TEXTURE_MAX_ANISOTROPY_EXT = 0x84FE
+    const val GL_POLYGON_OFFSET_FILL = 0x8037
+    const val GL_UNSIGNED_INT = 0x1405
+    fun glPolygonOffset(factor: Float, units: Float): Unit = Unit
+    fun glUniform1fv(location: Int, count: Int, value: FloatArray, offset: Int): Unit = Unit
+    fun glDrawElements(mode: Int, count: Int, type: Int, offsets: Int): Unit = Unit
+    fun glTexParameterf(t: Int, pname: Int, param: Float): Unit = Unit
+    fun glGetString(name: Int): String? = ""
     const val GL_ARRAY_BUFFER = 0x8892
     const val GL_BACK = 0x0405
     const val GL_BLEND = 0x0BE2
@@ -131,4 +147,5 @@ open class GLSurfaceView(context: Any?) : android.widget.FrameLayout(context) {
     fun setRenderer(r: Renderer): Unit = Unit
     var renderMode: Int = 0
     var preserveEGLContextOnPause: Boolean = false
+
 }

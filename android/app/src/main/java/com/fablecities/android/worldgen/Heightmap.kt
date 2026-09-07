@@ -17,8 +17,9 @@ import kotlin.math.sqrt
  * plain around the centre, the meandering river running south into the sea, the rolling
  * flanks and the terraced mountain range to the north.
  *
- * Not yet ported (no native consumer yet, tracked in docs/ANDROID_PORT.md):
- * `raycast`, `computeShoreDistance`, and the outer horizon-ring coarse grids.
+ * Not yet ported (no native consumer yet, tracked in docs/ANDROID_PORT.md): `raycast`.
+ * The outer horizon-ring coarse grids (Heightmap.js `_buildOuterGrids`) ARE ported — they feed
+ * getHeightAny, which the ground-control rules (GroundControl.kt) sample just past the map edge.
  */
 class Heightmap(val size: Int = 2048, val spacing: Int = 2, seed: Int = 1337) {
 
@@ -76,7 +77,8 @@ class Heightmap(val size: Int = 2048, val spacing: Int = 2, seed: Int = 1337) {
     /** Dense polyline point carrying the final bed height in [y] (see conformPath). */
     class PathPoint(val x: Double, var y: Double, val z: Double)
 
-    private class Relief {
+    /** Erosion-field scratch record (Heightmap.js `this._f`) — shared across calls, single-threaded. */
+    class Relief {
         var upland = 0.0
         var gully = 0.0
         var ridge = 0.0
@@ -102,6 +104,86 @@ class Heightmap(val size: Int = 2048, val spacing: Int = 2, seed: Int = 1337) {
 
     fun riverHalfWidth(z: Double): Double =
         river.width * (1.0 + 0.35 * nRiver.noise2D(z / 180.0, 17.7))
+
+    /** Height anywhere (Heightmap.js getHeightAny): fine grid inside, coarse horizon rings outside. */
+    fun getHeightAny(x: Double, z: Double): Double {
+        val r = max(abs(x), abs(z))
+        if (r <= half) return getHeight(x, z)
+        if (outerGrid == null) buildOuterGrids()
+        if (r <= half * 2.0) return outerGrid!!.getHeight(x, z)
+        return farGrid!!.getHeight(x, z)
+    }
+
+    private var outerGrid: CoarseGrid? = null
+    private var farGrid: CoarseGrid? = null
+
+    /** Heightmap.js _buildOuterGrids — coarse horizon rings outside the playable map. */
+    private fun buildOuterGrids() {
+        val outer = CoarseGrid(8, half * 2.0)
+        outer.fill { x, z ->
+            val r = max(abs(x), abs(z))
+            if (r <= half) getHeight(x, z) else sampleGen(x, z, if (r - half < 96.0) 0 else 1)
+        }
+        val far = CoarseGrid(32, half * 4.0)
+        far.fill { x, z ->
+            val r = max(abs(x), abs(z))
+            if (r <= half * 2.0) outer.getHeight(x, z) else sampleGen(x, z, if (r - half * 2.0 < 128.0) 1 else 2)
+        }
+        outerGrid = outer
+        farGrid = far
+    }
+
+    /** Exact port of Heightmap.js CoarseGrid — float32 payload, bilinear with clamped extent. */
+    class CoarseGrid(val spacing: Int, val half: Double) {
+        val N: Int = jsRound(half * 2.0 / spacing).toInt() + 1
+        var data = FloatArray(N * N)
+            private set
+        var minH = 0.0
+            private set
+        var maxH = 0.0
+            private set
+
+        fun fill(fn: (Double, Double) -> Double): CoarseGrid {
+            var mn = Double.POSITIVE_INFINITY
+            var mx = Double.NEGATIVE_INFINITY
+            for (j in 0 until N) {
+                val z = -half + j * spacing
+                for (i in 0 until N) {
+                    val x = -half + i * spacing
+                    val h = fn(x, z)
+                    data[j * N + i] = h.toFloat()
+                    if (h < mn) mn = h
+                    if (h > mx) mx = h
+                }
+            }
+            minH = mn; maxH = mx
+            return this
+        }
+
+        fun getHeight(x: Double, z: Double): Double {
+            var fx = (x + half) / spacing
+            var fz = (z + half) / spacing
+            if (fx < 0) fx = 0.0 else if (fx > N - 1) fx = (N - 1).toDouble()
+            if (fz < 0) fz = 0.0 else if (fz > N - 1) fz = (N - 1).toDouble()
+            var i = floor(fx).toInt()
+            var j = floor(fz).toInt()
+            if (i >= N - 1) i = N - 2
+            if (j >= N - 1) j = N - 2
+            val tx = fx - i
+            val tz = fz - j
+            val a = data[j * N + i].toDouble()
+            val b = data[j * N + i + 1].toDouble()
+            val c = data[(j + 1) * N + i].toDouble()
+            val d = data[(j + 1) * N + i + 1].toDouble()
+            return (a + (b - a) * tx) * (1.0 - tz) + (c + (d - c) * tx) * tz
+        }
+    }
+
+    /** Second derivative of the river centreline (Heightmap.js riverCurvature) — sign picks the bend side. */
+    fun riverCurvature(z: Double): Double {
+        val e = 24.0
+        return (riverX(z + e) - 2.0 * riverX(z) + riverX(z - e)) / (e * e)
+    }
 
     /** Coastline z at a given x — sea for z beyond this. */
     fun coastZ(x: Double): Double {
@@ -134,7 +216,7 @@ class Heightmap(val size: Int = 2048, val spacing: Int = 2, seed: Int = 1337) {
      * Erosion-style relief fields shared by the generator and (later) the ground rules,
      * written into the reusable scratch object [f].
      */
-    private fun relief(x: Double, z: Double, lod: Int): Relief {
+    fun relief(x: Double, z: Double, lod: Int): Relief {
         val low = nBase.fbm2D(x / 1150.0, z / 1150.0, 3)
         val mid = nMid.fbm2D(x / 300.0, z / 300.0, if (lod < 2) 4 else 3)
         f.upland = smoothstep(-0.05, 0.55, low + 0.15 * mid)
