@@ -14,6 +14,8 @@ import com.fablecities.android.worldgen.Heightmap
 import com.fablecities.android.worldgen.Vegetation
 import com.fablecities.android.worldgen.hash2Signed
 import com.fablecities.android.worldgen.SimplexNoise
+import com.fablecities.android.worldgen.v8Hypot
+import com.fablecities.android.worldgen.WetLights
 import com.fablecities.android.worldgen.PuddleField
 import com.fablecities.android.worldgen.Rng
 import com.fablecities.android.worldgen.RoadNetBuilder
@@ -132,6 +134,24 @@ class GlCityRenderer : GLSurfaceView.Renderer {
     private var progPuddle = 0
     private var progTrees = 0
     private var progUndergrowth = 0
+    private var progGroundFX = 0
+    private var progLampHead = 0
+    // --- scene FBO (GroundFXPass: the whole scene renders into a colour+depth RT, then the
+    //     depth-driven fullscreen wet-SSR / contact-shadow / AO / aerial pass blits it up) ---
+    private var sceneFbo = 0
+    private var sceneTex = 0
+    private var sceneDepth = 0
+    private var sceneW = 0
+    private var sceneH = 0
+    // --- street lamps (the site's ROAD_TYPES lamp definitions) + WetLights emitter feed ---
+    private var lampPoleVbo = 0
+    private var lampPoleCount = 0
+    private var lampHeadVbo = 0
+    private var lampHeadCount = 0
+    private val lampHeads = ArrayList<DoubleArray>() // bulb positions for WetLights
+    private val wetLights = WetLights()
+    private val wetLightPosBuf = FloatArray(12 * 4)
+    private val wetLightColBuf = FloatArray(12 * 3)
     private var treeVbo = 0
     private var treeIbo = 0
     private var treeIdxCount = 0
@@ -268,6 +288,8 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         progPuddle = buildProgram(TerrainShaders.VS_PUDDLE, TerrainShaders.FS_PUDDLE, "puddle")
         progTrees = buildProgram(TerrainShaders.VS_TREES, TerrainShaders.FS_TREES, "trees")
         progUndergrowth = buildProgram(TerrainShaders.VS_UNDERGROWTH, TerrainShaders.FS_UNDERGROWTH, "undergrowth")
+        progGroundFX = buildProgram(TerrainShaders.VS_GROUNDFX, TerrainShaders.FS_GROUNDFX, "groundfx")
+        progLampHead = buildProgram(VS_LIT, TerrainShaders.FS_LAMPHEAD, "lamphead")
         buildPrecipBuffer()
         buildCloudTextures()
 
@@ -282,6 +304,7 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         demo.buildRoutes()
         demo.generateBlocks()
         buildRoadNet()
+        buildLamps()
         cityYaw = atan2(-demo.site.uz, demo.site.ux).toFloat()
         val cc = demo.L(0.0, demo.COAST_V + demo.ROWS[2])
         val camY = worldHeight.getHeight(cc[0], cc[1]).toFloat() + 12f
@@ -320,6 +343,366 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         surfaceH = max(1, height)
         computeLetterbox()
         setupReflectionFbo()
+        setupSceneFbo()
+    }
+
+    /** GroundFXPass scene RT: full-viewport colour + depth the FX pass samples. */
+    private fun setupSceneFbo() {
+        val w = max(256, letterbox[2].toInt())
+        val h = max(256, letterbox[3].toInt())
+        if (sceneFbo != 0 && w == sceneW && h == sceneH) return
+        if (sceneFbo != 0) {
+            GLES30.glDeleteFramebuffers(1, intArrayOf(sceneFbo), 0)
+            GLES30.glDeleteTextures(1, intArrayOf(sceneTex), 0)
+            GLES30.glDeleteRenderbuffers(1, intArrayOf(sceneDepth), 0)
+            sceneFbo = 0
+        }
+        val genTex = IntArray(1); val genRb = IntArray(1); val genFb = IntArray(1)
+        GLES30.glGenTextures(1, genTex, 0)
+        GLES30.glGenRenderbuffers(1, genRb, 0)
+        GLES30.glGenFramebuffers(1, genFb, 0)
+        sceneTex = genTex[0]; sceneDepth = genRb[0]; sceneFbo = genFb[0]
+        sceneW = w; sceneH = h
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, sceneTex)
+        GLES30.glTexImage2D(GLES30.GL_TEXTURE_2D, 0, GLES30.GL_RGBA8, w, h, 0, GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE, null)
+        GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_MIN_FILTER, GLES30.GL_LINEAR)
+        GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_MAG_FILTER, GLES30.GL_LINEAR)
+        GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_WRAP_S, GLES30.GL_CLAMP_TO_EDGE)
+        GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_WRAP_T, GLES30.GL_CLAMP_TO_EDGE)
+        GLES30.glBindRenderbuffer(GLES30.GL_RENDERBUFFER, sceneDepth)
+        GLES30.glRenderbufferStorage(GLES30.GL_RENDERBUFFER, GLES30.GL_DEPTH_COMPONENT24, w, h)
+        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, sceneFbo)
+        GLES30.glFramebufferTexture2D(GLES30.GL_FRAMEBUFFER, GLES30.GL_COLOR_ATTACHMENT0, GLES30.GL_TEXTURE_2D, sceneTex, 0)
+        GLES30.glFramebufferRenderbuffer(GLES30.GL_FRAMEBUFFER, GLES30.GL_DEPTH_ATTACHMENT, GLES30.GL_RENDERBUFFER, sceneDepth)
+        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, 0)
+        GLES30.glBindRenderbuffer(GLES30.GL_RENDERBUFFER, 0)
+    }
+
+    // ---------------------------------------------------------------- street lamps + GroundFX
+
+    /** Street-lamp spec per road type — the site's ROAD_TYPES lamps entries (RoadTypes.js). */
+    private class LampSpec(val mast: Boolean, val spacing: Double, val alternate: Boolean,
+                           val poleLat: Double, val arm: Double, val height: Double, val radius: Double)
+
+    private fun lampSpec(type: String): LampSpec? = when (type) {
+        // STREET_LAMP(cwHalf, radius): spacing 32, alternate, poleLat = cwHalf + 0.85, arm 2, height 9
+        "local" -> LampSpec(false, 32.0, true, 3.8 + 0.85, 2.0, 9.0, 11.0)
+        "avenue" -> LampSpec(false, 32.0, true, 9.0 + 0.85, 2.0, 9.0, 13.0)
+        "highway" -> LampSpec(true, 46.0, false, 0.0, 2.6, 14.0, 21.0)
+        else -> null // path
+    }
+
+    /**
+     * Place the street lamps along the demo roads (RoadMesher.js lamp emission, adapted to the
+     * native polylines: lamp i at along = (i + 0.5)·spacing − phase, LAMP_MARGIN 3 m from the
+     * trimmed ends, street lamps alternating sides at poleLat with a 2 m arm toward the
+     * carriageway; highway masts stand in the median with two arms across the road) and bake
+     * the pole/arm boxes + the emissive head boxes. The bulb positions feed WetLights.
+     */
+    private fun buildLamps() {
+        lampHeads.clear()
+        val poles = ArrayList<Float>(4096)
+        val heads = ArrayList<Float>(1024)
+        for (road in demo.roads) {
+            val lm = lampSpec(road.type) ?: continue
+            val w = road.world
+            if (w.size < 2) continue
+            // cumulative arc length
+            val acc = DoubleArray(w.size)
+            for (i in 1 until w.size) {
+                acc[i] = acc[i - 1] + v8Hypot(w[i][0] - w[i - 1][0], w[i][1] - w[i - 1][1]).toFloat().toDouble()
+            }
+            val total = acc[w.size - 1]
+            if (total < 2.0 * 3.0) continue
+            val nLamps = ((total - 2.0 * 3.0) / lm.spacing).toInt() + 1
+            var lampI = 0
+            var segIdx = 0
+            var s = (lampI + 0.5) * lm.spacing
+            while (s <= total - 3.0 && lampI < nLamps + 8) {
+                while (segIdx < w.size - 2 && acc[segIdx + 1] < s) segIdx++
+                val a = w[segIdx]; val b = w[segIdx + 1]
+                val segLen = acc[segIdx + 1] - acc[segIdx]
+                if (segLen < 1e-6) { segIdx++; if (segIdx >= w.size - 1) break; continue }
+                val t = (s - acc[segIdx]) / segLen
+                val px = a[0] + (b[0] - a[0]) * t
+                val pz = a[1] + (b[1] - a[1]) * t
+                val tx = (b[0] - a[0]) / segLen; val tz = (b[1] - a[1]) / segLen
+                val gy = terrainHeight(px.toFloat(), pz.toFloat())
+                val side = if (lm.alternate) { if (((lampI % 2) + 2) % 2 == 0) 1 else -1 } else 0
+                val lat = side * lm.poleLat
+                // outward normal = tangent rotated +90°
+                val nx = -tz; val nz = tx
+                val poleX = px + nx * lat; val poleZ = pz + nz * lat
+                val armDirX = if (side == 0) nx else -side * nx
+                val armDirZ = if (side == 0) nz else -side * nz
+                val poleTopY = gy + lm.height
+                // arm points toward the carriageway; the bulb hangs at its end, ~0.6 m below the top
+                val bulbX = poleX + armDirX * lm.arm
+                val bulbZ = poleZ + armDirZ * lm.arm
+                val bulbY = poleTopY - 0.6
+                lampHeads.add(doubleArrayOf(bulbX, bulbY, bulbZ))
+                val poleCol = floatArrayOf(0.16f, 0.165f, 0.17f)
+                val poleH = if (lm.mast) lm.height else lm.height - 0.6
+                // pole: 0.16 m square mast
+                pushBoxAt(poles, poleX, gy + poleH / 2.0, poleZ, 0.16f, poleH.toFloat(), 0.16f, poleCol)
+                // arm: 0.12 m square, horizontal, length = arm
+                val armCx = poleX + armDirX * lm.arm / 2.0
+                val armCz = poleZ + armDirZ * lm.arm / 2.0
+                pushBoxHoriz(poles, armCx.toFloat(), (poleTopY - 0.15).toFloat(), armCz.toFloat(),
+                    (armDirX * lm.arm).toFloat(), (armDirZ * lm.arm).toFloat(), 0.12f, poleCol)
+                // emissive head box (world space, 8-float lit layout; FS_LAMPHEAD colours it)
+                pushBoxAt(heads, bulbX, bulbY, bulbZ, 0.64f, 0.28f, 0.28f,
+                    floatArrayOf(0.32f, 0.26f, 0.20f))
+                s += lm.spacing
+                lampI++
+            }
+        }
+        val pArr = FloatArray(poles.size)
+        for (i in pArr.indices) pArr[i] = poles[i]
+        lampPoleCount = pArr.size / 8
+        lampPoleVbo = upload(pArr)
+        lampHeadCount = heads.size / 8
+        lampHeadVbo = upload(heads.toFloatArray())
+        wetLights.setLamps(lampHeads)
+    }
+
+    /** boxes with an explicit colour, lit-vertex layout (pos3 colour3 extra2) */
+    private fun pushBoxAt(data: ArrayList<Float>, cx: Double, cy: Double, cz: Double,
+                          sx: Float, sy: Float, sz: Float, col: FloatArray): Int {
+        val hx = sx / 2f; val hy = sy / 2f; val hz = sz / 2f
+        val fx = cx.toFloat(); val fy = cy.toFloat(); val fz = cz.toFloat()
+        val faces = arrayOf(
+            floatArrayOf(0f, 0f, 1f, -1f, -1f, 1f, 1f, -1f, 1f, 1f, 1f, 1f, -1f, 1f, 1f),
+            floatArrayOf(0f, 0f, -1f, 1f, -1f, -1f, -1f, -1f, -1f, -1f, 1f, -1f, 1f, 1f, -1f),
+            floatArrayOf(1f, 0f, 0f, 1f, -1f, 1f, 1f, -1f, -1f, 1f, 1f, -1f, 1f, 1f, 1f),
+            floatArrayOf(-1f, 0f, 0f, -1f, -1f, -1f, -1f, -1f, 1f, -1f, 1f, 1f, -1f, 1f, -1f),
+            floatArrayOf(0f, 1f, 0f, -1f, 1f, 1f, 1f, 1f, 1f, 1f, 1f, -1f, -1f, 1f, -1f),
+            floatArrayOf(0f, -1f, 0f, -1f, -1f, -1f, 1f, -1f, -1f, 1f, -1f, 1f, -1f, -1f, 1f),
+        )
+        for (f in faces) {
+            for (i in 0 until 6) {
+                data.add(fx + f[3 + i * 3] * hx)
+                data.add(fy + f[4 + i * 3] * hy)
+                data.add(fz + f[5 + i * 3] * hz)
+                data.add(col[0]); data.add(col[1]); data.add(col[2])
+                data.add(0f); data.add(0f)
+            }
+        }
+        return data.size
+    }
+
+    /** horizontal box from a centre + a direction/length (the lamp arm) */
+    private fun pushBoxHoriz(data: ArrayList<Float>, cx: Float, cy: Float, cz: Float,
+                             dx: Float, dz: Float, w: Float, col: FloatArray) {
+        val len = sqrt(dx * dx + dz * dz)
+        if (len < 1e-4) return
+        val ux = dx / len; val uz = dz / len
+        val nx = -uz; val nz = ux
+        val hx = ux * len / 2f; val hz = uz * len / 2f
+        val hw = nx * w / 2f; val hz2 = nz * w / 2f
+        val corners = arrayOf(
+            floatArrayOf(cx - hx - hw, cy - w / 2, cz - hz - hz2),
+            floatArrayOf(cx + hx - hw, cy - w / 2, cz + hz - hz2),
+            floatArrayOf(cx + hx + hw, cy - w / 2, cz + hz + hz2),
+            floatArrayOf(cx - hx + hw, cy - w / 2, cz - hz + hz2),
+            floatArrayOf(cx - hx - hw, cy + w / 2, cz - hz - hz2),
+            floatArrayOf(cx + hx - hw, cy + w / 2, cz + hz - hz2),
+            floatArrayOf(cx + hx + hw, cy + w / 2, cz + hz + hz2),
+            floatArrayOf(cx - hx + hw, cy + w / 2, cz - hz + hz2),
+        )
+        val quad = intArrayOf(0, 1, 2, 0, 2, 3, 4, 6, 5, 4, 7, 6, 0, 4, 5, 0, 5, 1, 3, 2, 6, 3, 6, 7, 1, 5, 6, 1, 6, 2, 0, 3, 7, 0, 7, 4)
+        for (i in quad) {
+            val c = corners[i]
+            data.add(c[0]); data.add(c[1]); data.add(c[2])
+            data.add(col[0]); data.add(col[1]); data.add(col[2])
+            data.add(0f); data.add(0f)
+        }
+    }
+
+    private fun drawLamps(sun: SunState) {
+        val eye = FloatArray(3)
+        camEye(eye)
+        if (lampPoleVbo != 0 && lampPoleCount > 0) {
+            drawLit(progFlat, lampPoleVbo, lampPoleCount, sun, 1f, 1f, 1f)
+        }
+        if (lampHeadVbo != 0 && lampHeadCount > 0 && progLampHead != 0) {
+            // emissive bulb heads: warm radiance at night, dark glass by day
+            GLES30.glUseProgram(progLampHead)
+            GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, lampHeadVbo)
+            bindAttribs(32)
+            GLES30.glUniformMatrix4fv(u(progLampHead, "uVP"), 1, false, vpM, 0)
+            GLES30.glUniformMatrix4fv(u(progLampHead, "uReflTex"), 1, false, reflTexM, 0)
+            GLES30.glUniform3f(u(progLampHead, "uFogColor"), sun.horizon[0], sun.horizon[1], sun.horizon[2])
+            GLES30.glUniform1f(u(progLampHead, "uFogDensity"), sun.fogDensity)
+            GLES30.glUniform3f(u(progLampHead, "uCamPos"), eye[0], eye[1], eye[2])
+            GLES30.glUniform1f(u(progLampHead, "uNight"), sun.nightFactor)
+            GLES30.glDrawArrays(GLES30.GL_TRIANGLES, 0, lampHeadCount)
+            GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, 0)
+        }
+    }
+
+    /** Collect vehicle lamp glares and refresh the WetLights 12-slot emitter feed. */
+    private fun updateWetLights(sun: SunState, dt: Float) {
+        val gl = wetLights.glares
+        gl.clear()
+        val sim = trafficSim
+        val eye = FloatArray(3)
+        camEye(eye)
+        if (sim != null && sun.nightFactor > 0.05f) {
+            for (v in sim.vehicles) {
+                val fxv = cos(v.yaw).toFloat(); val fzv = sin(v.yaw).toFloat()
+                val tox = eye[0] - v.x.toFloat(); val toz = eye[2] - v.z.toFloat()
+                val tl = sqrt(tox * tox + toz * toz).coerceAtLeast(1e-3f)
+                val facing = (fxv * tox + fzv * toz) / tl
+                val d = tl
+                val fade = 1f - min(1f, max(0f, (d - 195f) / 165f))
+                val lightsOn = sun.nightFactor
+                val headI = lightsOn * max(0f, (facing - 0.05f) / 0.95f) * fade
+                val tailI = min(1.30f, lightsOn * 0.70f + v.brake.toFloat() * 0.95f) *
+                    max(0f, (-facing - 0.02f) / 0.98f) * fade
+                val gy = terrainHeight(v.x.toFloat(), v.z.toFloat()).toDouble()
+                if (headI > 0.02f) {
+                    val hI = headI * 2.05
+                    val hw = (v.spec.wid * 0.5 * 0.60)
+                    val hz = (v.spec.len * 0.5)
+                    val ca = cos(v.yaw); val sa = sin(v.yaw)
+                    for (k in 0 until 2) {
+                        val sgn = if (k == 0) -1.0 else 1.0
+                        val ox = sgn * hw
+                        val wx = v.x + ca * ox + sa * hz
+                        val wz = v.z - sa * ox + ca * hz
+                        gl.add(wx, gy + 0.62, wz, 1.32 * hI, 1.18 * hI, 0.94 * hI)
+                    }
+                }
+                if (tailI > 0.02f) {
+                    val tI = tailI * 1.75
+                    val hw = (v.spec.wid * 0.5 * 0.66)
+                    val hz = (v.spec.len * 0.5)
+                    val ca = cos(v.yaw); val sa = sin(v.yaw)
+                    for (k in 0 until 2) {
+                        val sgn = if (k == 0) -1.0 else 1.0
+                        val ox = sgn * hw
+                        val wx = v.x + ca * ox - sa * hz
+                        val wz = v.z - sa * ox - ca * hz
+                        gl.add(wx, gy + 0.66, wz, 1.00 * tI, 0.075 * tI, 0.030 * tI)
+                    }
+                }
+            }
+        }
+        val camY = camTarget[1] + camDist * sin(camPitch)
+        val planeY = terrainHeight(
+            camTarget[0] + camDist * cos(camPitch) * sin(camYaw),
+            camTarget[2] + camDist * cos(camPitch) * cos(camYaw)).toDouble()
+        // camera forward = (target - eye) normalised (the orbit camera looks at the target)
+        val fx = camTarget[0] - eye[0]; val fy = camTarget[1] - eye[1]; val fz = camTarget[2] - eye[2]
+        val fl = sqrt(fx * fx + fy * fy + fz * fz).coerceAtLeast(1e-4f)
+        wetLights.update(dt.toDouble(), eye[0].toDouble(), eye[1].toDouble(), eye[2].toDouble(),
+            (fx / fl).toDouble(), (fy / fl).toDouble(), (fz / fl).toDouble(),
+            1.0, planeY)
+    }
+
+    /** The GroundFXPass blit: the whole scene render + depth → wet SSR / contact shadows / AO /
+     *  aerial perspective / night horizon glow, written to the backbuffer. */
+    private fun drawGroundFX(sun: SunState) {
+        if (progGroundFX == 0 || sceneTex == 0) return
+        val night = sun.nightFactor
+        val cloud = weather.cloudCover.toFloat()
+        val sunUp = max(0f, sun.skySun[1])
+        val direct = sunUp * (1f - 0.62f * cloud) * (1f - night)
+        val wet = sun.wetness
+        val rainMode = if (sun.precipMode < 0.5f) sun.precip else 0f
+        val eye = FloatArray(3)
+        camEye(eye)
+
+        GLES30.glDisable(GLES30.GL_DEPTH_TEST)
+        GLES30.glDepthMask(false)
+        GLES30.glDisable(GLES30.GL_BLEND)
+        GLES30.glUseProgram(progGroundFX)
+        GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, skyVbo)
+        GLES30.glEnableVertexAttribArray(0)
+        GLES30.glVertexAttribPointer(0, 3, GLES30.GL_FLOAT, false, 12, 0)
+
+        // camera matrices: view-rotate the up + sun directions (Matrix is column-major)
+        val upX = viewM[1]; val upY = viewM[5]; val upZ = viewM[9]
+        val sunViewX = viewM[0] * sun.skySun[0] + viewM[1] * sun.skySun[1] + viewM[2] * sun.skySun[2]
+        val sunViewY = viewM[4] * sun.skySun[0] + viewM[5] * sun.skySun[1] + viewM[6] * sun.skySun[2]
+        val sunViewZ = viewM[8] * sun.skySun[0] + viewM[9] * sun.skySun[1] + viewM[10] * sun.skySun[2]
+
+        GLES30.glUniform1i(u(progGroundFX, "tDiffuse"), 0)
+        GLES30.glUniform1i(u(progGroundFX, "tDepth"), 1)
+        GLES30.glUniform1i(u(progGroundFX, "uPoolMap"), 2)
+        GLES30.glUniform1f(u(progGroundFX, "uHasDepth"), 1f)
+        GLES30.glUniform2f(u(progGroundFX, "uResolution"), sceneW.toFloat(), sceneH.toFloat())
+        GLES30.glUniform2f(u(progGroundFX, "uNearFar"), 5f, 2600f)
+        GLES30.glUniformMatrix4fv(u(progGroundFX, "uProj"), 1, false, projM, 0)
+        val projInv = FloatArray(16); Matrix.invertM(projInv, 0, projM, 0)
+        GLES30.glUniformMatrix4fv(u(progGroundFX, "uProjInv"), 1, false, projInv, 0)
+        GLES30.glUniformMatrix4fv(u(progGroundFX, "uView"), 1, false, viewM, 0)
+        val viewInv = FloatArray(16); Matrix.invertM(viewInv, 0, viewM, 0)
+        GLES30.glUniformMatrix4fv(u(progGroundFX, "uViewInv"), 1, false, viewInv, 0)
+        GLES30.glUniform3f(u(progGroundFX, "uUpView"), upX, upY, upZ)
+        GLES30.glUniform3f(u(progGroundFX, "uSunView"), sunViewX, sunViewY, sunViewZ)
+        GLES30.glUniform1f(u(progGroundFX, "uTime"), pudTime)
+        GLES30.glUniform2f(u(progGroundFX, "uContact"), 0.80f * direct, 1.55f)
+        GLES30.glUniform2f(u(progGroundFX, "uAO"), 0.78f, 0.55f)
+        GLES30.glUniform1f(u(progGroundFX, "uWet"), wet)
+        GLES30.glUniform1f(u(progGroundFX, "uReflect"), 0.95f + 0.35f * night)
+        GLES30.glUniform3f(u(progGroundFX, "uSkyColor"),
+            sun.skyColor[0] * 1.05f + 0.003f * (1f - night),
+            sun.skyColor[1] * 1.05f + 0.003f * (1f - night),
+            sun.skyColor[2] * 1.05f + 0.003f * (1f - night))
+        val hazeL = max(sun.fog[0], max(sun.fog[1], sun.fog[2]))
+        GLES30.glUniform4f(u(progGroundFX, "uAerial"), 0.00055f, 0.42f,
+            if (hazeL > 1e-4f) 0.42f * (1f - night) * (1f - 0.45f * wet) else 0f, 0f)
+        GLES30.glUniform3f(u(progGroundFX, "uHaze"), sun.fog[0], sun.fog[1], sun.fog[2])
+        GLES30.glUniform1f(u(progGroundFX, "uRipple"), rainMode)
+        // night light-pollution band: a horizon point 20 km down the flattened camera forward
+        val fw = FloatArray(4)
+        Matrix.multiplyMV(fw, 0, viewInv, 0, floatArrayOf(0f, 0f, -1f, 0f), 0)
+        var fwX = fw[0]; var fwZ = fw[2]
+        val fwL = sqrt(fwX * fwX + fwZ * fwZ)
+        val strength = night * 0.55f * (1f - 0.5f * rainMode)
+        if (fwL > 1e-5f && strength > 0.001f) {
+            fwX /= fwL; fwZ /= fwL
+            val hx = eye[0] + fwX * 20000f; val hz = eye[2] + fwZ * 20000f; val hy = eye[1]
+            val cx = vpM[0] * hx + vpM[4] * hy + vpM[8] * hz + vpM[12]
+            val cy = vpM[1] * hx + vpM[5] * hy + vpM[9] * hz + vpM[13]
+            val cw = vpM[3] * hx + vpM[7] * hy + vpM[11] * hz + vpM[15]
+            val ndcY = if (abs(cw) > 1e-5f) cy / cw else 1.5f
+            GLES30.glUniform3f(u(progGroundFX, "uHorizon"), ndcY.coerceIn(-1.5f, 1.5f), 7.5f, strength)
+        } else {
+            GLES30.glUniform3f(u(progGroundFX, "uHorizon"), 0f, 7.5f, 0f)
+        }
+        GLES30.glUniform3f(u(progGroundFX, "uGlowColor"), 1.0f, 0.72f, 0.42f)
+        GLES30.glUniform2f(u(progGroundFX, "uOcclusion"), 0.95f, 0.30f + 0.10f * night)
+        GLES30.glUniform1f(u(progGroundFX, "uContactDark"), 0.72f)
+        GLES30.glUniform1f(u(progGroundFX, "uNight"), night)
+        GLES30.glUniform4f(u(progGroundFX, "uPoolXf"), pudDrainXf[0], pudDrainXf[1], pudDrainXf[2], pudDrainXf[3])
+        for (i in 0 until 12) {
+            wetLightPosBuf[i * 4] = wetLights.posX[i].toFloat()
+            wetLightPosBuf[i * 4 + 1] = wetLights.posY[i].toFloat()
+            wetLightPosBuf[i * 4 + 2] = wetLights.posZ[i].toFloat()
+            wetLightPosBuf[i * 4 + 3] = wetLights.posI[i].toFloat()
+            wetLightColBuf[i * 3] = wetLights.colR[i].toFloat()
+            wetLightColBuf[i * 3 + 1] = wetLights.colG[i].toFloat()
+            wetLightColBuf[i * 3 + 2] = wetLights.colB[i].toFloat()
+        }
+        GLES30.glUniform4fv(u(progGroundFX, "uWetLights"), 12, wetLightPosBuf, 0)
+        GLES30.glUniform3fv(u(progGroundFX, "uWetLightCol"), 12, wetLightColBuf, 0)
+        GLES30.glUniform1i(u(progGroundFX, "uWetLightN"), wetLights.count)
+
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, sceneTex)
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE1)
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, sceneDepth)
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE2)
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, texDrainage)
+        GLES30.glDrawArrays(GLES30.GL_TRIANGLES, 0, 3)
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
+        GLES30.glEnable(GLES30.GL_DEPTH_TEST)
+        GLES30.glDepthMask(true)
+        GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, 0)
     }
 
     /** The site's baked cloud textures (worldgen Clouds.kt = the web's Clouds.js CPU bakes). */
@@ -515,10 +898,13 @@ class GlCityRenderer : GLSurfaceView.Renderer {
 
         val sun = updateSunState()
         renderReflection(sun) // Water.js renderReflection — before the main render
-        GLES30.glViewport(letterbox[0].toInt(), letterbox[1].toInt(), letterbox[2].toInt(), letterbox[3].toInt())
+        updateWetLights(sun, dt) // WetLights emitter ranking (needs the fresh sun + traffic state)
+        // the whole scene renders into the GroundFX RT; the FX pass blits it to the backbuffer
+        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, sceneFbo)
+        GLES30.glViewport(0, 0, sceneW, sceneH)
         GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT or GLES30.GL_DEPTH_BUFFER_BIT)
 
-        // sky fills the letterboxed viewport (depth off)
+        // sky fills the viewport (depth off)
         GLES30.glDisable(GLES30.GL_DEPTH_TEST)
         drawSky(sun)
         GLES30.glEnable(GLES30.GL_DEPTH_TEST)
@@ -531,10 +917,14 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         drawEditQuads(sun)
         drawBuildings(sun)
         drawVehicles(sun)
+        drawLamps(sun)
         drawPuddles(sun)
         drawWater(sun)
         drawClouds(sun)
         drawPrecipitation(sun)
+        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
+        GLES30.glViewport(letterbox[0].toInt(), letterbox[1].toInt(), letterbox[2].toInt(), letterbox[3].toInt())
+        drawGroundFX(sun)
 
         if (!glErrorLogged) {
             val err = GLES30.glGetError()

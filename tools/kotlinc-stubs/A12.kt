@@ -39,6 +39,8 @@ object GLES30 {
     const val GL_TEXTURE_3D = 0x806F
     const val GL_TEXTURE_WRAP_R = 0x8072
     const val GL_ONE = 0x1
+    fun glUniform4fv(loc: Int, n: Int, v: FloatArray, off: Int): Unit = Unit
+    fun glUniform3fv(loc: Int, n: Int, v: FloatArray, off: Int): Unit = Unit
     fun glTexImage3D(t: Int, lvl: Int, ifmt: Int, w: Int, h: Int, d: Int, b: Int, fmt: Int, type: Int, data: java.nio.Buffer?): Unit = Unit
     fun glTexSubImage2D(t: Int, lvl: Int, x: Int, y: Int, w: Int, h: Int, fmt: Int, type: Int, data: java.nio.Buffer?): Unit = Unit
     const val GL_FRONT = 0x0404

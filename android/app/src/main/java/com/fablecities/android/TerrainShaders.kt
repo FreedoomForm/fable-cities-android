@@ -811,4 +811,319 @@ float fxPuddleField(vec2 xz) {
             fragColor = vec4(mix(col3, uFogColor, fog), 1.0);
         }
     """.trimIndent()
+
+    /**
+     * GroundFXPass (effects/GroundFXPass.js, GLSL ES 3.0) — one depth-driven fullscreen pass:
+     * screen-space wet-surface reflections (marched against the depth buffer, PuddleField
+     * drainage-map pool sharpening + the fxPuddleMask world-noise pools off-road, analytic
+     * emitter streaks for lamps/head-/tail-lights), contact shadows, fine 8-tap hemisphere AO,
+     * aerial perspective and the night light-pollution horizon band. Bit-exact port including
+     * the p5-p13 tuning constants.
+     */
+    val VS_GROUNDFX = """
+        #version 300 es
+        layout(location=0) in vec3 aPos;
+        out vec2 vUv;
+        void main() { vUv = aPos.xy * 0.5 + 0.5; gl_Position = vec4(aPos.xy, 0.0, 1.0); }
+    """.trimIndent()
+
+    val FS_GROUNDFX = """
+        #version 300 es
+        precision highp float;
+        uniform sampler2D tDiffuse;
+        uniform sampler2D tDepth;
+        uniform float uHasDepth;
+        uniform vec2 uResolution;
+        uniform vec2 uNearFar;
+        uniform mat4 uProj;
+        uniform mat4 uProjInv;
+        uniform mat4 uViewInv;
+        uniform mat4 uView;
+        uniform vec3 uUpView;        // world up in view space
+        uniform vec3 uSunView;       // direction TOWARD the sun, view space
+        uniform float uTime;
+        uniform vec2 uContact;       // strength, length (m)
+        uniform vec2 uAO;            // strength, radius (m)
+        uniform float uWet;          // 0 dry .. 1 soaked
+        uniform float uReflect;      // reflection strength multiplier
+        uniform vec3 uSkyColor;      // fallback reflected radiance (renderer units)
+        uniform vec4 uAerial;        // density (1/m), desaturation, lift, unused
+        uniform vec3 uHaze;          // haze colour (renderer units)
+        uniform float uRipple;       // rain intensity -> wobble in the mirror
+        uniform vec3 uHorizon;       // ndc y of the horizon, falloff, strength
+        uniform vec3 uGlowColor;
+        uniform vec2 uOcclusion;     // occlusion strength, cool sky-bounce fraction
+        uniform float uContactDark;  // how dark a confirmed contact patch goes
+        uniform float uNight;        // 0 day .. 1 night
+        uniform sampler2D uPoolMap;  // PuddleField drainage map (R pool, G tyre band, B corridor)
+        uniform vec4 uPoolXf;        // originX, originZ, 1/spanMetres, hasMap
+        uniform vec4 uWetLights[12];     // xyz = world position, w = intensity (0 = unused slot)
+        uniform vec3 uWetLightCol[12];   // emitter radiance colour
+        uniform int uWetLightN;
+        in vec2 vUv;
+        out vec4 fragColor;
+
+        // FX_NOISE_GLSL (effects/wetGlsl.js) — the same puddle mask the material hook uses
+        vec2 fxHash2(vec2 p) {
+          vec3 p3 = fract(vec3(p.xyx) * vec3(0.1031, 0.1030, 0.0973));
+          p3 += dot(p3, p3.yzx + 33.33);
+          return fract((p3.xx + p3.yz) * p3.zy);
+        }
+        float fxHash1(vec2 p) { return fxHash2(p).x; }
+        float fxValueNoise(vec2 p) {
+          vec2 i = floor(p), f = fract(p);
+          vec2 u = f * f * (3.0 - 2.0 * f);
+          float a = fxHash1(i), b = fxHash1(i + vec2(1.0, 0.0)), c = fxHash1(i + vec2(0.0, 1.0)), d = fxHash1(i + vec2(1.0, 1.0));
+          return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+        }
+        float fxPuddleField(vec2 xz) {
+          return fxValueNoise(xz * 0.085) * 0.68 + fxValueNoise(xz * 0.21 + 17.3) * 0.32;
+        }
+        float fxPuddleMask(vec2 xz, float wet, out float rim) {
+          float pn = fxPuddleField(xz);
+          float thr = 0.655 - 0.075 * wet;
+          float fill = smoothstep(0.10, 0.55, wet);
+          rim = smoothstep(thr - 0.10, thr, pn) * fill;
+          return smoothstep(thr - 0.004, thr + 0.03, pn) * fill;
+        }
+
+        float luma(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
+        vec3 drainage(vec2 xz) {
+          if (uPoolXf.w < 0.5) return vec3(0.0);
+          vec2 uv = (xz - uPoolXf.xy) * uPoolXf.z;
+          if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) return vec3(0.0);
+          return texture(uPoolMap, uv).rgb;
+        }
+        float rawDepth(vec2 uv) { return texture(tDepth, uv).x; }
+        // three.js packing: perspectiveDepthToViewZ — negative view-space z
+        float viewZ(float d) { return (uNearFar.x * uNearFar.y) / ((uNearFar.y - uNearFar.x) * d - uNearFar.y); }
+        vec3 viewPos(vec2 uv, float d) {
+          vec4 ndc = vec4(uv * 2.0 - 1.0, d * 2.0 - 1.0, 1.0);
+          vec4 p = uProjInv * ndc;
+          return p.xyz / p.w;
+        }
+        vec3 project(vec3 v) {
+          vec4 c = uProj * vec4(v, 1.0);
+          vec3 n = c.xyz / max(abs(c.w), 1e-6) * sign(c.w);
+          return vec3(n.xy * 0.5 + 0.5, n.z * 0.5 + 0.5);
+        }
+
+        void main() {
+          vec4 src = texture(tDiffuse, vUv);
+          vec3 c = src.rgb;
+          if (uHasDepth < 0.5) { fragColor = vec4(c, src.a); return; }
+
+          float d0 = rawDepth(vUv);
+          if (d0 >= 0.99999) {
+            // sky: only the night light-pollution band above the horizon
+            if (uHorizon.z > 0.0001) {
+              float dy = (vUv.y * 2.0 - 1.0) - uHorizon.x;
+              float band = exp(-max(dy, 0.0) * uHorizon.y) * smoothstep(-0.10, 0.0, dy);
+              c += uGlowColor * (luma(c) * 1.4 + 0.0012) * band * uHorizon.z;
+            }
+            fragColor = vec4(c, src.a);
+            return;
+          }
+
+          vec2 texel = 1.0 / uResolution;
+          vec3 P = viewPos(vUv, d0);
+          float dist = length(P);
+          vec3 V = P / max(dist, 1e-4);
+
+          // normal from depth (smaller of the two one-sided differences per axis)
+          vec3 dxP = viewPos(vUv + vec2(texel.x, 0.0), rawDepth(vUv + vec2(texel.x, 0.0))) - P;
+          vec3 dxM = P - viewPos(vUv - vec2(texel.x, 0.0), rawDepth(vUv - vec2(texel.x, 0.0)));
+          vec3 dyP = viewPos(vUv + vec2(0.0, texel.y), rawDepth(vUv + vec2(0.0, texel.y))) - P;
+          vec3 dyM = P - viewPos(vUv - vec2(0.0, texel.y), rawDepth(vUv - vec2(0.0, texel.y)));
+          vec3 ddx = abs(dxP.z) < abs(dxM.z) ? dxP : dxM;
+          vec3 ddy = abs(dyP.z) < abs(dyM.z) ? dyP : dyM;
+          vec3 N = normalize(cross(ddx, ddy));
+          if (dot(N, V) > 0.0) N = -N;
+
+          float dither = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453);
+
+          // ---- fine ambient occlusion (0.4-0.6 m: kerbs, eaves, object bases) ----
+          float ao = 1.0;
+          if (uAO.x > 0.001) {
+            float r = uAO.y;
+            float occ = 0.0;
+            float bay = mod(floor(gl_FragCoord.x), 2.0) + 2.0 * mod(floor(gl_FragCoord.y), 2.0);
+            float a0 = bay * 0.19634954;
+            for (int i = 0; i < 8; i++) {
+              float a = a0 + float(i) * 0.7853982;
+              float rad = r * (0.30 + 0.70 * fract(float(i) * 0.37 + bay * 0.25));
+              vec3 t = normalize(abs(N.z) < 0.9 ? cross(N, vec3(0.0, 0.0, 1.0)) : cross(N, vec3(1.0, 0.0, 0.0)));
+              vec3 b = cross(N, t);
+              vec3 dir = normalize(t * cos(a) + b * sin(a) + N * 0.55);
+              vec3 sp = P + dir * rad;
+              vec3 pr = project(sp);
+              if (pr.x < 0.0 || pr.x > 1.0 || pr.y < 0.0 || pr.y > 1.0) continue;
+              float sz = viewZ(rawDepth(pr.xy));
+              float dz = sz - sp.z;
+              float range = smoothstep(0.0, 1.0, r / max(abs(sz - P.z), 1e-3));
+              occ += step(0.02, dz) * range;
+            }
+            ao = 1.0 - uAO.x * (occ / 8.0);
+            ao = clamp(mix(1.0, ao, 1.0 - smoothstep(140.0, 460.0, dist)), 0.0, 1.0);
+          }
+
+          // ---- contact shadow (short march toward the sun) ----
+          float shadow = 1.0;
+          if (uContact.x > 0.001) {
+            float len = uContact.y * (1.0 + smoothstep(20.0, 220.0, dist) * 2.2);
+            float stepLen = len / 12.0;
+            vec3 O = P + N * (0.012 + dist * 0.0025);
+            float hit = 0.0;
+            for (int i = 1; i <= 12; i++) {
+              vec3 sp = O + uSunView * (stepLen * (float(i) - 0.5 + dither * 0.9));
+              vec3 pr = project(sp);
+              if (pr.x < 0.0 || pr.x > 1.0 || pr.y < 0.0 || pr.y > 1.0) break;
+              float sz = viewZ(rawDepth(pr.xy));
+              float dz = sz - sp.z;
+              float bias = 0.03 + abs(sp.z) * 0.004;
+              if (dz > bias && dz < bias + 1.6) { hit = 1.0 - (float(i) - 1.0) / 12.0 * 0.35; break; }
+            }
+            shadow = 1.0 - uContact.x * hit * (1.0 - smoothstep(120.0, 380.0, dist));
+          }
+
+          // contact multiplies FIRST; the bounce is computed on what is left (p6 fix)
+          c *= 1.0 - (1.0 - shadow) * uContactDark;
+          float occAO = (1.0 - ao) * uOcclusion.x;
+          c = c * (1.0 - occAO) + uSkyColor * (luma(c) + 0.0015) * occAO * uOcclusion.y;
+
+          // ---- wet reflections ----
+          float up = dot(N, uUpView);
+          float flat_ = smoothstep(0.80, 0.96, up);
+          float lum = luma(c);
+          float green = (c.g - max(c.r, c.b)) / max(lum, 1e-3);
+          float notGreen = 1.0 - smoothstep(0.06, 0.22, green);
+          float wetMask = uWet * flat_ * notGreen * uReflect;
+          if (wetMask > 0.004 && dist < 700.0) {
+            vec3 W = (uViewInv * vec4(P, 1.0)).xyz;
+            float rim;
+            vec3 drain = drainage(W.xz);
+            float poolMap = smoothstep(0.12, 0.55, drain.r) * smoothstep(0.10, 0.45, uWet);
+            float offRoad = 1.0 - smoothstep(0.25, 0.65, drain.b);
+            float pool = max(poolMap, fxPuddleMask(W.xz, uWet, rim) * offRoad);
+            float rough = mix(0.85, 0.10, pool);
+            vec2 g = vec2(
+              fxValueNoise(W.xz * 1.7 + vec2(uTime * 0.05, 0.0)) - fxValueNoise(W.xz * 1.7 + vec2(0.3 + uTime * 0.05, 0.0)),
+              fxValueNoise(W.xz * 1.7 + vec2(0.0, uTime * 0.05)) - fxValueNoise(W.xz * 1.7 + vec2(0.0, 0.3 + uTime * 0.05)));
+            g += vec2(fxValueNoise(W.xz * 1.45) - 0.5, fxValueNoise(W.xz * 1.45 + 31.0) - 0.5) * (0.30 + 0.5 * uRipple);
+            g += vec2(fxValueNoise(W.xz * 0.47) - 0.5, fxValueNoise(W.xz * 0.47 + 17.0) - 0.5) * 0.55;
+            float NdV = clamp(-dot(N, V), 0.0, 1.0);
+            float F = 0.028 + 0.972 * pow(1.0 - NdV, 4.5);
+            vec3 tilt = mat3(uView) * vec3(g.x, 0.0, g.y);
+            float wob = rough * 0.05 * (0.16 + 0.84 * NdV) * (1.0 - smoothstep(60.0, 200.0, dist));
+            vec3 R = reflect(V, normalize(N + tilt * wob));
+
+            vec3 Rw = mat3(uViewInv) * reflect(V, N);
+            vec3 miss = mix(uHaze, uSkyColor, smoothstep(0.03, 0.40, Rw.y)) * 0.75
+                        * (1.0 - 0.92 * uNight * (1.0 - 0.85 * pool));
+            vec3 refl = miss;
+            float conf = 0.0;
+            if (R.z < 0.35) {
+              float t = 0.30 + dist * 0.010;
+              vec3 prev = P;
+              for (int i = 0; i < 22; i++) {
+                vec3 sp = P + R * t;
+                vec3 pr = project(sp);
+                if (pr.x < -0.02 || pr.x > 1.02 || pr.y < -0.02 || pr.y > 1.02 || sp.z > -uNearFar.x) break;
+                float sd = rawDepth(clamp(pr.xy, vec2(0.0), vec2(1.0)));
+                float sz = viewZ(sd);
+                float dz = sz - sp.z;
+                float thick = min(0.55 + t * 0.22, 5.5);
+                float minDz = 0.06 + t * 0.035;
+                if (dz > minDz && dz < thick && sd < 0.99999) {
+                  vec3 lo = prev, hi = sp;
+                  for (int k = 0; k < 4; k++) {
+                    vec3 mid = (lo + hi) * 0.5;
+                    vec3 pm = project(mid);
+                    float zm = viewZ(rawDepth(clamp(pm.xy, vec2(0.0), vec2(1.0))));
+                    if (zm - mid.z > minDz) hi = mid; else lo = mid;
+                  }
+                  vec3 pf = project(hi);
+                  vec2 huv = clamp(pf.xy, vec2(0.0), vec2(1.0));
+                  refl = texture(tDiffuse, huv).rgb;
+                  vec2 e = smoothstep(vec2(0.0), vec2(0.11), huv) * (1.0 - smoothstep(vec2(0.89), vec2(1.0), huv));
+                  conf = e.x * e.y;
+                  break;
+                }
+                prev = sp;
+                t *= 1.28;
+                t += 0.14;
+                if (t > 260.0) break;
+              }
+            }
+            refl = mix(miss, refl, conf);
+            float k = clamp(F * wetMask * (0.18 + 0.82 * pool) * mix(0.18, 1.0, conf), 0.0, 0.82);
+            c = mix(c, refl, k);
+            c *= 1.0 - 0.12 * pool * uWet;
+
+            // ---- analytic emitter smears (lamps, head- and tail-lights) ----
+            if (uWetLightN > 0) {
+              vec3 acc = vec3(0.0);
+              vec3 RwDir = mat3(uViewInv) * R;
+              RwDir /= max(length(RwDir), 1e-4);
+              for (int i = 0; i < 12; i++) {
+                if (i >= uWetLightN) break;
+                vec4 Le = uWetLights[i];
+                if (Le.w <= 0.0) continue;
+                vec3 M = Le.xyz;
+                vec3 toM = M - W;
+                float t = dot(toM, RwDir);
+                if (t <= 0.5) continue;
+                vec3 diff = toM - RwDir * t;
+                float dh2 = dot(diff.xz, diff.xz);
+                float dv = abs(diff.y);
+                float sh = mix(0.66, 0.26, pool);
+                vec3 colN = uWetLightCol[i] / max(luma(uWetLightCol[i]), 0.25);
+                float sv = mix(1.8, 2.3, pool);
+                float tailish = smoothstep(2.0, 5.0, colN.r / max(colN.g, 0.05));
+                sv *= mix(1.0, 2.2, tailish);
+                sh *= mix(1.0, 1.05, tailish);
+                float w = exp(-dh2 / (sh * sh)) * exp(-dv * dv / (sv * sv));
+                if (w < 0.004) continue;
+                float wCore = exp(-dh2 / (sh * sh * 0.30)) * exp(-dv * dv / (sv * sv * 0.45));
+                float amp = w + wCore * min(1.0, Le.w / 2.5) * 0.7;
+                float att = mix(1.0, 0.30, smoothstep(30.0, 160.0, t));
+                att *= mix(0.22, 1.0, smoothstep(6.0, 40.0, t));
+                acc += colN * (Le.w * amp * att);
+              }
+              c += acc * (0.45 + 0.55 * F) * wetMask * (0.45 + 0.80 * pool) * 1.3;
+            }
+          }
+
+          // ---- aerial perspective (lifts blacks toward the sky, desaturates) ----
+          if (uAerial.x > 0.0) {
+            float f = 1.0 - exp(-dist * uAerial.x);
+            float l = luma(c);
+            c = mix(c, vec3(l), uAerial.y * f);
+            c += uHaze * uAerial.z * f;
+          }
+
+          fragColor = vec4(max(c, vec3(0.0)), src.a);
+        }
+    """.trimIndent()
+
+    /** Street-lamp bulb heads: dark glass by day, warm radiance at night (the site's lamp glow). */
+    val FS_LAMPHEAD = """
+        #version 300 es
+        precision highp float;
+        in vec3 vColor;
+        in vec3 vWorld;
+        uniform vec3 uFogColor;
+        uniform float uFogDensity;
+        uniform vec3 uCamPos;
+        uniform float uNight;
+        out vec4 fragColor;
+        void main() {
+            vec3 glass = vColor;
+            vec3 glow = vec3(1.0, 0.78, 0.45) * 2.2;
+            vec3 col = mix(glass, glow, uNight);
+            float d = length(uCamPos - vWorld);
+            float fog = 1.0 - exp(-d * uFogDensity);
+            fragColor = vec4(mix(col, uFogColor, fog), 1.0);
+        }
+    """.trimIndent()
 }
