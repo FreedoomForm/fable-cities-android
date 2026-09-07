@@ -131,6 +131,8 @@ jobs:
             adb shell pidof com.fablecities.android > pid_parity.txt || true
             grep -q "[0-9]" pid_parity.txt || { echo "::error::Parity (WebView) process died during launch"; grep -E "Fatal signal|FATAL EXCEPTION|SIGSEGV|SIGABRT|AndroidRuntime|chromium|Console|fablecities" parity_bootcat.txt | head -60; exit 1; }
             grep -E "\[ERROR:CONSOLE" parity_bootcat.txt | grep -v -i favicon && { echo "::error::Web-parity page reported console errors inside the WebView (shader compile / 404 / JS exception)"; grep -E "\[ERROR:CONSOLE" parity_bootcat.txt | head -20; exit 1; } || true
+            adb shell input tap 1486 553 || true
+            sleep 2
             adb exec-out screencap -p > parity_screen.png
             # ---- GATE 2: native GLES renderer activity ----
             adb shell am force-stop com.fablecities.android
@@ -148,6 +150,8 @@ jobs:
             # GL runtime error means the frame can not be trusted. The screenshot artifact carries
             # the visual proof alongside the release.
             grep -E "GlCityRenderer: (shader|link|GL error)" full_bootcat.txt && { echo "::error::GL renderer reported compile/link/runtime errors"; grep -E "GlCityRenderer: " full_bootcat.txt | head -30; exit 1; } || true
+            adb shell input tap 1486 553 || true
+            sleep 2
             adb exec-out screencap -p > emulator_screen.png
             cp full_bootcat.txt full_logcat.txt
             echo "Emulator gate PASSED: parity + native both alive, no fatal, no page/GL errors"
