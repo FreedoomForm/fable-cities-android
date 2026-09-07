@@ -242,6 +242,9 @@ object Traffic {
         val nodePos: Map<String, DoubleArray>,
         val segType: Map<String, String>,
         val pedestrian: LaneGraphIn? = null,
+        // per-segment metadata for writeSegmentLoads(): road length (m) and lane count
+        val segLength: Map<String, Double> = emptyMap(),
+        val segLaneCount: Map<String, Int> = emptyMap(),
     )
 
     private class HeapItem(val node: Int, val f: Double)
@@ -344,6 +347,9 @@ object Traffic {
 
     /** The routable lane network: lanes, connectors, junctions, signals, spawn table, A*. */
     class LaneNetwork {
+        /** Per-segment metadata (writeSegmentLoads inputs), copied from the last rebuild. */
+        var segLength: Map<String, Double> = emptyMap()
+        var segLaneCount: Map<String, Int> = emptyMap()
         val elements = ArrayList<LElement>()
         val laneElems = ArrayList<Int>()
         val pedElements = ArrayList<LElement>() // sidewalk network (kind 0 lanes + crossing connectors)
@@ -372,6 +378,8 @@ object Traffic {
         fun rebuild(graph: LaneGraphIn, versionIn: Int = 0): Boolean {
             if (versionIn == version && ready) return false
             version = versionIn
+            segLength = graph.segLength
+            segLaneCount = graph.segLaneCount
             elements.clear()
             laneElems.clear()
             nodes.clear()
@@ -778,6 +786,43 @@ object Traffic {
         var camX = 0.0; var camZ = 0.0
         var congestion = 0.0
         var avgSpeedRatio = 1.0
+        /** Per-segment traffic load 0..1 (the web's seg.traffic), for the HUD / road tinting. */
+        val segLoad = HashMap<String, Double>()
+
+        /** Per-segment load 0..1 + a global congestion figure (TrafficSim.writeSegmentLoads,
+         *  called once per sim tick). */
+        fun writeSegmentLoads() {
+            val segs = net.segLength
+            if (segs.isEmpty()) { congestion = 0.0; return }
+            val load = HashMap<String, DoubleArray>()
+            var ratioSum = 0.0; var ratioN = 0
+            for (v in vehicles) {
+                val sid = v.segmentId ?: continue
+                var rec = load[sid]
+                if (rec == null) { rec = doubleArrayOf(0.0, 0.0); load[sid] = rec }
+                rec[0]++
+                rec[1] += 1.0 - v.speedRatio
+                ratioSum += v.speedRatio; ratioN++
+            }
+            var weighted = 0.0; var total = 0.0
+            for ((id, len) in segs) {
+                val rec = load[id]
+                val lanes = max(1, net.segLaneCount[id] ?: 2)
+                val cap = max(1.0, (len / 22.0) * lanes)
+                var t = 0.0
+                if (rec != null) {
+                    // a grid with lights is never at free flow, so only the slow-down *beyond*
+                    // the normal stop-and-go of an urban street counts as congestion
+                    val density = min(1.4, rec[0] / cap)
+                    val slow = if (rec[0] > 0.0) rec[1] / rec[0] else 0.0
+                    t = min(1.0, 0.45 * density + 1.10 * max(0.0, slow - 0.52))
+                }
+                segLoad[id] = t
+                weighted += t * len; total += len
+            }
+            avgSpeedRatio = if (ratioN > 0) ratioSum / ratioN else 1.0
+            congestion = if (total > 0) min(1.0, weighted / total) else 0.0
+        }
         private var astar = 16
         private var bucket = Array<ArrayList<Vehicle>>(0) { ArrayList() }
         private var bstamp = IntArray(0)

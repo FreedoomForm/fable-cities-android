@@ -246,7 +246,20 @@ object RoadNetBuilder {
         }
 
         val segType = HashMap<String, String>()
-        for ((ei, e) in edges.withIndex()) segType["e$ei"] = e.type
+        val segLength = HashMap<String, Double>()
+        val segLaneCount = HashMap<String, Int>()
+        for ((ei, e) in edges.withIndex()) {
+            val segId = "e$ei"
+            segType[segId] = e.type
+            var len = 0.0
+            for (v in 1 until e.pts.size) {
+                len += hypot(e.pts[v].x - e.pts[v - 1].x, e.pts[v].z - e.pts[v - 1].z)
+            }
+            segLength[segId] = len
+        }
+        for (l in lanes) {
+            segLaneCount[l.segmentId] = (segLaneCount[l.segmentId] ?: 0) + 1
+        }
         val nodePos = HashMap<String, DoubleArray>()
         for (i in nodeX.indices) nodePos["n$i"] = doubleArrayOf(nodeX[i], nodeZ[i])
 
@@ -303,7 +316,8 @@ object RoadNetBuilder {
         for (l in pedLanes) graphPedConns[l.id] = pedConns[l.id] ?: emptyList()
 
         return Traffic.LaneGraphIn(graphLanes, graphConns, nodePos, segType,
-            Traffic.LaneGraphIn(graphPedLanes, graphPedConns, nodePos, segType))
+            Traffic.LaneGraphIn(graphPedLanes, graphPedConns, nodePos, segType),
+            segLength, segLaneCount)
     }
 
     // ------------------------------------------------------------------ polyline helpers

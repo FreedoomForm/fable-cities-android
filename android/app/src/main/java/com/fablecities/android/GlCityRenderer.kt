@@ -30,6 +30,7 @@ import kotlin.math.abs
 import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.exp
+import kotlin.math.floor
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
@@ -100,6 +101,20 @@ class GlCityRenderer : GLSurfaceView.Renderer {
     /** Precipitation.js: camera-following volume of GPU-wrapped streak/flake seeds. */
     private val PRECIP_N = 2600
     private val PRECIP_VOLUME = floatArrayOf(150f, 80f, 150f)
+    // --- planar reflection RT (Water.js renderReflection): half-res colour + depth ---
+    private var reflFbo = 0
+    private var reflTex = 0
+    private var reflDepth = 0
+    private var reflW = 0
+    private var reflH = 0
+    private val reflViewM = FloatArray(16)
+    private val reflViewInvM = FloatArray(16)
+    private val reflProjM = FloatArray(16)
+    private val reflVpM = FloatArray(16)
+    private val reflTexM = FloatArray(16)
+    private val reflBias = floatArrayOf(
+        0.5f, 0f, 0f, 0f,  0f, 0.5f, 0f, 0f,  0f, 0f, 0.5f, 0f,  0.5f, 0.5f, 0.5f, 1f,
+    )
 
     // --- geometry handles ---
     private var terrainVbo = 0
@@ -162,6 +177,10 @@ class GlCityRenderer : GLSurfaceView.Renderer {
     private var lastSaveHint = 0L
 
     private var frameNanos = 0L
+    // frame-time instrumentation (perfguard-style): rolling 240-frame window, avg + 1%-low
+    private val frameTimes = FloatArray(240)
+    private var frameIdx = 0
+    private var lastFrameLog = 0L
     private var glErrorLogged = false
 
     // --- simulation: the site's real economy / services / milestones model (simulation.js port) ---
@@ -235,6 +254,95 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         surfaceW = max(1, width)
         surfaceH = max(1, height)
         computeLetterbox()
+        setupReflectionFbo()
+    }
+
+    /** Water.js reflection target: RGBA8 + depth at reflectionScale 0.5 of the viewport. */
+    private fun setupReflectionFbo() {
+        val w = max(256, floor(letterbox[2] * 0.5f).toInt())
+        val h = max(256, floor(letterbox[3] * 0.5f).toInt())
+        if (reflFbo != 0 && w == reflW && h == reflH) return
+        if (reflFbo != 0) {
+            GLES30.glDeleteFramebuffers(1, intArrayOf(reflFbo), 0)
+            GLES30.glDeleteTextures(1, intArrayOf(reflTex), 0)
+            GLES30.glDeleteRenderbuffers(1, intArrayOf(reflDepth), 0)
+            reflFbo = 0
+        }
+        val genTex = IntArray(1); val genRb = IntArray(1); val genFb = IntArray(1)
+        GLES30.glGenTextures(1, genTex, 0)
+        GLES30.glGenRenderbuffers(1, genRb, 0)
+        GLES30.glGenFramebuffers(1, genFb, 0)
+        reflTex = genTex[0]; reflDepth = genRb[0]; reflFbo = genFb[0]
+        reflW = w; reflH = h
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, reflTex)
+        GLES30.glTexImage2D(GLES30.GL_TEXTURE_2D, 0, GLES30.GL_RGBA8, w, h, 0, GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE, null)
+        GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_MIN_FILTER, GLES30.GL_LINEAR)
+        GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_MAG_FILTER, GLES30.GL_LINEAR)
+        GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_WRAP_S, GLES30.GL_CLAMP_TO_EDGE)
+        GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_WRAP_T, GLES30.GL_CLAMP_TO_EDGE)
+        GLES30.glBindRenderbuffer(GLES30.GL_RENDERBUFFER, reflDepth)
+        GLES30.glRenderbufferStorage(GLES30.GL_RENDERBUFFER, GLES30.GL_DEPTH_COMPONENT24, w, h)
+        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, reflFbo)
+        GLES30.glFramebufferTexture2D(GLES30.GL_FRAMEBUFFER, GLES30.GL_COLOR_ATTACHMENT0, GLES30.GL_TEXTURE_2D, reflTex, 0)
+        GLES30.glFramebufferRenderbuffer(GLES30.GL_FRAMEBUFFER, GLES30.GL_DEPTH_ATTACHMENT, GLES30.GL_RENDERBUFFER, reflDepth)
+        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, 0)
+        GLES30.glBindRenderbuffer(GLES30.GL_RENDERBUFFER, 0)
+    }
+
+    /** Water.js renderReflection: mirror the camera across the water plane, oblique-clip the
+     *  near plane at it, render the reflectables into the RT (alpha 0 elsewhere). */
+    private fun renderReflection(sun: SunState) {
+        if (reflFbo == 0) { sun.reflectionStrength = 0f; return }
+        val wl = 0f // the site's water level
+        val cx = camTarget[0] + camDist * cos(camPitch) * sin(camYaw)
+        val cy = camTarget[1] + camDist * sin(camPitch)
+        val cz = camTarget[2] + camDist * cos(camPitch) * cos(camYaw)
+        if (cy < wl) { sun.reflectionStrength = 0f; return }
+        // mirror eye and look target across y = wl; up flips with them (three Reflector)
+        Matrix.setLookAtM(reflViewM, 0, cx, 2f * wl - cy, cz,
+            camTarget[0], 2f * wl - camTarget[1], camTarget[2], 0f, -1f, 0f)
+        // texture matrix = bias x proj x viewInv (computed BEFORE the oblique modification)
+        Matrix.invertM(reflViewInvM, 0, reflViewM, 0)
+        Matrix.multiplyMM(reflTexM, 0, reflBias, 0, projM, 0)
+        Matrix.multiplyMM(reflTexM, 0, reflTexM, 0, reflViewInvM, 0)
+        // oblique near plane (Lengyel) so nothing below the water is reflected
+        System.arraycopy(projM, 0, reflProjM, 0, 16)
+        // world plane (n = (0,1,0), constant = -wl) into view space with the rigid view matrix
+        val nvx = reflViewM[1]; val nvy = reflViewM[5]; val nvz = reflViewM[9]
+        val ndotT = nvx * reflViewM[12] + nvy * reflViewM[13] + nvz * reflViewM[14]
+        val clipX = nvx; val clipY = nvy; val clipZ = nvz; val clipW = -wl - ndotT
+        run {
+            val sx = if (clipX >= 0f) 1f else -1f
+            val sy = if (clipY >= 0f) 1f else -1f
+            val qx = (sx + reflProjM[8]) / reflProjM[0]
+            val qy = (sy + reflProjM[9]) / reflProjM[5]
+            val qw = (1f + reflProjM[10]) / reflProjM[14]
+            val k = 2f / (clipX * qx + clipY * qy + clipZ * (-1f) + clipW * qw)
+            reflProjM[2] = clipX * k
+            reflProjM[6] = clipY * k
+            reflProjM[10] = clipZ * k + 1f - 0.0005f
+            reflProjM[14] = clipW * k
+        }
+        Matrix.multiplyMM(reflVpM, 0, reflProjM, 0, reflViewM, 0)
+
+        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, reflFbo)
+        GLES30.glViewport(0, 0, reflW, reflH)
+        GLES30.glClearColor(0f, 0f, 0f, 0f) // alpha 0 where nothing is reflected → sky probe fallback
+        GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT or GLES30.GL_DEPTH_BUFFER_BIT)
+        val savedVp = vpM.copyOf()
+        System.arraycopy(reflVpM, 0, vpM, 0, 16)
+        GLES30.glCullFace(GLES30.GL_FRONT) // mirrored view flips winding
+        drawTerrain(sun)
+        drawCityGround(sun)
+        drawEditQuads(sun)
+        drawBuildings(sun)
+        drawVehicles(sun)
+        GLES30.glCullFace(GLES30.GL_BACK)
+        System.arraycopy(savedVp, 0, vpM, 0, 16)
+        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
+        GLES30.glClearColor(0.03f, 0.05f, 0.08f, 1f)
+        sun.reflectionStrength = 1f
     }
 
     private fun computeLetterbox() {
@@ -250,6 +358,13 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         val now = System.nanoTime()
         val dt = if (frameNanos == 0L) 0.016f else ((now - frameNanos) / 1_000_000_000f).coerceIn(0.001f, 0.1f)
         frameNanos = now
+        frameTimes[frameIdx] = dt * 1000f
+        frameIdx = (frameIdx + 1) % frameTimes.size
+        if (now - lastFrameLog > 10_000_000_000L) {
+            lastFrameLog = now
+            val fs = frameStats()
+            Log.d("GlCityRenderer", "frame avg %.2f ms (p99 %.2f ms, ~%.0f fps)".format(fs[0], fs[1], 1000f / fs[0]))
+        }
 
         if (!paused) {
             hour += dt / 20f // World.js: secondsPerHour = 20 at speed 1
@@ -281,6 +396,7 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         Matrix.invertM(invVpM, 0, vpM, 0)
 
         val sun = updateSunState()
+        renderReflection(sun) // Water.js renderReflection — before the main render
         GLES30.glViewport(letterbox[0].toInt(), letterbox[1].toInt(), letterbox[2].toInt(), letterbox[3].toInt())
         GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT or GLES30.GL_DEPTH_BUFFER_BIT)
 
@@ -346,6 +462,7 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         var precip = 0f           // smoothed rain|snow — particle system alpha
         var precipMode = 0f       // 0 rain, 1 snow (by the dominant type)
         var starFade = 0.82f      // 1 - 0.6 x cloudCover — star wash under the deck
+        var reflectionStrength = 0f // 1 after a successful planar reflection pass (Water.js)
         var fogSkyCol = FloatArray(3) // st.fogColor x sK — the dome's fog-dissolve colour (milk)
     }
 
@@ -959,6 +1076,8 @@ class GlCityRenderer : GLSurfaceView.Renderer {
     /** Advance the site's simulation: 3 game minutes per real second (World.js secondsPerHour=20). */
     private fun stepSimulation(dt: Float) {
         simMinutesAcc += dt * 3.0
+        // per-segment congestion stats (traffic/index.js sim:tick → sim.writeSegmentLoads())
+        trafficSim?.writeSegmentLoads()
         var guard = 0
         while (simMinutesAcc >= 1.0 && guard < 240) {
             simMinutesAcc -= 1.0
@@ -1535,6 +1654,20 @@ class GlCityRenderer : GLSurfaceView.Renderer {
 
     fun weatherName(): String = weather.name
 
+    /** Frame-time instrumentation: [avg ms, 99th-percentile ms (the 1% low), fps estimate]. */
+    fun frameStats(): FloatArray {
+        val sample = frameTimes.copyOf()
+        sample.sort()
+        var sum = 0f
+        for (v in sample) sum += v
+        val avg = sum / sample.size
+        val p99 = sample[(sample.size * 99) / 100]
+        return floatArrayOf(avg, p99, 1000f / avg)
+    }
+
+    /** traffic.stats().congestion for the HUD (0..1, the site's global congestion figure). */
+    fun trafficCongestion(): Double = trafficSim?.congestion ?: 0.0
+
     // ---------------------------------------------------------------- persistence
 
     fun editsState(): String {
@@ -1882,6 +2015,8 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         GLES30.glUniform1f(u(progWater, "uHeightN"), worldHeight.N.toFloat())
         GLES30.glUniform1f(u(progWater, "uShoreN"), worldHeight.N.toFloat())
         GLES30.glUniform1f(u(progWater, "uWaterLevel"), waterY)
+        GLES30.glUniformMatrix4fv(u(progWater, "uReflTex"), 1, false, reflTexM, 0)
+        GLES30.glUniform1f(u(progWater, "uReflectionStrength"), sun.reflectionStrength)
         GLES30.glUniform3f(u(progWater, "uZenith"), sun.zenith[0], sun.zenith[1], sun.zenith[2])
         GLES30.glUniform3f(u(progWater, "uHorizon"), sun.horizon[0], sun.horizon[1], sun.horizon[2])
         GLES30.glUniform3f(u(progWater, "uGlow"), sun.glow[0], sun.glow[1], sun.glow[2])
@@ -1898,6 +2033,10 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         GLES30.glUniform2f(u(progWater, "uWind"), weather.state.windX.toFloat(), weather.state.windZ.toFloat())
         GLES30.glUniform1f(u(progWater, "uRain"), weather.precipitation.toFloat()) // rain dimples + roughness
         GLES30.glUniform1f(u(progWater, "uFogDensity"), sun.fogDensity)
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE4)
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, reflTex)
+        GLES30.glUniform1i(u(progWater, "uReflection"), 4)
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
         GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
         GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, texHeight)
         GLES30.glUniform1i(u(progWater, "uHeightTex"), 0)
@@ -1981,11 +2120,14 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         layout(location=1) in vec3 aColor;
         layout(location=2) in vec2 aExtra;
         uniform mat4 uVP;
+        uniform mat4 uReflTex;
         out vec3 vColor;
         out vec3 vWorld;
+        out vec4 vReflUv;
         void main() {
             vColor = aColor;
             vWorld = aPos;
+            vReflUv = uReflTex * vec4(aPos, 1.0);
             gl_Position = uVP * vec4(aPos, 1.0);
         }
     """.trimIndent()
@@ -2130,6 +2272,7 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         precision highp float;
         in vec3 vColor;
         in vec3 vWorld;
+        in vec4 vReflUv;
         uniform vec3 uCamPos;
         uniform float uTime;
         uniform float uHalf;
@@ -2142,6 +2285,8 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         uniform vec3 uGlow;
         uniform vec3 uFogColor;
         uniform float uFogDensity;
+        uniform sampler2D uReflection;
+        uniform float uReflectionStrength;
         uniform vec3 uSunDir;
         uniform vec3 uSunColor;    // sun colour x intensity, display-referred
         uniform vec3 uMoonDir;
@@ -2274,6 +2419,18 @@ class GlCityRenderer : GLSurfaceView.Renderer {
             float fres = 0.020 + 0.55 * pow(1.0 - cosT, 5.0);
             vec3 refl = skyProbe(reflect(-Vw, gWN));
             refl = mix(refl, vec3(dot(refl, LUM)), 0.46);
+            // planar RT overrides the sky probe wherever it caught something (the far bank,
+            // its trees, buildings); elsewhere the analytic sky stands in (Water.js)
+            if (uReflectionStrength > 0.0) {
+                vec4 ruv = vReflUv;
+                ruv.xy += vec2(gWN.x, gWN.z) * (0.030 + 0.070 * detailFade) * ruv.w;
+                vec2 pv = ruv.xy / max(ruv.w, 1e-4);
+                // the distorted lookup can walk off the target; fade back at its border
+                vec2 fade = smoothstep(vec2(0.0), vec2(0.035), pv) * smoothstep(vec2(0.0), vec2(0.035), 1.0 - pv);
+                float inside = fade.x * fade.y;
+                vec4 planar = textureProj(uReflection, ruv);
+                refl = mix(refl, max(planar.rgb, refl * 0.14), clamp(planar.a, 0.0, 1.0) * uReflectionStrength * inside);
+            }
             refl = mix(refl, uHorizon, 0.5 * smoothstep(160.0, 1700.0, dist));
             col += refl * fres * (1.0 + foam * 0.3) * 1.05;
             col += uNightSheen * (0.16 + 0.84 * pow(1.0 - cosT, 3.0));

@@ -149,6 +149,11 @@ class HudOverlayView(context: Context) : View(context) {
         val weatherChip = gv?.renderer?.weatherName()?.uppercase() ?: "CLEAR"
         glass(canvas, RectF(640f, 28f, 960f, 106f))
         text(canvas, weatherChip, 800f, 70f, 19f, Color.WHITE, true, Paint.Align.CENTER)
+        text(canvas, "TAP TO CHANGE", 800f, 92f, 11f, Color.rgb(184, 202, 211), false, Paint.Align.CENTER)
+        val cong = gv?.renderer?.trafficCongestion() ?: 0.0
+        if (cong > 0.02) {
+            text(canvas, "TRAFFIC ${(cong * 100).toInt()}%", 800f, 46f, 11f, Color.rgb(255, 178, 122), false, Paint.Align.CENTER)
+        }
 
         glass(canvas, RectF(420f, 900f, 1500f, 1046f))
         Tool.entries.forEachIndexed { i, tool ->

@@ -17,6 +17,8 @@ object GLES30 {
     const val GL_STATIC_DRAW = 0x88E4
     const val GL_TRIANGLES = 0x0004
     const val GL_POINTS = 0x0000
+    const val GL_FRONT = 0x0404
+    const val GL_TEXTURE4 = 0x84C4
     const val GL_VERTEX_SHADER = 0x8B31
     const val GL_CLAMP_TO_EDGE = 0x812F
     const val GL_HALF_FLOAT = 0x140B
@@ -79,11 +81,28 @@ object GLES30 {
     fun glBindTexture(t: Int, tex: Int): Unit = Unit
     fun glDepthMask(f: Boolean): Unit = Unit
     fun glGenTextures(n: Int, tex: IntArray, o: Int): Unit = Unit
+    fun glDeleteTextures(n: Int, tex: IntArray, o: Int): Unit = Unit
     fun glGenerateMipmap(t: Int): Unit = Unit
     fun glPixelStorei(k: Int, v: Int): Unit = Unit
     fun glTexImage2D(t: Int, lvl: Int, ifmt: Int, w: Int, h: Int, b: Int, fmt: Int, type: Int, data: java.nio.Buffer?): Unit = Unit
     fun glTexParameteri(t: Int, k: Int, v: Int): Unit = Unit
     fun glUniformMatrix3fv(l: Int, n: Int, t: Boolean, m: FloatArray, o: Int): Unit = Unit
+
+const val GL_FRAMEBUFFER = 0x8D40
+const val GL_RENDERBUFFER = 0x84D5
+const val GL_DEPTH_COMPONENT24 = 0x81A6
+const val GL_COLOR_ATTACHMENT0 = 0x8CE0
+const val GL_DEPTH_ATTACHMENT = 0x8D00
+fun glGenFramebuffers(n: Int, fb: IntArray, o: Int): Unit = Unit
+fun glBindFramebuffer(t: Int, fb: Int): Unit = Unit
+fun glDeleteFramebuffers(n: Int, fb: IntArray, o: Int): Unit = Unit
+fun glGenRenderbuffers(n: Int, rb: IntArray, o: Int): Unit = Unit
+fun glBindRenderbuffer(t: Int, rb: Int): Unit = Unit
+fun glDeleteRenderbuffers(n: Int, rb: IntArray, o: Int): Unit = Unit
+fun glRenderbufferStorage(t: Int, ifmt: Int, w: Int, h: Int): Unit = Unit
+fun glFramebufferTexture2D(t: Int, att: Int, texT: Int, tex: Int, lvl: Int): Unit = Unit
+fun glFramebufferRenderbuffer(t: Int, att: Int, rbT: Int, rb: Int): Unit = Unit
+fun glCheckFramebufferStatus(t: Int): Int = 36053
 }
 object Matrix {
     fun invertM(m: FloatArray, o: Int, src: FloatArray, so: Int): Unit = Unit
