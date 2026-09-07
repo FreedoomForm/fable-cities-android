@@ -273,11 +273,10 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         camYawGoal = camYaw
         camPitch = 0.85f; camPitchGoal = 0.85f
         camDist = 430f; camDistGoal = 430f
-        buildTerrainSplat()
         buildTerrain()
         buildRoadMesh()
         buildPuddles()
-        buildTreesAsync()
+        buildWorldGfxAsync()
         loadBuildings()
         buildWater()
         buildStars()
@@ -465,7 +464,7 @@ class GlCityRenderer : GLSurfaceView.Renderer {
             Log.d("GlCityRenderer", "frame avg %.2f ms (p99 %.2f ms, ~%.0f fps)".format(fs[0], fs[1], 1000f / fs[0]))
         }
 
-        if (pendingTreeUpload) uploadTrees()
+        if (pendingGfxUpload) uploadWorldGfx()
         pudTime += dt
         if (!paused) {
             hour += dt / 20f // World.js: secondsPerHour = 20 at speed 1
@@ -2039,160 +2038,158 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         return handles[0]
     }
 
-    /** The site's 8-layer PBR arrays + control/normal maps (terrain/textures.js + terrain/index.js). */
-    private fun buildTerrainSplat() {
-        val ctx = appContext
-        if (ctx != null) {
-            try {
-                val (alb, nor) = TerrainGfx.loadLayerArrays(ctx.assets)
-                texAlbedoArr = uploadTexArray(TerrainGfx.LAYER_SIZE, TerrainGfx.LAYERS.size, alb)
-                texNormalArr = uploadTexArray(TerrainGfx.LAYER_SIZE, TerrainGfx.LAYERS.size, nor)
-            } catch (e: Exception) {
-                Log.e(TAG, "splat layer arrays failed", e)
-            }
-        } else {
-            Log.w(TAG, "no appContext — splat layers unavailable")
-        }
-        val (ctrl, ctrl2) = TerrainGfx.bakeControlMaps(worldHeight, 1337)
-        ctrlData = ctrl
-        ctrl2Data = ctrl2
-        texControl = uploadTex2D(TerrainGfx.CONTROL_RES, TerrainGfx.CONTROL_RES, GLES30.GL_RGBA8,
-            GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE,
-            ByteBuffer.allocateDirect(ctrl.size).put(ctrl).position(0), false, false)
-        val nrm = TerrainGfx.bakeNormalMap(worldHeight)
-        texTNormal = uploadTex2D(worldHeight.N - 1, worldHeight.N - 1, GLES30.GL_RGBA8,
-            GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE,
-            ByteBuffer.allocateDirect(nrm.size).put(nrm).position(0), true, true)
-    }
-
-    /** The Vegetation.js forest: placement (bit-exact) + canopy re-bake of ctrl2.r + instanced cards.
-     *  The CPU side (placement + canopy + leaf textures + instance packing) runs on a BACKGROUND
-     *  thread so the first world frame lands before it finishes; the uploads happen on the GL
-     *  thread when it reports done (pendingTreeUpload). */
-    @Volatile private var pendingTreeUpload = false
-    @Volatile private var pendingTreeVerts: FloatArray? = null
+    /** The site's world graphics CPU pipeline, built OFF the GL thread so the first frame lands
+     *  immediately: 8 PBR layer arrays (APK JPEGs), the terrain/index.js control bake (which also
+     *  builds the horizon CoarseGrids via getHeightAny), the world-normal map, the Vegetation.js
+     *  placement + canopy, the leaf palettes and the instance buffers. One worker, sequential;
+     *  the GL thread consumes everything in uploadWorldGfx() at the top of the next frame. */
+    @Volatile private var splatReady = false
+    @Volatile private var pendingGfxUpload = false
+    @Volatile private var pendingLayerArrays: Pair<ByteArray, ByteArray>? = null
+    @Volatile private var pendingCtrl: Pair<ByteArray, ByteArray>? = null
+    @Volatile private var pendingNrm: ByteArray? = null
     @Volatile private var pendingTreeCanopy: FloatArray? = null
     @Volatile private var pendingLeafCards: List<LeafTextures.Card>? = null
-
-    private fun buildTreesAsync() {
-        val ctrl = ctrlData ?: return
-        val ctrl2 = ctrl2Data ?: return
-        Thread({
-            val t0 = System.nanoTime()
-            val ground = GroundControl(worldHeight, 1337)
-            val shore = WaterMath.computeShoreDistance(worldHeight)
-            val trees = Vegetation.distribute(
-                worldHeight, 1337, 1.0, worldHeight.half,
-                { x, z, h, slope -> ground.forestMask(x, z, h, slope) },
-                { x, z -> Vegetation.groundInfo(worldHeight, ctrl, ctrl2, TerrainGfx.CONTROL_RES, shore, x, z) },
-            )
-            val canopy = Vegetation.canopyCoverage(trees, worldHeight.half, TerrainGfx.CONTROL_RES)
-            val cards = LeafTextures.allPalettes(256, 1337)
-            // shared crossed-card mesh: 3 quads at 0/60/120 degrees, per-quad layer bias in pos.z
-            val verts = FloatArray(3 * 4 * 5)
-            val idx = IntArray(3 * 6)
-            var vo = 0
-            var io = 0
-            for (q in 0 until 3) {
-                val a = q * (Math.PI / 3.0)
-                val ca = cos(a).toFloat()
-                val sa = sin(a).toFloat()
-                val base = q * 4
-                val corners = floatArrayOf(-0.5f, 0f, 0.5f, 0f, 0.5f, 1f, -0.5f, 1f)
-                val uvs = floatArrayOf(0f, 0f, 1f, 0f, 1f, 1f, 0f, 1f)
-                for (v in 0 until 4) {
-                    val lx = corners[v * 2]
-                    val ly = corners[v * 2 + 1]
-                    verts[vo++] = lx * ca
-                    verts[vo++] = ly
-                    verts[vo++] = lx * sa
-                    verts[vo++] = uvs[v * 2]
-                    verts[vo++] = uvs[v * 2 + 1]
-                }
-                idx[io++] = base; idx[io++] = base + 1; idx[io++] = base + 2
-                idx[io++] = base; idx[io++] = base + 2; idx[io++] = base + 3
-            }
-            val inst = FloatArray(trees.size * 12)
-            var o = 0
-            for ((i, t) in trees.withIndex()) {
-                inst[o++] = t.x.toFloat()
-                inst[o++] = t.y.toFloat()
-                inst[o++] = t.z.toFloat()
-                inst[o++] = t.yaw.toFloat()
-                inst[o++] = t.sxz.toFloat()
-                inst[o++] = t.sy.toFloat()
-                inst[o++] = t.kind.toFloat()
-                inst[o++] = 0f
-                inst[o++] = t.r.toFloat()
-                inst[o++] = t.g.toFloat()
-                inst[o++] = t.b.toFloat()
-                inst[o++] = ((i * 2654435761L) and 0xFFFF).toFloat() / 65535f * 6.28f
-            }
-            pendingTreeCanopy = canopy
-            pendingLeafCards = cards
-            pendingTreeMeshIdx = idx
-            pendingTreeVerts = verts
-            pendingTreeInst = inst
-            pendingTreeUpload = true
-            Log.d(TAG, "trees: ${trees.size} computed in ${(System.nanoTime() - t0) / 1_000_000} ms (bg)")
-        }, "vegetation-build").start()
-    }
-
     @Volatile private var pendingTreeMeshIdx: IntArray? = null
+    @Volatile private var pendingTreeVerts: FloatArray? = null
     @Volatile private var pendingTreeInst: FloatArray? = null
 
-    private fun buildTrees() {
-        val ctrl = ctrlData ?: return
-        val ctrl2 = ctrl2Data ?: return
-        val ground = GroundControl(worldHeight, 1337)
-        val shore = WaterMath.computeShoreDistance(worldHeight)
-        val t0 = System.nanoTime()
-        val trees = Vegetation.distribute(
-            worldHeight, 1337, 1.0, worldHeight.half,
-            { x, z, h, slope -> ground.forestMask(x, z, h, slope) },
-            { x, z -> Vegetation.groundInfo(worldHeight, ctrl, ctrl2, TerrainGfx.CONTROL_RES, shore, x, z) },
-        )
+    private fun buildWorldGfxAsync() {
+        Thread({
+            val t0 = System.nanoTime()
+            try {
+                val ctx = appContext
+                if (ctx != null) {
+                    pendingLayerArrays = TerrainGfx.loadLayerArrays(ctx.assets)
+                } else {
+                    Log.w(TAG, "no appContext — splat layers unavailable")
+                }
+                val baked = TerrainGfx.bakeControlMaps(worldHeight, 1337)
+                pendingCtrl = baked
+                pendingNrm = TerrainGfx.bakeNormalMap(worldHeight)
+                // the Vegetation.js placement consumes the control maps + shore field
+                val ground = GroundControl(worldHeight, 1337)
+                val shore = WaterMath.computeShoreDistance(worldHeight)
+                val trees = Vegetation.distribute(
+                    worldHeight, 1337, 1.0, worldHeight.half,
+                    { x, z, h, slope -> ground.forestMask(x, z, h, slope) },
+                    { x, z -> Vegetation.groundInfo(worldHeight, baked.first, baked.second, TerrainGfx.CONTROL_RES, shore, x, z) },
+                )
+                pendingTreeCanopy = Vegetation.canopyCoverage(trees, worldHeight.half, TerrainGfx.CONTROL_RES)
+                pendingLeafCards = LeafTextures.allPalettes(256, 1337)
+                // shared crossed-card mesh: 3 quads at 0/60/120 degrees, per-quad layer bias in pos.z
+                val verts = FloatArray(3 * 4 * 5)
+                val idx = IntArray(3 * 6)
+                var vo = 0
+                var io = 0
+                for (q in 0 until 3) {
+                    val a = q * (Math.PI / 3.0)
+                    val ca = cos(a).toFloat()
+                    val sa = sin(a).toFloat()
+                    val base = q * 4
+                    val corners = floatArrayOf(-0.5f, 0f, 0.5f, 0f, 0.5f, 1f, -0.5f, 1f)
+                    val uvs = floatArrayOf(0f, 0f, 1f, 0f, 1f, 1f, 0f, 1f)
+                    for (v in 0 until 4) {
+                        val lx = corners[v * 2]
+                        val ly = corners[v * 2 + 1]
+                        verts[vo++] = lx * ca
+                        verts[vo++] = ly
+                        verts[vo++] = lx * sa
+                        verts[vo++] = uvs[v * 2]
+                        verts[vo++] = uvs[v * 2 + 1]
+                    }
+                    idx[io++] = base; idx[io++] = base + 1; idx[io++] = base + 2
+                    idx[io++] = base; idx[io++] = base + 2; idx[io++] = base + 3
+                }
+                pendingTreeMeshIdx = idx
+                pendingTreeVerts = verts
+                val inst = FloatArray(trees.size * 12)
+                var o = 0
+                for ((i, t) in trees.withIndex()) {
+                    inst[o++] = t.x.toFloat()
+                    inst[o++] = t.y.toFloat()
+                    inst[o++] = t.z.toFloat()
+                    inst[o++] = t.yaw.toFloat()
+                    inst[o++] = t.sxz.toFloat()
+                    inst[o++] = t.sy.toFloat()
+                    inst[o++] = t.kind.toFloat()
+                    inst[o++] = 0f
+                    inst[o++] = t.r.toFloat()
+                    inst[o++] = t.g.toFloat()
+                    inst[o++] = t.b.toFloat()
+                    inst[o++] = ((i * 2654435761L) and 0xFFFF).toFloat() / 65535f * 6.28f
+                }
+                pendingTreeInst = inst
+                pendingGfxUpload = true
+                Log.d(TAG, "world gfx computed in ${(System.nanoTime() - t0) / 1_000_000} ms (bg)")
+            } catch (e: Exception) {
+                Log.e(TAG, "world gfx build failed", e)
+            }
+        }, "world-gfx").start()
     }
 
-    /** GL-thread upload of the background-computed forest + the canopy re-bake of ctrl2.r. */
-    private fun uploadTrees() {
-        val canopy = pendingTreeCanopy ?: return
-        val cards = pendingLeafCards ?: return
-        val verts = pendingTreeVerts ?: return
-        val idx = pendingTreeMeshIdx ?: return
-        val inst = pendingTreeInst ?: return
-        val ctrl2 = ctrl2Data ?: return
+    /** GL-thread consumer: splat textures + canopy re-bake of ctrl2.r + tree buffers. */
+    private fun uploadWorldGfx() {
+        pendingGfxUpload = false
+        val layers = pendingLayerArrays
+        val ctrlPair = pendingCtrl
+        val nrm = pendingNrm
+        if (layers != null && ctrlPair != null && nrm != null) {
+            texAlbedoArr = uploadTexArray(TerrainGfx.LAYER_SIZE, TerrainGfx.LAYERS.size, layers.first)
+            texNormalArr = uploadTexArray(TerrainGfx.LAYER_SIZE, TerrainGfx.LAYERS.size, layers.second)
+            val (ctrl, ctrl2) = ctrlPair
+            ctrlData = ctrl
+            ctrl2Data = ctrl2
+            texControl = uploadTex2D(TerrainGfx.CONTROL_RES, TerrainGfx.CONTROL_RES, GLES30.GL_RGBA8,
+                GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE,
+                ByteBuffer.allocateDirect(ctrl.size).put(ctrl).position(0), false, false)
+            // the site re-bakes ctrl2.r (canopy) from the REAL crown coverage — forest floor only under canopy
+            val canopy = pendingTreeCanopy
+            if (canopy != null) {
+                canopyData = canopy
+                for (k in canopy.indices) ctrl2[k * 4] = (255.0 * canopy[k]).toInt().toByte()
+            }
+            texControl2 = uploadTex2D(TerrainGfx.CONTROL_RES, TerrainGfx.CONTROL_RES, GLES30.GL_RGBA8,
+                GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE,
+                ByteBuffer.allocateDirect(ctrl2.size).put(ctrl2).position(0), false, false)
+            texTNormal = uploadTex2D(worldHeight.N - 1, worldHeight.N - 1, GLES30.GL_RGBA8,
+                GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE,
+                ByteBuffer.allocateDirect(nrm.size).put(nrm).position(0), true, true)
+            splatReady = true
+        }
+        val cards = pendingLeafCards
+        val verts = pendingTreeVerts
+        val idx = pendingTreeMeshIdx
+        val inst = pendingTreeInst
+        if (cards != null && verts != null && idx != null && inst != null) {
+            for (i in 0 until 5) {
+                val b = cards[i].bitmap
+                val buf = java.nio.ByteBuffer.allocateDirect(b.byteCount).order(ByteOrder.nativeOrder())
+                b.copyPixelsToBuffer(buf)
+                buf.position(0)
+                texLeaf[i] = uploadTex2D(256, 256, GLES30.GL_RGBA8, GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE,
+                    buf, true, true)
+            }
+            treeVbo = upload(verts)
+            val idxBuf = ByteBuffer.allocateDirect(idx.size * 4).order(ByteOrder.nativeOrder())
+            for (v in idx) idxBuf.putInt(v)
+            idxBuf.position(0)
+            val ibo = IntArray(1)
+            GLES30.glGenBuffers(1, ibo, 0)
+            GLES30.glBindBuffer(GLES30.GL_ELEMENT_ARRAY_BUFFER, ibo[0])
+            GLES30.glBufferData(GLES30.GL_ELEMENT_ARRAY_BUFFER, idx.size * 4, idxBuf, GLES30.GL_STATIC_DRAW)
+            GLES30.glBindBuffer(GLES30.GL_ELEMENT_ARRAY_BUFFER, 0)
+            treeIbo = ibo[0]
+            treeIdxCount = idx.size
+            treeInstVbo = upload(inst)
+            treeInstCount = inst.size / 12
+        }
+        pendingLayerArrays = null; pendingCtrl = null; pendingNrm = null
         pendingTreeCanopy = null; pendingLeafCards = null; pendingTreeVerts = null
         pendingTreeMeshIdx = null; pendingTreeInst = null
-        pendingTreeUpload = false
-        canopyData = canopy
-        for (k in canopy.indices) ctrl2[k * 4] = (255.0 * canopy[k]).toInt().toByte()
-        texControl2 = uploadTex2D(TerrainGfx.CONTROL_RES, TerrainGfx.CONTROL_RES, GLES30.GL_RGBA8,
-            GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE,
-            ByteBuffer.allocateDirect(ctrl2.size).put(ctrl2).position(0), false, false)
-        for (i in 0 until 5) {
-            val b = cards[i].bitmap
-            val buf = java.nio.ByteBuffer.allocateDirect(b.byteCount).order(ByteOrder.nativeOrder())
-            b.copyPixelsToBuffer(buf)
-            buf.position(0)
-            texLeaf[i] = uploadTex2D(256, 256, GLES30.GL_RGBA8, GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE,
-                buf, true, true)
-        }
-        treeVbo = upload(verts)
-        val idxBuf = ByteBuffer.allocateDirect(idx.size * 4).order(ByteOrder.nativeOrder())
-        for (v in idx) idxBuf.putInt(v)
-        idxBuf.position(0)
-        val ibo = IntArray(1)
-        GLES30.glGenBuffers(1, ibo, 0)
-        GLES30.glBindBuffer(GLES30.GL_ELEMENT_ARRAY_BUFFER, ibo[0])
-        GLES30.glBufferData(GLES30.GL_ELEMENT_ARRAY_BUFFER, idx.size * 4, idxBuf, GLES30.GL_STATIC_DRAW)
-        GLES30.glBindBuffer(GLES30.GL_ELEMENT_ARRAY_BUFFER, 0)
-        treeIbo = ibo[0]
-        treeIdxCount = idx.size
-        treeInstVbo = upload(inst)
-        treeInstCount = inst.size / 12
-        Log.d(TAG, "trees: $treeInstCount instances uploaded, canopy rebaked")
+        Log.d(TAG, "world gfx uploaded (splat ready=$splatReady, trees=$treeInstCount)")
     }
+
 
     /** the site's forest (Vegetation.js placement), instanced crossed cards with wind sway */
     private fun drawTrees(sun: SunState) {
@@ -2387,7 +2384,10 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         GLES30.glDisable(GLES30.GL_BLEND)
     }
 
-    private fun drawTerrain(sun: SunState) = drawSplat(sun)
+    private fun drawTerrain(sun: SunState) {
+        if (splatReady) drawSplat(sun)
+        else drawLit(progFlat, terrainVbo, terrainCount, sun, 0.52f, 0.58f, 0.40f, puddles = false, tracks = false)
+    }
     private fun drawCityGround(sun: SunState) = drawLit(progFlat, cityGroundVbo, cityGroundCount, sun, 1f, 1f, 1f, puddles = true, tracks = true)
 
     private fun drawEditQuads(sun: SunState) {
