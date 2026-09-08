@@ -5,8 +5,6 @@ object Assert {
     @JvmStatic fun assertEquals(message: String?, expected: Any?, actual: Any?) { if (expected != actual) throw AssertionError("$message: $expected != $actual") }
     @JvmStatic fun assertEquals(expected: Long, actual: Long) { if (expected != actual) throw AssertionError("$expected != $actual") }
     @JvmStatic fun assertEquals(message: String?, expected: Long, actual: Long) { if (expected != actual) throw AssertionError("$message: $expected != $actual") }
-    @JvmStatic fun assertEquals(expected: Boolean, actual: Boolean) { if (expected != actual) throw AssertionError("$expected != $actual") }
-    @JvmStatic fun assertEquals(message: String?, expected: Boolean, actual: Boolean) { if (expected != actual) throw AssertionError("$message: $expected != $actual") }
     @JvmStatic fun assertEquals(expected: Double, actual: Double, delta: Double) { if (kotlin.math.abs(expected - actual) > delta) throw AssertionError("$expected != $actual") }
     @JvmStatic fun assertEquals(message: String?, expected: Double, actual: Double, delta: Double) { if (kotlin.math.abs(expected - actual) > delta) throw AssertionError("$message: $expected != $actual") }
     @JvmStatic fun assertTrue(cond: Boolean) { if (!cond) throw AssertionError() }

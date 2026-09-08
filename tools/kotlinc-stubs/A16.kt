@@ -9,6 +9,7 @@ class Bitmap {
     fun setPremultiplied(v: Boolean): Unit = Unit
     fun copyPixelsToBuffer(dst: java.nio.Buffer): Unit = Unit
     fun setPixels(pixels: IntArray, offset: Int, stride: Int, x: Int, y: Int, w: Int, h: Int): Unit = Unit
+    val rowBytes: Int = 0
     companion object {
         fun createBitmap(w: Int, h: Int, cfg: Config): Bitmap = Bitmap()
         fun createScaledBitmap(src: Bitmap, w: Int, h: Int, filter: Boolean): Bitmap = Bitmap()
@@ -72,5 +73,5 @@ object BitmapFactory {
         var inScaled: Boolean = false
         var inPreferredConfig: Bitmap.Config = Bitmap.Config.ARGB_8888
     }
-    fun decodeStream(is_: java.io.InputStream?, outPadding: Rect?, opts: Options?): Bitmap? = null
+    fun decodeStream(is_: java.io.InputStream?, outPadding: Rect? = null, opts: Options? = null): Bitmap = Bitmap()
 }

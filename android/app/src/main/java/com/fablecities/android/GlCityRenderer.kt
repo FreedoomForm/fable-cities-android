@@ -12,6 +12,7 @@ import com.fablecities.android.worldgen.WeatherPresets
 import com.fablecities.android.worldgen.GradeFx
 import com.fablecities.android.worldgen.GroundControl
 import com.fablecities.android.worldgen.Heightmap
+import com.fablecities.android.worldgen.Smoke
 import com.fablecities.android.worldgen.Vegetation
 import com.fablecities.android.worldgen.hash2Signed
 import com.fablecities.android.worldgen.SimplexNoise
@@ -209,6 +210,21 @@ class GlCityRenderer : GLSurfaceView.Renderer {
     }
     // --- VehicleSpray (effects/VehicleSpray.js): instanced wet-road wake ---
     private var progSpray = 0
+    // --- SmokeSystem (effects/SmokeSystem.js): ring-buffer puffs, rebuild on cold/building changes ---
+    private var progSmoke = 0
+    private var smokeCornerVbo = 0
+    private var smokeIbo = 0
+    private val smokeInstVbo = intArrayOf(0, 0, 0, 0, 0, 0)
+    private var smokeInstAllocated = false
+    private var texSmokeAtlas = 0
+    private var smokeLive = 0
+    private var smokeTime = 0f
+    private var smokeLastCold: Boolean? = null
+    private var smokeDirty = true
+    private var smokeDirtyAt = 0f
+    private val smokeLocalPos = FloatArray(16) // 4 x (view-space xyz, range)
+    private val smokeLocalCol = FloatArray(12) // 4 x rgb
+    @Volatile private var pendingSmokeAtlas: ByteArray? = null
     private var sprayVbo = 0
     private var sprayIbo = 0
     private var sprayEmitVbo = 0
@@ -409,6 +425,9 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         progSmaaEdges = 0; progSmaaWeights = 0; progSmaaBlend = 0; progCopy = 0
         progSpray = 0; sprayVbo = 0; sprayIbo = 0; sprayEmitVbo = 0; sprayVelVbo = 0; spraySeedVbo = 0; texSpray = 0
         sprayLive = 0; sprayPrev.clear()
+        progSmoke = 0; smokeCornerVbo = 0; smokeIbo = 0
+        for (i in 0 until 6) smokeInstVbo[i] = 0
+        smokeInstAllocated = false; texSmokeAtlas = 0; smokeLive = 0
         cloudRtFbo = 0; cloudRtTex[0] = 0; cloudRtTex[1] = 0; cloudRtW = 0; cloudRtH = 0
         floatProbeDone = false; floatProbeResult = false
         texSmaaArea = 0; texSmaaSearch = 0
@@ -468,6 +487,8 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         progCopy = buildProgram(PostShaders.VS_POST, PostShaders.FS_COPY, "copy")
         progSpray = buildProgram(VS_SPRAY, FS_SPRAY, "spray")
         buildSpray()
+        progSmoke = buildProgram(VS_SMOKE, FS_SMOKE, "smoke")
+        buildSmokeGeometry()
         Log.i(TAG, "init: programs compiled")
         buildPrecipBuffer()
         buildCloudTextures()
@@ -1622,6 +1643,195 @@ class GlCityRenderer : GLSurfaceView.Renderer {
     private fun wrapBytes(b: ByteArray): java.nio.Buffer =
         java.nio.ByteBuffer.allocateDirect(b.size).order(java.nio.ByteOrder.nativeOrder()).put(b).apply { flip() }
 
+    // --- SmokeSystem (effects/SmokeSystem.js): rebuild triggers + draw (the fxScene tail) ---
+
+    private fun buildSmokeGeometry() {
+        smokeCornerVbo = upload(floatArrayOf(-1f, -1f, 1f, -1f, 1f, 1f, -1f, 1f))
+        val idx = shortArrayOf(0, 1, 2, 0, 2, 3)
+        val ibo = IntArray(1)
+        GLES30.glGenBuffers(1, ibo, 0)
+        GLES30.glBindBuffer(GLES30.GL_ELEMENT_ARRAY_BUFFER, ibo[0])
+        GLES30.glBufferData(GLES30.GL_ELEMENT_ARRAY_BUFFER, idx.size * 2, shortBytes(idx), GLES30.GL_STATIC_DRAW)
+        GLES30.glBindBuffer(GLES30.GL_ELEMENT_ARRAY_BUFFER, 0)
+        smokeIbo = ibo[0]
+    }
+
+    /** The web's cold flag: env.temperature < 10 or actively snowing or snow cover built up. */
+    private fun updateSmoke(sun: SunState) {
+        if (progSmoke == 0) return
+        val cold = weather.state.keys[WeatherPresets.I_TEMP] < 10.0 ||
+            weather.name == "snow" || gradeFx.snowAmt > 0.3
+        if (cold != smokeLastCold) {
+            smokeLastCold = cold
+            smokeDirty = true
+            smokeDirtyAt = smokeTime
+        }
+        if (smokeDirty && (smokeTime - smokeDirtyAt > 0.3f || smokeLive == 0)) rebuildSmoke(cold)
+    }
+
+    /** effects/index.js rebuild(): scan the blocks for emitters and refill the ring buffer. */
+    private fun rebuildSmoke(cold: Boolean) {
+        smokeDirty = false
+        val blocks = ArrayList<Smoke.IndBlock>(demo.blocks.size)
+        for (b in demo.blocks) {
+            val type = when (b.kind) {
+                DemoCity.Z_RES_LOW -> "res-low"; DemoCity.Z_RES_HIGH -> "res-high"
+                DemoCity.Z_COM_LOW -> "com-low"; DemoCity.Z_COM_HIGH -> "com-high"
+                DemoCity.Z_OFFICE -> "office"; DemoCity.Z_IND -> "ind"
+                else -> "service"
+            }
+            // the site's 1..5 building tier; the preview blocks carry height instead — same slope
+            val level = (b.h / 14.0).toInt().coerceIn(1, 5)
+            blocks.add(Smoke.IndBlock(b.x.toDouble(), b.y.toDouble(), b.z.toDouble(),
+                b.w.toDouble(), b.d.toDouble(), b.h.toDouble(), b.yaw.toDouble(), level, type,
+                b.stacks, b.vents))
+        }
+        val emitters = Smoke.scanEmitters(blocks, 1337, cold)
+        val bufs = Smoke.build(emitters, Rng(1337 xor 0x3ffec7), SMOKE_MAX)
+        if (!smokeInstAllocated) {
+            GLES30.glGenBuffers(6, smokeInstVbo, 0)
+            smokeInstAllocated = true
+        }
+        val parts = Smoke.interleave(bufs)
+        val floats = intArrayOf(SMOKE_MAX * 3, SMOKE_MAX * 3, SMOKE_MAX * 4, SMOKE_MAX * 4, SMOKE_MAX * 4, SMOKE_MAX * 2)
+        for (i in 0 until 6) {
+            GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, smokeInstVbo[i])
+            GLES30.glBufferData(GLES30.GL_ARRAY_BUFFER, floats[i] * 4, floatBytes(parts[i]), GLES30.GL_STATIC_DRAW)
+        }
+        GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, 0)
+        smokeLive = bufs.count
+        if (smokeLive > 0) Log.d(TAG, "smoke rebuilt: ${emitters.size} emitters -> $smokeLive puffs (cold=$cold)")
+    }
+
+    /** The 4 nearest street-lamp bulbs to the camera target (the web's updateLocalLights scan). */
+    private fun updateSmokeLocalLights(nightOn: Boolean): Int {
+        var n = 0
+        if (!nightOn || lampHeads.isEmpty()) return 0
+        // rank by horizontal d2 to the camera target, keep within 400 m (the web scan window)
+        val cand = ArrayList<Pair<Double, DoubleArray>>()
+        for (l in lampHeads) {
+            val dx = l[0] - camTarget[0]; val dz = l[2] - camTarget[2]
+            val d2 = dx * dx + dz * dz
+            if (d2 < 400.0 * 400.0) cand.add(d2 to l)
+        }
+        cand.sortBy { it.first }
+        for (pair in cand) {
+            if (n >= 4) break
+            val l = pair.second
+            // world -> view space (rotation + translation of the view matrix, column-major)
+            val x = l[0].toFloat(); val y = l[1].toFloat(); val z = l[2].toFloat()
+            smokeLocalPos[n * 4] = (viewM[0] * x + viewM[4] * y + viewM[8] * z + viewM[12])
+            smokeLocalPos[n * 4 + 1] = (viewM[1] * x + viewM[5] * y + viewM[9] * z + viewM[13])
+            smokeLocalPos[n * 4 + 2] = (viewM[2] * x + viewM[6] * y + viewM[10] * z + viewM[14])
+            smokeLocalPos[n * 4 + 3] = 60f
+            // the site's lamp colour (1.0, 0.80, 0.58) at intensity 3.2, fed as colour x intensity x 0.35
+            smokeLocalCol[n * 3] = (1.0 * 3.2 * 0.35).toFloat()
+            smokeLocalCol[n * 3 + 1] = (0.80 * 3.2 * 0.35).toFloat()
+            smokeLocalCol[n * 3 + 2] = (0.58 * 3.2 * 0.35).toFloat()
+            n++
+        }
+        return n
+    }
+
+    private fun drawSmoke(sun: SunState) {
+        if (progSmoke == 0 || smokeLive == 0 || texSmokeAtlas == 0 || sceneDepth == 0) return
+        val st = envState
+        // dominant celestial light: sun by day, moon by night — direction light TRAVELS, view space
+        // (the web: sunI x 0.36 / moonI x 0.20 — a grey plume reads mid-grey next to a sun-lit wall)
+        val sunUp = Environment.smoothstep(-0.04, 0.10, st.sunDir[1].toDouble())
+        val moonUp = Environment.smoothstep(-0.02, 0.1, st.moonDir[1].toDouble())
+        val sunTerm = st.sunIntensity * sunUp * 0.36
+        val moonTerm = st.moonIntensity * moonUp * 0.20
+        // direction the light travels, rotated into view space (transformDirection = the 3x3 + normalize)
+        fun toView(dx: Double, dy: Double, dz: Double): FloatArray {
+            val vx = (viewM[0] * dx.toFloat() + viewM[4] * dy.toFloat() + viewM[8] * dz.toFloat())
+            val vy = (viewM[1] * dx.toFloat() + viewM[5] * dy.toFloat() + viewM[9] * dz.toFloat())
+            val vz = (viewM[2] * dx.toFloat() + viewM[6] * dy.toFloat() + viewM[10] * dz.toFloat())
+            val l = kotlin.math.sqrt(vx * vx + vy * vy + vz * vz).coerceAtLeast(1e-6f)
+            return floatArrayOf(vx / l, vy / l, vz / l)
+        }
+        val lv: FloatArray
+        val lc = FloatArray(3)
+        if (sunTerm >= moonTerm) {
+            lv = toView(-st.sunDir[0].toDouble(), -st.sunDir[1].toDouble(), -st.sunDir[2].toDouble())
+            for (i in 0 until 3) lc[i] = (st.sunColor[i] * sunTerm).toFloat()
+        } else {
+            lv = toView(-st.moonDir[0].toDouble(), -st.moonDir[1].toDouble(), -st.moonDir[2].toDouble())
+            for (i in 0 until 3) lc[i] = (st.moonColor[i] * moonTerm).toFloat()
+        }
+        // sky radiance the plume sees: max(sky colour, hemi x intensity/pi), lifted by cloud cover
+        val cloud = weather.cloudCover.coerceIn(0.0, 1.0)
+        val amb = FloatArray(3)
+        val ground = FloatArray(3)
+        for (i in 0 until 3) {
+            val skyRad = max(sun.skyColor[i].toDouble(), st.hemiCol[i] * st.hemiIntensity / Math.PI)
+            val fogC = st.fogColor[i]
+            amb[i] = (max(skyRad, fogC) * (1.0 + 0.6 * cloud)).toFloat()
+            ground[i] = (st.groundRad[i] * 0.8 * (1 - 0.6 * sun.nightFactor)).toFloat()
+        }
+        val dustFade = Environment.clamp01(1.0 - gradeFx.rainAmt * 1.2 - gradeFx.snowAmt * 1.2).toFloat()
+        val heating = 1.0 + 0.15 * (1 - Environment.smoothstep(6.0, 10.0, hour.toDouble())) *
+            Environment.smoothstep(3.0, 6.0, hour.toDouble())
+        val localCount = updateSmokeLocalLights(sun.nightFactor > 0.05f)
+
+        GLES30.glEnable(GLES30.GL_BLEND)
+        // THREE.NormalBlending: SRC_ALPHA, ONE_MINUS_SRC_ALPHA (alpha: ONE, ONE_MINUS_SRC_ALPHA)
+        GLES30.glBlendFuncSeparate(GLES30.GL_SRC_ALPHA, GLES30.GL_ONE_MINUS_SRC_ALPHA, GLES30.GL_ONE, GLES30.GL_ONE_MINUS_SRC_ALPHA)
+        GLES30.glDisable(GLES30.GL_DEPTH_TEST)
+        GLES30.glDepthMask(false)
+        GLES30.glDisable(GLES30.GL_CULL_FACE)
+        GLES30.glUseProgram(progSmoke)
+        // corner quad
+        GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, smokeCornerVbo)
+        GLES30.glEnableVertexAttribArray(0)
+        GLES30.glVertexAttribPointer(0, 2, GLES30.GL_FLOAT, false, 8, 0)
+        // instance streams: origin(3) vel(3) param(4) style(4) color(4) kind(2)
+        val dims = intArrayOf(3, 3, 4, 4, 4, 2)
+        for (i in 0 until 6) {
+            GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, smokeInstVbo[i])
+            GLES30.glEnableVertexAttribArray(i + 1)
+            GLES30.glVertexAttribPointer(i + 1, dims[i], GLES30.GL_FLOAT, false, dims[i] * 4, 0)
+            GLES30.glVertexAttribDivisor(i + 1, 1)
+        }
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, texSmokeAtlas)
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE1)
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, sceneDepth)
+        GLES30.glUniformMatrix4fv(u(progSmoke, "uProj"), 1, false, projM, 0)
+        GLES30.glUniformMatrix4fv(u(progSmoke, "uView"), 1, false, viewM, 0)
+        GLES30.glUniform1f(u(progSmoke, "uTime"), smokeTime)
+        GLES30.glUniform3f(u(progSmoke, "uWind"),
+            (weather.state.windX * weather.windStrength * 5.5).toFloat(), 0f,
+            (weather.state.windZ * weather.windStrength * 5.5).toFloat())
+        GLES30.glUniform2f(u(progSmoke, "uAtlas"), 4f, 4f)
+        GLES30.glUniform2f(u(progSmoke, "uFade"), (DRAW_DISTANCE * 0.16f), (DRAW_DISTANCE * 0.26f))
+        GLES30.glUniform1f(u(progSmoke, "uSizeBoost"), heating.toFloat())
+        GLES30.glUniform1f(u(progSmoke, "uDustFade"), dustFade)
+        GLES30.glUniform1i(u(progSmoke, "uAtlasTex"), 0)
+        GLES30.glUniform1i(u(progSmoke, "tDepth"), 1)
+        GLES30.glUniform1f(u(progSmoke, "uHasDepth"), 1f)
+        GLES30.glUniform2f(u(progSmoke, "uResolution"), sceneW.toFloat(), sceneH.toFloat())
+        GLES30.glUniform2f(u(progSmoke, "uNearFar"), 5f, 2600f)
+        GLES30.glUniform3f(u(progSmoke, "uLightDirView"), lv[0], lv[1], lv[2])
+        GLES30.glUniform3f(u(progSmoke, "uLightColor"), lc[0], lc[1], lc[2])
+        GLES30.glUniform3f(u(progSmoke, "uAmbient"), amb[0], amb[1], amb[2])
+        GLES30.glUniform3f(u(progSmoke, "uGroundBounce"), ground[0], ground[1], ground[2])
+        GLES30.glUniform4fv(u(progSmoke, "uLocalPos"), 4, smokeLocalPos, 0)
+        GLES30.glUniform3fv(u(progSmoke, "uLocalColor"), 4, smokeLocalCol, 0)
+        GLES30.glUniform1i(u(progSmoke, "uLocalCount"), localCount)
+        GLES30.glUniform3f(u(progSmoke, "uFogColor"), st.fogColor[0].toFloat(), st.fogColor[1].toFloat(), st.fogColor[2].toFloat())
+        GLES30.glUniform1f(u(progSmoke, "uFogDensity"), sun.fogDensity)
+        GLES30.glBindBuffer(GLES30.GL_ELEMENT_ARRAY_BUFFER, smokeIbo)
+        GLES30.glDrawElementsInstanced(GLES30.GL_TRIANGLES, 6, GLES30.GL_UNSIGNED_SHORT, 0, smokeLive)
+        GLES30.glBindBuffer(GLES30.GL_ELEMENT_ARRAY_BUFFER, 0)
+        GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, 0)
+        GLES30.glDisable(GLES30.GL_BLEND)
+        GLES30.glDepthMask(true)
+        GLES30.glEnable(GLES30.GL_DEPTH_TEST)
+        GLES30.glEnable(GLES30.GL_CULL_FACE)
+        for (i in 1 until 7) GLES30.glVertexAttribDivisor(i, 0)
+    }
+
     private fun floatBytes(data: FloatArray): java.nio.Buffer {
         val fb = java.nio.ByteBuffer.allocateDirect(data.size * 4).order(java.nio.ByteOrder.nativeOrder())
             .asFloatBuffer()
@@ -1861,6 +2071,9 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         sprayTime += dt
         syncSpray(sun)
         drawSpray(sun)
+        smokeTime += dt
+        updateSmoke(sun)
+        drawSmoke(sun)
         stageCheck("particles")
         GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
         drawSunOcclusionProbe(sun)
@@ -2696,6 +2909,19 @@ class GlCityRenderer : GLSurfaceView.Renderer {
                 }
             }.start()
         }
+        if (pendingSmokeAtlas == null && texSmokeAtlas == 0) {
+            Thread {
+                try {
+                    val t0 = System.currentTimeMillis()
+                    // the site's effects seed: makeSmokeAtlas(world.seed, cell, 4, 4) — the native
+                    // phone tier matches the web q.textureSize < 2048 cell size (128)
+                    pendingSmokeAtlas = Smoke.makeSmokeAtlas(1337, 128, 4, 4)
+                    Log.i(TAG, "async bake smoke atlas done in ${System.currentTimeMillis() - t0} ms")
+                } catch (e: Exception) {
+                    Log.e(TAG, "smoke atlas bake failed", e)
+                }
+            }.start()
+        }
     }
 
     /** Upload finished worker bakes (GL thread). */
@@ -2707,6 +2933,11 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         pendingCloudBake?.let { (noise, weather, cirrus) ->
             pendingCloudBake = null
             uploadClouds(noise, weather, cirrus)
+        }
+        pendingSmokeAtlas?.let { data ->
+            pendingSmokeAtlas = null
+            texSmokeAtlas = uploadTex2D(512, 512, GLES30.GL_RGBA8, GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE,
+                wrapBytes(data), repeat = false, mipmaps = true)
         }
     }
 
@@ -4940,6 +5171,8 @@ class GlCityRenderer : GLSurfaceView.Renderer {
 
     companion object {
         private const val TAG = "GlCityRenderer"
+        private const val SMOKE_MAX = 16384 // the web's 64000 x pScale; the native fleet cap for frame time
+        private const val DRAW_DISTANCE = 1600f // the web quality.drawDistance equivalent (uFade 0.16/0.26 of it)
     }
 
     // ---------------------------------------------------------------- shaders
@@ -5624,6 +5857,185 @@ class GlCityRenderer : GLSurfaceView.Renderer {
           if (a < 0.003) discard;
           float fogAtt = exp(-uFogDensity * uFogDensity * vFogDepth * vFogDepth);
           fragColor = vec4(uColor * a * fogAtt, a);
+        }
+    """.trimIndent()
+
+    // SmokeSystem.js (effects/SmokeSystem.js) — GPU ring-buffer puffs: industrial smoke, steam,
+    // chimney smoke. Motion is fully vertex-shader-side from static instance attributes + uTime
+    // (age = fract(t/life + phase) loops, a plume is in steady state from frame 0); occlusion and
+    // soft edges come from the sampled scene depth (depthTest OFF); the atlas RGB is a lobe
+    // pseudo-normal lit by the dominant celestial light with forward scatter, rim and a
+    // density-driven dark core, plus up to 4 local lights (street lamps).
+    private val VS_SMOKE = """
+        #version 300 es
+        precision highp float;
+        layout(location=0) in vec2 aCorner;
+        layout(location=1) in vec3 aOrigin;
+        layout(location=2) in vec3 aVel;
+        layout(location=3) in vec4 aParam;   // phase, life, size0, size1
+        layout(location=4) in vec4 aStyle;   // spriteIdx, rotSpeed, buoyancy, drag
+        layout(location=5) in vec4 aColor;   // albedo rgb, opacity
+        layout(location=6) in vec2 aKind;    // x: 0 smoke/steam, 1 dust — y: optical density
+        uniform mat4 uProj;
+        uniform mat4 uView;
+        uniform float uTime;
+        uniform vec3 uWind;
+        uniform vec2 uAtlas;
+        uniform vec2 uFade;
+        uniform float uSizeBoost;
+        uniform float uDustFade;
+        out vec2 vUv;
+        out vec4 vColor;
+        out vec3 vRot;
+        out float vViewZ;
+        out vec3 vViewPos;
+        out float vSoft;
+        out float vAge;
+        out float vKind;
+        out float vDens;
+        out float vNear;
+        out float vFogDepth;
+        void main() {
+          float phase = aParam.x;
+          float life = aParam.y;
+          float t = fract(uTime / life + phase) * life;
+          float u = t / life;
+          float dust = step(0.5, aKind.x);
+          // drag-limited initial velocity
+          float k = max(aStyle.w, 0.02);
+          vec3 p = aOrigin + aVel * (1.0 - exp(-k * t)) / k;
+          // buoyancy: accelerates then settles to a terminal rise (negative for dust)
+          p.y += aStyle.z * t * min(t, 4.0) * 0.5;
+          if (dust > 0.5) p.y = max(p.y, aOrigin.y + 0.15);
+          // wind entrainment: velocity approaches wind speed with tau = 3.5 s (dust stays low)
+          float tau = 3.5 - 1.5 * dust;
+          p += uWind * (t - tau * (1.0 - exp(-t / tau))) * (1.0 - 0.5 * dust);
+          // coherent turbulence keyed on the EMISSION time — the column meanders as one body
+          float eh = aOrigin.x * 0.37 + aOrigin.z * 0.71 + aOrigin.y * 0.13;
+          float te = uTime - t;
+          float rise = min(t, 8.0);
+          p += vec3(sin(te * 0.55 + eh) + 0.5 * sin(te * 1.35 + eh * 1.7), 0.0, cos(te * 0.43 + eh * 1.3) + 0.5 * cos(te * 1.1 + eh * 0.6)) * rise * (0.16 - 0.06 * dust);
+          float sp = phase * 43.7;
+          float tb = min(t, 6.0) * (0.09 + 0.10 * dust);
+          p += vec3(sin(t * 1.31 + sp), sin(t * 0.83 + sp * 1.7) * 0.6 * (1.0 - 0.6 * dust), cos(t * 1.07 + sp * 0.6)) * tb;
+          // growth: tight and opaque for the first third of the life, then blooms and dissolves
+          float grow = pow(1.0 - exp(-t / (life * 0.34)), 0.92);
+          float size = mix(aParam.z, aParam.w, grow) * uSizeBoost;
+          float ang = aStyle.y * t + phase * 6.2831853;
+          float c = cos(ang), s = sin(ang);
+          float mirror = fract(phase * 17.31) < 0.5 ? -1.0 : 1.0;
+          vRot = vec3(c, s, mirror);
+          vec4 mvPosition = uView * vec4(p, 1.0);
+          float dist = -mvPosition.z;
+          vViewPos = mvPosition.xyz;
+          // keep far plumes readable: grow slightly with distance, then fade out
+          size *= 1.0 + dist * 0.0008;
+          vec2 corner = vec2(aCorner.x * c - aCorner.y * s, aCorner.x * s + aCorner.y * c) * size * 0.5;
+          mvPosition.xy += corner;
+          // optical mass conservation: a puff that grows N x in diameter thins out
+          float conserve = pow(aParam.z / max(mix(aParam.z, aParam.w, grow), 1e-3), 0.56);
+          float fadeIn = smoothstep(0.0, 0.02, u);
+          float fadeOut = pow(1.0 - u, 1.35) * exp(-0.75 * u);
+          float distFade = 1.0 - smoothstep(uFade.x, uFade.y, dist);
+          float nearFade = smoothstep(1.5, 6.0, dist);
+          float lift = 1.0 - 0.55 * dust * clamp((p.y - aOrigin.y) / 4.0, 0.0, 1.0);
+          float rainOff = mix(1.0, uDustFade, dust);
+          vColor = vec4(aColor.rgb, aColor.a * fadeIn * fadeOut * conserve * distFade * nearFade * lift * rainOff);
+          float col = mod(aStyle.x, uAtlas.x);
+          float row = floor(aStyle.x / uAtlas.x);
+          vUv = (vec2(col, row) + vec2(aCorner.x * mirror, aCorner.y) * 0.5 + 0.5) / uAtlas;
+          vViewZ = mvPosition.z;
+          vSoft = mix(0.7, 4.0, u) * (0.5 + 0.5 * size / max(aParam.w, 1e-3));
+          vAge = u;
+          vKind = aKind.x;
+          vDens = aKind.y;
+          vNear = 1.0 - smoothstep(6.0, 22.0, dist);
+          vFogDepth = -mvPosition.z;
+          gl_Position = uProj * mvPosition;
+        }
+    """.trimIndent()
+
+    private val FS_SMOKE = """
+        #version 300 es
+        precision highp float;
+        uniform sampler2D uAtlasTex;
+        uniform sampler2D tDepth;
+        uniform float uHasDepth;
+        uniform vec2 uResolution;
+        uniform vec2 uNearFar;
+        uniform vec3 uLightDirView;
+        uniform vec3 uLightColor;
+        uniform vec3 uAmbient;
+        uniform vec3 uGroundBounce;
+        uniform vec4 uLocalPos[4];
+        uniform vec3 uLocalColor[4];
+        uniform int uLocalCount;
+        uniform vec3 uFogColor;
+        uniform float uFogDensity;
+        in vec2 vUv;
+        in vec4 vColor;
+        in vec3 vRot;
+        in float vViewZ;
+        in vec3 vViewPos;
+        in float vSoft;
+        in float vAge;
+        in float vKind;
+        in float vDens;
+        in float vNear;
+        in float vFogDepth;
+        out vec4 fragColor;
+        float effectsSceneViewZ() {
+          float d = texture(tDepth, gl_FragCoord.xy / uResolution).x;
+          return -((uNearFar.x * uNearFar.y) / ((uNearFar.y - uNearFar.x) * d - uNearFar.y));
+        }
+        void main() {
+          vec4 tex = texture(uAtlasTex, vUv);
+          float alpha = tex.a * vColor.a;
+          // occlusion + soft edge against the real scene depth (depthTest is off)
+          if (uHasDepth > 0.5) {
+            float dz = vViewZ - effectsSceneViewZ();      // > 0 when the particle is in front of the scene
+            alpha *= clamp(dz / vSoft, 0.0, 1.0);
+          }
+          if (alpha < 0.003) discard;
+          // lobe pseudo-normal, mirrored + rotated with the billboard
+          vec3 n = tex.rgb * 2.0 - 1.0;
+          n.x *= vRot.z;
+          n.xy = vec2(n.x * vRot.x - n.y * vRot.y, n.x * vRot.y + n.y * vRot.x);
+          n = normalize(n);
+          vec3 viewDir = normalize(-vViewPos);
+          vec3 L = -uLightDirView;
+          float ndl = dot(n, L);
+          float wrap = mix(0.55, 0.16, vDens);
+          float lit = mix(0.34, 0.05, vDens) + (1.0 - mix(0.34, 0.05, vDens)) * smoothstep(-wrap, wrap + 0.30, ndl);
+          // forward scattering: backlit plumes glow at sunset
+          float vl = max(dot(viewDir, -L), 0.0);
+          float thin = 1.0 - tex.a * 0.75;
+          float forward = pow(vl, 8.0) * thin * (1.6 + 0.6 * vKind);
+          // silhouette rim pow(1 - n.v, 3) when backlit
+          float ndv = max(dot(n, viewDir), 0.0);
+          float rim = pow(1.0 - ndv, 3.0) * smoothstep(0.1, 0.95, vl) * 1.3 * (0.5 + 0.5 * thin);
+          // self-shadowing: the dense young core is much darker than the fringe
+          float core = 1.0 - (0.22 + 0.62 * vDens + 0.10 * vKind) * tex.a * (1.0 - vAge * 0.55);
+          vec3 sky = uAmbient * (0.82 + 0.18 * n.y) * (1.0 - 0.72 * vDens) + uGroundBounce * (0.30 - 0.22 * n.y);
+          vec3 light = sky * core + uLightColor * (lit * core + forward + rim);
+          // local lights (street lamps): inverse-square with a smooth range cutoff
+          for (int i = 0; i < 4; i++) {
+            if (i >= uLocalCount) break;
+            vec3 toL = uLocalPos[i].xyz - vViewPos;
+            float d2 = dot(toL, toL);
+            float d = sqrt(d2);
+            float range = uLocalPos[i].w;
+            float win = clamp(1.0 - d / range, 0.0, 1.0);
+            float att = win * win / (d2 + 1.0);
+            vec3 Ld = toL / max(d, 1e-3);
+            float w = dot(n, Ld) * 0.5 + 0.5;
+            light += uLocalColor[i] * att * (w * w * core + 0.25);
+          }
+          // soot dilutes as the plume entrains air: young puff dark grey-brown, old one pale haze
+          vec3 albedo = vColor.rgb * (0.85 + 0.55 * vAge * vDens);
+          vec3 col = albedo * light;
+          float fogFactor = 1.0 - exp(-uFogDensity * uFogDensity * vFogDepth * vFogDepth);
+          fragColor = vec4(mix(col, uFogColor, fogFactor), alpha);
         }
     """.trimIndent()
 

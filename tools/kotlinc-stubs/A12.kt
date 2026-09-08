@@ -1,5 +1,17 @@
 package android.opengl
 object GLES30 {
+    const val GL_TRIANGLE_STRIP = 0x0005
+    const val GL_FRAMEBUFFER_COMPLETE = 0x8CD5
+    const val GL_NEAREST = 0x2600
+    const val GL_DEPTH_COMPONENT = 0x1902
+    const val GL_RG16F = 0x822F
+    const val GL_RG = 0x8227
+    const val GL_RGB8 = 0x8051
+    const val GL_RGB = 0x1907
+    const val GL_UNSIGNED_SHORT = 0x1403
+    fun glBlendFuncSeparate(srgb: Int, drgb: Int, sa: Int, da: Int): Unit = Unit
+    fun glReadPixels(x: Int, y: Int, w: Int, h: Int, format: Int, type: Int, pixels: java.nio.Buffer?): Unit = Unit
+    fun glBufferSubData(target: Int, offset: Int, size: Int, data: java.nio.Buffer?): Unit = Unit
 
     // --- terrain splat slice: 2D arrays, extra texture units, element buffers, anisotropy ---
     const val GL_TEXTURE_2D_ARRAY = 0x8C1A

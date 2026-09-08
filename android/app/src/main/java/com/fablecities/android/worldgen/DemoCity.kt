@@ -273,6 +273,7 @@ class DemoCity(private val hm: Heightmap, private val seed: Int = 1337) {
         const val Z_COM_HIGH = 3
         const val Z_OFFICE = 4
         const val Z_SERVICE = 5
+        const val Z_IND = 7
         const val Z_LANDMARK = 6
 
         // half carriageway widths per road type (metres)
@@ -561,6 +562,8 @@ class DemoCity(private val hm: Heightmap, private val seed: Int = 1337) {
         val x: Float, val y: Float, val z: Float,
         val w: Float, val d: Float, val h: Float,
         val kind: Int, val yaw: Float, val seed: Int,
+        val stacks: List<Smoke.StackRec>? = null, // the buildings-module contract: recorded chimney
+        val vents: List<Smoke.VentRec>? = null,   // stacks / rooftop vents (world space, y = top)
     )
 
     val blocks = ArrayList<BlockBuilding>()

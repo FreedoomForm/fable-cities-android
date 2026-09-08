@@ -2,11 +2,17 @@
 # Run the JVM golden parity tests locally (JUnit 4 console runner).
 set -e
 cd "$(dirname "$0")/.."
-CLS=/tmp/kout:/tmp/junit-4.13.2.jar:/tmp/hamcrest-core-1.3.jar:/home/z/tools/kotlinc/lib/kotlin-stdlib.jar
+# the junitstub's org.junit.* classes shadow the real jar on the classpath - purge them
+rm -rf /tmp/kout/org/junit /tmp/kout/org/hamcrest
+CLS=/tmp/kout:/tmp/junit-4.13.2.jar:/tmp/hamcrest-core-1.3.jar:/tmp/kotlinc/lib/kotlin-stdlib.jar
 if [ $# -gt 0 ]; then
   TESTS="$@"
 else
-  TESTS=$(cd android/app/src/test/java && find . -name "*Test.kt" | sed 's|^\./||; s|\.kt$||; s|/|.|g')
+  # derive FQCN from the package declaration (some files live in worldgen/ but declare the root package)
+TESTS=$(for f in $(find android/app/src/test/java -name "*Test.kt"); do
+  pkg=$(grep -m1 '^package' "$f" | sed 's/package //; s/[^a-zA-Z0-9_.].*//')
+  echo "$pkg.$(basename "$f" .kt)"
+done)
 fi
 PASS=0; FAIL=0
 for T in $TESTS; do
