@@ -166,9 +166,15 @@ jobs:
             sleep 2
             adb logcat -c
             adb shell am start -W -n com.fablecities.android/.MainActivity
-            # the native build now bakes the control maps, canopy coverage, splat arrays and
-            # 15k tree instances before the first frame — give it time on swiftshader
-            sleep 60
+            # the renderer must actually PRESENT its first frame before the gate can judge it:
+            # poll for the frame-1 marker (heavy world-gen + shader compile take minutes on
+            # swiftshader) instead of a fixed sleep — a fixed 20-60 s window screenshots the
+            # unpresented surface (the "white screen" era that all gates let through).
+            FRAME_OK=0; for i in $(seq 1 60); do if adb logcat -d | grep -q "frame 1 presented"; then FRAME_OK=1; break; fi; sleep 5; done
+            adb logcat -d > full_bootcat.txt || true
+            grep -E "GlCityRenderer: init" full_bootcat.txt | head -8 || true
+            [ "$FRAME_OK" = "1" ] || { echo "::error::Native renderer never presented a frame in 300 s"; grep -E "GlCityRenderer|FATAL|AndroidRuntime|Fatal signal" full_bootcat.txt | head -50; exit 1; }
+            sleep 12
             # dump the FULL logcat BEFORE the pid check - the last-500 window lost the crash lines
             adb logcat -d > full_bootcat.txt || true
             adb shell pidof com.fablecities.android > pid.txt || true
@@ -182,6 +188,11 @@ jobs:
             adb shell input tap 1486 553 || true
             sleep 2
             adb exec-out screencap -p > emulator_screen.png
+            # BLANK-FRAME GATE: a uniform screenshot means the scene never rendered (the white
+            # screen the old fixed-sleep gate kept passing). ImageMagick stddev must clear 0.02.
+            SD=$(identify -format "%[fx:standard_deviation]" emulator_screen.png 2>/dev/null || echo "1")
+            echo "native screenshot stddev: $SD"
+            python3 -c "import sys; sys.exit(0 if float('$SD') > 0.02 else 1)" || { echo "::error::Native screenshot is blank/uniform — the scene did not render"; exit 1; }
             cp full_bootcat.txt full_logcat.txt
             # ---- GATE 3: rotation + background/resume stress (lifecycle gates from item 1) ----
             adb shell settings put system accelerometer_rotation 0 || true

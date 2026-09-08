@@ -9,6 +9,7 @@ import com.fablecities.android.worldgen.CloudShadowMap
 import com.fablecities.android.worldgen.Clouds
 import com.fablecities.android.worldgen.Environment
 import com.fablecities.android.worldgen.WeatherPresets
+import com.fablecities.android.worldgen.GradeFx
 import com.fablecities.android.worldgen.GroundControl
 import com.fablecities.android.worldgen.Heightmap
 import com.fablecities.android.worldgen.Vegetation
@@ -139,12 +140,61 @@ class GlCityRenderer : GLSurfaceView.Renderer {
     private var progLampHead = 0
     private var progCloudComposite = 0
     // --- scene FBO (GroundFXPass: the whole scene renders into a colour+depth RT, then the
-    //     depth-driven fullscreen wet-SSR / contact-shadow / AO / aerial pass blits it up) ---
+    //     depth-driven fullscreen wet-SSR / contact-shadow / AO / aerial pass blits it up).
+    //     HDR: the site's EffectComposer render target is HalfFloatType with a DEPTH_TEXTURE
+    //     (Engine.js), and the composer tail (bloom → grade → AgX → SMAA) needs radiance
+    //     above 1.0 to survive — so colour = RGBA16F, depth = a samplable DEPTH_COMPONENT24
+    //     texture (also sampled by the sun-occlusion probe and the soft particles). ---
     private var sceneFbo = 0
     private var sceneTex = 0
     private var sceneDepth = 0
     private var sceneW = 0
     private var sceneH = 0
+    // --- post chain (the Engine.js composer tail port): fxFbo receives the GroundFX blit +
+    //     precipitation; bloom runs its 5-mip chain and composites additively onto fxFbo;
+    //     the luma meter + sun-occlusion probe feed the grade pass which applies the site's
+    //     CS2-like grade + AgX + sRGB into outFbo; SMAA resolves outFbo to the screen. ---
+    private var fxFbo = 0
+    private var fxTex = 0
+    private var outFbo = 0
+    private var outTex = 0
+    private var bloomBrightFbo = 0
+    private var bloomBrightTex = 0
+    private val bloomHFbo = IntArray(5)
+    private val bloomHTex = IntArray(5)
+    private val bloomVFbo = IntArray(5)
+    private val bloomVTex = IntArray(5)
+    private val bloomW = IntArray(5)
+    private val bloomH = IntArray(5)
+    private var meterFbo = IntArray(2)
+    private var meterTex = IntArray(2)
+    private var meterIndex = 0
+    private var occFbo = 0
+    private var occTex = 0
+    private var smaaEdgesFbo = 0
+    private var smaaEdgesTex = 0
+    private var smaaWeightsFbo = 0
+    private var smaaWeightsTex = 0
+    private var postVbo = 0
+    private var progOccl = 0
+    private var progBright = 0
+    private var progBlur = IntArray(5)
+    private var progBloomComp = 0
+    private var progMeter = 0
+    private var progGrade = 0
+    private var progSmaaEdges = 0
+    private var progSmaaWeights = 0
+    private var progSmaaBlend = 0
+    private var progCopy = 0
+    private var texSmaaArea = 0
+    private var texSmaaSearch = 0
+    private val gaussianCoeffs = Array(5) { FloatArray(22) }
+    /** 4×4 centre-patch mean of the graded frame (r,g,b, re-arm flag) for the CI stage log. */
+    private val gradeProbe = FloatArray(4)
+    /** The effects/index.js grade driver state (weather damp chains + grade uniforms). */
+    private val gradeFx = GradeFx.State()
+    private var firstFrameLogged = false
+    private var lastStageLog = 0L
     // --- street lamps (the site's ROAD_TYPES lamp definitions) + WetLights emitter feed ---
     private var lampPoleVbo = 0
     private var lampPoleCount = 0
@@ -322,6 +372,17 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         underVbo = 0; underIbo = 0; underIdxCount = 0; underInstVbo = 0; underInstCount = 0
         pudVbo = 0; pudIbo = 0; pudIdxCount = 0
         sceneFbo = 0; sceneTex = 0; sceneDepth = 0; sceneW = 0; sceneH = 0
+        fxFbo = 0; fxTex = 0; outFbo = 0; outTex = 0
+        bloomBrightFbo = 0; bloomBrightTex = 0
+        for (i in 0 until 5) { bloomHFbo[i] = 0; bloomHTex[i] = 0; bloomVFbo[i] = 0; bloomVTex[i] = 0 }
+        for (i in 0 until 2) { meterFbo[i] = 0; meterTex[i] = 0 }
+        occFbo = 0; occTex = 0; smaaEdgesFbo = 0; smaaEdgesTex = 0; smaaWeightsFbo = 0; smaaWeightsTex = 0
+        postVbo = 0
+        progOccl = 0; progBright = 0; for (i in 0 until 5) progBlur[i] = 0
+        progBloomComp = 0; progMeter = 0; progGrade = 0
+        progSmaaEdges = 0; progSmaaWeights = 0; progSmaaBlend = 0; progCopy = 0
+        texSmaaArea = 0; texSmaaSearch = 0
+        meterIndex = 0
         reflFbo = 0; reflTex = 0; reflDepth = 0; reflW = 0; reflH = 0
         texHeight = 0; texShore = 0; texNoise = 0; texWNormal = 0
         texAlbedoArr = 0; texNormalArr = 0; texControl = 0; texControl2 = 0; texTNormal = 0
@@ -363,6 +424,19 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         progUndergrowth = buildProgram(TerrainShaders.VS_UNDERGROWTH, TerrainShaders.FS_UNDERGROWTH, "undergrowth")
         progGroundFX = buildProgram(TerrainShaders.VS_GROUNDFX, TerrainShaders.FS_GROUNDFX, "groundfx")
         progLampHead = buildProgram(VS_LIT, TerrainShaders.FS_LAMPHEAD, "lamphead")
+        // composer tail (the Engine.js post stack)
+        progOccl = buildProgram(PostShaders.VS_POST, PostShaders.FS_OCCLUSION_PROBE, "occl")
+        progBright = buildProgram(PostShaders.VS_POST, PostShaders.FS_BRIGHT, "bright")
+        val kernelSizes = intArrayOf(6, 10, 14, 18, 22)
+        for (m in 0 until 5) progBlur[m] = buildProgram(PostShaders.VS_POST, PostShaders.fsBlur(kernelSizes[m]), "blur$m")
+        progBloomComp = buildProgram(PostShaders.VS_POST, PostShaders.FS_BLOOM_COMPOSITE, "bloomcomp")
+        progMeter = buildProgram(PostShaders.VS_POST, PostShaders.FS_LUMA_METER, "meter")
+        progGrade = buildProgram(PostShaders.VS_POST, PostShaders.FS_GRADE, "grade")
+        progSmaaEdges = buildProgram(PostShaders.VS_SMAA_EDGES, PostShaders.FS_SMAA_EDGES, "smaaedges")
+        progSmaaWeights = buildProgram(PostShaders.VS_SMAA_WEIGHTS, PostShaders.FS_SMAA_WEIGHTS, "smaaweights")
+        progSmaaBlend = buildProgram(PostShaders.VS_SMAA_BLEND, PostShaders.FS_SMAA_BLEND, "smaablend")
+        progCopy = buildProgram(PostShaders.VS_POST, PostShaders.FS_COPY, "copy")
+        Log.i(TAG, "init: programs compiled")
         buildPrecipBuffer()
         buildCloudTextures()
 
@@ -378,6 +452,7 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         demo.generateBlocks()
         buildRoadNet()
         buildLamps()
+        Log.i(TAG, "init: world + city + roadnet built")
         cityYaw = atan2(-demo.site.uz, demo.site.ux).toFloat()
         val cc = demo.L(0.0, demo.COAST_V + demo.ROWS[2])
         val camY = worldHeight.getHeight(cc[0], cc[1]).toFloat() + 12f
@@ -394,6 +469,7 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         loadBuildings()
         buildWater()
         buildStars()
+        Log.i(TAG, "init: meshes + water ready (celestial bakes running async)")
         buildCube()
         buildCar()
         buildPed()
@@ -419,37 +495,240 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         setupSceneFbo()
     }
 
-    /** GroundFXPass scene RT: full-viewport colour + depth the FX pass samples. */
+    /** GroundFXPass scene RT: full-viewport HDR colour + samplable depth (the site's
+     *  EffectComposer target is HalfFloat + DepthTexture). */
     private fun setupSceneFbo() {
         val w = max(256, letterbox[2].toInt())
         val h = max(256, letterbox[3].toInt())
         if (sceneFbo != 0 && w == sceneW && h == sceneH) return
+        deletePostTargets()
         if (sceneFbo != 0) {
             GLES30.glDeleteFramebuffers(1, intArrayOf(sceneFbo), 0)
-            GLES30.glDeleteTextures(1, intArrayOf(sceneTex), 0)
-            GLES30.glDeleteRenderbuffers(1, intArrayOf(sceneDepth), 0)
+            GLES30.glDeleteTextures(1, intArrayOf(sceneTex, sceneDepth), 0)
             sceneFbo = 0
         }
-        val genTex = IntArray(1); val genRb = IntArray(1); val genFb = IntArray(1)
+        val genTex = IntArray(1); val genDepth = IntArray(1); val genFb = IntArray(1)
         GLES30.glGenTextures(1, genTex, 0)
-        GLES30.glGenRenderbuffers(1, genRb, 0)
+        GLES30.glGenTextures(1, genDepth, 0)
         GLES30.glGenFramebuffers(1, genFb, 0)
-        sceneTex = genTex[0]; sceneDepth = genRb[0]; sceneFbo = genFb[0]
+        sceneTex = genTex[0]; sceneDepth = genDepth[0]; sceneFbo = genFb[0]
         sceneW = w; sceneH = h
         GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, sceneTex)
-        GLES30.glTexImage2D(GLES30.GL_TEXTURE_2D, 0, GLES30.GL_RGBA8, w, h, 0, GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE, null)
+        GLES30.glTexImage2D(GLES30.GL_TEXTURE_2D, 0, GLES30.GL_RGBA16F, w, h, 0, GLES30.GL_RGBA, GLES30.GL_HALF_FLOAT, null)
+        texParamsLinearClamp()
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, sceneDepth)
+        GLES30.glTexImage2D(GLES30.GL_TEXTURE_2D, 0, GLES30.GL_DEPTH_COMPONENT24, w, h, 0, GLES30.GL_DEPTH_COMPONENT, GLES30.GL_UNSIGNED_INT, null)
+        texParamsNearestClamp()
+        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, sceneFbo)
+        GLES30.glFramebufferTexture2D(GLES30.GL_FRAMEBUFFER, GLES30.GL_COLOR_ATTACHMENT0, GLES30.GL_TEXTURE_2D, sceneTex, 0)
+        GLES30.glFramebufferTexture2D(GLES30.GL_FRAMEBUFFER, GLES30.GL_DEPTH_ATTACHMENT, GLES30.GL_TEXTURE_2D, sceneDepth, 0)
+        val status = GLES30.glCheckFramebufferStatus(GLES30.GL_FRAMEBUFFER)
+        if (status != GLES30.GL_FRAMEBUFFER_COMPLETE) {
+            Log.e(TAG, "sceneFbo incomplete 0x${Integer.toHexString(status)}")
+        }
+        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
+        setupPostFbos(w, h)
+    }
+
+    private fun texParamsLinearClamp() {
         GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_MIN_FILTER, GLES30.GL_LINEAR)
         GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_MAG_FILTER, GLES30.GL_LINEAR)
         GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_WRAP_S, GLES30.GL_CLAMP_TO_EDGE)
         GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_WRAP_T, GLES30.GL_CLAMP_TO_EDGE)
-        GLES30.glBindRenderbuffer(GLES30.GL_RENDERBUFFER, sceneDepth)
-        GLES30.glRenderbufferStorage(GLES30.GL_RENDERBUFFER, GLES30.GL_DEPTH_COMPONENT24, w, h)
-        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, sceneFbo)
-        GLES30.glFramebufferTexture2D(GLES30.GL_FRAMEBUFFER, GLES30.GL_COLOR_ATTACHMENT0, GLES30.GL_TEXTURE_2D, sceneTex, 0)
-        GLES30.glFramebufferRenderbuffer(GLES30.GL_FRAMEBUFFER, GLES30.GL_DEPTH_ATTACHMENT, GLES30.GL_RENDERBUFFER, sceneDepth)
+    }
+
+    private fun texParamsNearestClamp() {
+        GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_MIN_FILTER, GLES30.GL_NEAREST)
+        GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_MAG_FILTER, GLES30.GL_NEAREST)
+        GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_WRAP_S, GLES30.GL_CLAMP_TO_EDGE)
+        GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_WRAP_T, GLES30.GL_CLAMP_TO_EDGE)
+    }
+
+    /** Free every post-chain target (resize / context loss). */
+    private fun deletePostTargets() {
+        val fbos = ArrayList<Int>(20)
+        val texs = ArrayList<Int>(20)
+        if (fxFbo != 0) { fbos.add(fxFbo); texs.add(fxTex) }
+        if (outFbo != 0) { fbos.add(outFbo); texs.add(outTex) }
+        if (bloomBrightFbo != 0) { fbos.add(bloomBrightFbo); texs.add(bloomBrightTex) }
+        for (i in 0 until 5) {
+            if (bloomHFbo[i] != 0) { fbos.add(bloomHFbo[i]); texs.add(bloomHTex[i]) }
+            if (bloomVFbo[i] != 0) { fbos.add(bloomVFbo[i]); texs.add(bloomVTex[i]) }
+        }
+        for (i in 0 until 2) if (meterFbo[i] != 0) { fbos.add(meterFbo[i]); texs.add(meterTex[i]) }
+        if (occFbo != 0) { fbos.add(occFbo); texs.add(occTex) }
+        if (smaaEdgesFbo != 0) { fbos.add(smaaEdgesFbo); texs.add(smaaEdgesTex) }
+        if (smaaWeightsFbo != 0) { fbos.add(smaaWeightsFbo); texs.add(smaaWeightsTex) }
+        if (fbos.isNotEmpty()) GLES30.glDeleteFramebuffers(fbos.size, fbos.toIntArray(), 0)
+        if (texs.isNotEmpty()) GLES30.glDeleteTextures(texs.size, texs.toIntArray(), 0)
+        fxFbo = 0; fxTex = 0; outFbo = 0; outTex = 0
+        bloomBrightFbo = 0; bloomBrightTex = 0
+        for (i in 0 until 5) { bloomHFbo[i] = 0; bloomHTex[i] = 0; bloomVFbo[i] = 0; bloomVTex[i] = 0 }
+        for (i in 0 until 2) { meterFbo[i] = 0; meterTex[i] = 0 }
+        occFbo = 0; occTex = 0; smaaEdgesFbo = 0; smaaEdgesTex = 0; smaaWeightsFbo = 0; smaaWeightsTex = 0
+    }
+
+    /** Allocate the composer-tail targets at scene resolution (UnrealBloom half-res mip chain,
+     *  1×1 meter/occlusion, SMAA edges/weights). RGBA16F everywhere HDR math needs > 1.0. */
+    private fun setupPostFbos(w: Int, h: Int) {
+        if (postVbo == 0) {
+            val gen = IntArray(1); GLES30.glGenBuffers(1, gen, 0)
+            postVbo = gen[0]
+            GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, postVbo)
+            // 4-vertex triangle strip covering NDC (the old 3-vertex triangle left the
+            // upper-left half of every fullscreen pass unrasterised!)
+            GLES30.glBufferData(GLES30.GL_ARRAY_BUFFER, 12 * 4,
+                java.nio.ByteBuffer.allocateDirect(12 * 4).order(java.nio.ByteOrder.nativeOrder())
+                    .put(floatArrayOf(-1f, -1f, 0f, 1f, -1f, 0f, -1f, 1f, 0f, 1f, 1f, 0f)).position(0),
+                GLES30.GL_STATIC_DRAW)
+            GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, 0)
+        }
+        if (texSmaaArea == 0) loadSmaaTextures()
+
+        // gaussian coefficients (UnrealBloomPass _getSeparableBlurMaterial)
+        val kernelSizes = intArrayOf(6, 10, 14, 18, 22)
+        var rx = w / 2; var rh = h / 2
+        for (m in 0 until 5) {
+            val r = kernelSizes[m]
+            val sigma = r / 3.0
+            for (i in 0 until r) gaussianCoeffs[m][i] = (0.39894 * Math.exp(-0.5 * i * i / (sigma * sigma)) / sigma).toFloat()
+            bloomW[m] = max(1, rx); bloomH[m] = max(1, rh)
+            rx = Math.round(rx / 2.0f); rh = Math.round(rh / 2.0f)
+        }
+        bloomBrightFbo = hdrRt(w / 2, h / 2, intArrayOf(bloomBrightFbo), intArrayOf(bloomBrightTex))
+        for (m in 0 until 5) {
+            val hf = IntArray(1); val ht = IntArray(1); val vf = IntArray(1); val vt = IntArray(1)
+            hdrRtInto(bloomW[m], bloomH[m], hf, ht)
+            hdrRtInto(bloomW[m], bloomH[m], vf, vt)
+            bloomHFbo[m] = hf[0]; bloomHTex[m] = ht[0]; bloomVFbo[m] = vf[0]; bloomVTex[m] = vt[0]
+        }
+        // composite goes into bloomHFbo[0] (renderTargetsHorizontal[0] on the web)
+        fxFbo = hdrRt(w, h, intArrayOf(fxFbo), intArrayOf(fxTex))
+        outFbo = ldrRt(w, h, intArrayOf(outFbo), intArrayOf(outTex))
+        // luma meter ping-pong 1×1 (RG16F; RGBA8 fallback if float renderability is missing)
+        for (i in 0 until 2) {
+            val f = IntArray(1); val t = IntArray(1)
+            meterRt(f, t)
+            meterFbo[i] = f[0]; meterTex[i] = t[0]
+        }
+        occFbo = ldrRt(1, 1, intArrayOf(occFbo), intArrayOf(occTex))
+        smaaEdgesFbo = ldrRt(w, h, intArrayOf(smaaEdgesFbo), intArrayOf(smaaEdgesTex))
+        smaaWeightsFbo = ldrRt(w, h, intArrayOf(smaaWeightsFbo), intArrayOf(smaaWeightsTex))
+    }
+
+    private fun hdrRt(w: Int, h: Int, outFb: IntArray, outT: IntArray): Int {
+        hdrRtInto(w, h, outFb, outT)
+        return outFb[0]
+    }
+
+    private fun hdrRtInto(w: Int, h: Int, outFb: IntArray, outT: IntArray) {
+        val genT = IntArray(1); val genF = IntArray(1)
+        GLES30.glGenTextures(1, genT, 0)
+        GLES30.glGenFramebuffers(1, genF, 0)
+        outT[0] = genT[0]; outFb[0] = genF[0]
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, outT[0])
+        GLES30.glTexImage2D(GLES30.GL_TEXTURE_2D, 0, GLES30.GL_RGBA16F, w, h, 0, GLES30.GL_RGBA, GLES30.GL_HALF_FLOAT, null)
+        texParamsLinearClamp()
+        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, outFb[0])
+        GLES30.glFramebufferTexture2D(GLES30.GL_FRAMEBUFFER, GLES30.GL_COLOR_ATTACHMENT0, GLES30.GL_TEXTURE_2D, outT[0], 0)
         GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
         GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, 0)
-        GLES30.glBindRenderbuffer(GLES30.GL_RENDERBUFFER, 0)
+    }
+
+    private fun ldrRt(w: Int, h: Int, outFb: IntArray, outT: IntArray): Int {
+        val genT = IntArray(1); val genF = IntArray(1)
+        GLES30.glGenTextures(1, genT, 0)
+        GLES30.glGenFramebuffers(1, genF, 0)
+        outT[0] = genT[0]; outFb[0] = genF[0]
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, outT[0])
+        GLES30.glTexImage2D(GLES30.GL_TEXTURE_2D, 0, GLES30.GL_RGBA8, w, h, 0, GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE, null)
+        texParamsLinearClamp()
+        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, outFb[0])
+        GLES30.glFramebufferTexture2D(GLES30.GL_FRAMEBUFFER, GLES30.GL_COLOR_ATTACHMENT0, GLES30.GL_TEXTURE_2D, outT[0], 0)
+        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, 0)
+        return outFb[0]
+    }
+
+    private fun meterRt(outFb: IntArray, outT: IntArray) {
+        val genT = IntArray(1); val genF = IntArray(1)
+        GLES30.glGenTextures(1, genT, 0)
+        GLES30.glGenFramebuffers(1, genF, 0)
+        outT[0] = genT[0]; outFb[0] = genF[0]
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, outT[0])
+        GLES30.glTexImage2D(GLES30.GL_TEXTURE_2D, 0, GLES30.GL_RG16F, 1, 1, 0, GLES30.GL_RG, GLES30.GL_HALF_FLOAT, null)
+        texParamsNearestClamp()
+        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, outFb[0])
+        GLES30.glFramebufferTexture2D(GLES30.GL_FRAMEBUFFER, GLES30.GL_COLOR_ATTACHMENT0, GLES30.GL_TEXTURE_2D, outT[0], 0)
+        val status = GLES30.glCheckFramebufferStatus(GLES30.GL_FRAMEBUFFER)
+        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, 0)
+        if (status != GLES30.GL_FRAMEBUFFER_COMPLETE) {
+            Log.e(TAG, "meter RG16F incomplete 0x${Integer.toHexString(status)}")
+        }
+    }
+
+    /** The exact SMAA LUT textures from three's SMAAPass (extracted to APK assets). */
+    private fun loadSmaaTextures() {
+        try {
+            val ctx = appContext ?: return
+            val area = android.graphics.BitmapFactory.decodeStream(ctx.assets.open("smaa_area.png"))
+            val search = android.graphics.BitmapFactory.decodeStream(ctx.assets.open("smaa_search.png"))
+            texSmaaArea = uploadBitmap(area, linear = true)
+            texSmaaSearch = uploadBitmapRed(search, linear = false)
+            area.recycle(); search.recycle()
+        } catch (e: Exception) {
+            Log.e(TAG, "SMAA texture load failed: $e")
+        }
+    }
+
+    private fun uploadBitmap(bmp: android.graphics.Bitmap, linear: Boolean): Int {
+        val gen = IntArray(1); GLES30.glGenTextures(1, gen, 0)
+        val id = gen[0]
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, id)
+        GLES30.glPixelStorei(GLES30.GL_UNPACK_ALIGNMENT, 1)
+        // Bitmaps decode RGBA premultiplied — SMAA area LUT stores the weights in RG, alpha unneeded;
+        // the web uploads the raw PNG (straight alpha). Re-derive straight RGB.
+        val w = bmp.width; val h = bmp.height
+        val src = ByteArray(bmp.rowBytes * h)
+        val heap = java.nio.ByteBuffer.wrap(src)
+        bmp.copyPixelsToBuffer(heap)
+        val out = ByteArray(w * h * 3)
+        var si = 0
+        var di = 0
+        for (p in 0 until w * h) {
+            val a = (src[si + 3].toInt() and 0xff).toFloat() / 255f
+            for (c in 0 until 3) {
+                val prem = (src[si + c].toInt() and 0xff).toFloat() / 255f
+                val v = if (a > 0f) (prem / a).coerceAtMost(1f) else prem
+                out[di + c] = (v * 255f).toInt().toByte()
+            }
+            si += 4; di += 3
+        }
+        GLES30.glPixelStorei(GLES30.GL_UNPACK_ALIGNMENT, 1)
+        GLES30.glTexImage2D(GLES30.GL_TEXTURE_2D, 0, GLES30.GL_RGB8, w, h, 0, GLES30.GL_RGB, GLES30.GL_UNSIGNED_BYTE,
+            java.nio.ByteBuffer.allocateDirect(out.size).order(java.nio.ByteOrder.nativeOrder()).put(out).position(0))
+        if (linear) texParamsLinearClamp() else texParamsNearestClamp()
+        GLES30.glPixelStorei(GLES30.GL_UNPACK_ALIGNMENT, 4)
+        return id
+    }
+
+    private fun uploadBitmapRed(bmp: android.graphics.Bitmap, linear: Boolean): Int {
+        val gen = IntArray(1); GLES30.glGenTextures(1, gen, 0)
+        val id = gen[0]
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, id)
+        GLES30.glPixelStorei(GLES30.GL_UNPACK_ALIGNMENT, 1)
+        val w = bmp.width; val h = bmp.height
+        val src = ByteArray(bmp.rowBytes * h)
+        val heap = java.nio.ByteBuffer.wrap(src)
+        bmp.copyPixelsToBuffer(heap)
+        val out = ByteArray(w * h)
+        for (p in 0 until w * h) out[p] = src[p * 4] // R channel (the search LUT is single-channel)
+        GLES30.glTexImage2D(GLES30.GL_TEXTURE_2D, 0, GLES30.GL_R8, w, h, 0, GLES30.GL_RED, GLES30.GL_UNSIGNED_BYTE,
+            java.nio.ByteBuffer.allocateDirect(out.size).order(java.nio.ByteOrder.nativeOrder()).put(out).position(0))
+        if (linear) texParamsLinearClamp() else texParamsNearestClamp()
+        GLES30.glPixelStorei(GLES30.GL_UNPACK_ALIGNMENT, 4)
+        return id
     }
 
     // ---------------------------------------------------------------- street lamps + GroundFX
@@ -844,26 +1123,321 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, sceneDepth)
         GLES30.glActiveTexture(GLES30.GL_TEXTURE2)
         GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, texDrainage)
-        GLES30.glDrawArrays(GLES30.GL_TRIANGLES, 0, 3)
+        GLES30.glDrawArrays(GLES30.GL_TRIANGLE_STRIP, 0, 4)
         GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
         GLES30.glEnable(GLES30.GL_DEPTH_TEST)
         GLES30.glDepthMask(true)
         GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, 0)
     }
 
-    /** The site's baked cloud textures (worldgen Clouds.kt = the web's Clouds.js CPU bakes). */
+    // ---------------------------------------------------------------- composer tail (PostShaders)
+
+    /** Shared fullscreen setup: the 4-vertex strip, depth off, cull off. */
+    private fun beginFullscreen(prog: Int) {
+        GLES30.glDisable(GLES30.GL_DEPTH_TEST)
+        GLES30.glDepthMask(false)
+        GLES30.glDisable(GLES30.GL_CULL_FACE)
+        GLES30.glDisable(GLES30.GL_BLEND)
+        GLES30.glUseProgram(prog)
+        GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, postVbo)
+        GLES30.glEnableVertexAttribArray(0)
+        GLES30.glVertexAttribPointer(0, 3, GLES30.GL_FLOAT, false, 12, 0)
+    }
+
+    private fun endFullscreen() {
+        GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, 0)
+        GLES30.glDepthMask(true)
+        GLES30.glEnable(GLES30.GL_DEPTH_TEST)
+        GLES30.glEnable(GLES30.GL_CULL_FACE)
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
+    }
+
+    /** Step the effects/index.js post-chain driver (weather damp chains + grade uniforms +
+     *  sun glare screen terms) with the frame's real environment state. */
+    private fun updateGradeFx(dt: Float, sun: SunState) {
+        val st = envState
+        val travel = DoubleArray(3) // env.sunDirection = the direction light travels = -toward
+        travel[0] = -st.sunDir[0]; travel[1] = -st.sunDir[1]; travel[2] = -st.sunDir[2]
+        val env = GradeFx.EnvIn(
+            weather.name,
+            st.sunIntensity,
+            st.sunColor,
+            st.nightFactor,
+            st.sunDir,
+            weather.precipitation,
+            st.wetness,
+            st.snowCover,
+            st.cloudCover,
+        )
+        val camPos = doubleArrayOf(
+            (camTarget[0] + camDist * cos(camPitch) * sin(camYaw)).toDouble(),
+            (camTarget[1] + camDist * sin(camPitch)).toDouble(),
+            (camTarget[2] + camDist * cos(camPitch) * cos(camYaw)).toDouble())
+        GradeFx.step(gradeFx, dt.toDouble(), env, camPos) { p ->
+            val outv = FloatArray(4)
+            Matrix.multiplyMV(outv, 0, vpM, 0, floatArrayOf(p[0].toFloat(), p[1].toFloat(), p[2].toFloat(), 1f), 0)
+            val cw = outv[3]
+            if (abs(cw) < 1e-5f) return@step doubleArrayOf(0.0, 0.0, 2.0)
+            doubleArrayOf((outv[0] / cw).toDouble(), (outv[1] / cw).toDouble(), if (outv[2] / cw < 1.0) 0.0 else 1.0)
+        }
+    }
+
+    /** EffectsPass sun-occlusion probe: 13 depth taps around the sun → 1×1 (R = sky fraction). */
+    private fun drawSunOcclusionProbe(sun: SunState) {
+        if (progOccl == 0 || sceneDepth == 0) return
+        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, occFbo)
+        GLES30.glViewport(0, 0, 1, 1)
+        beginFullscreen(progOccl)
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, sceneDepth)
+        GLES30.glUniform1i(u(progOccl, "tDepth"), 0)
+        GLES30.glUniform2f(u(progOccl, "uSunUv"), gradeFx.uSun[0].toFloat() * 0.5f + 0.5f, gradeFx.uSun[1].toFloat() * 0.5f + 0.5f)
+        GLES30.glUniform2f(u(progOccl, "uTexel"), 1f / max(1, sceneW), 1f / max(1, sceneH))
+        GLES30.glUniform2f(u(progOccl, "uNearFar"), 5f, 2600f)
+        GLES30.glUniform1f(u(progOccl, "uRadius"), max(6f, sceneH * 0.008f))
+        GLES30.glUniform1f(u(progOccl, "uActive"), if (gradeFx.probeActive) 1f else 0f)
+        GLES30.glDrawArrays(GLES30.GL_TRIANGLE_STRIP, 0, 4)
+        endFullscreen()
+    }
+
+    /** UnrealBloomPass: bright pass → 5 separable-blur mips → composite → additive blend
+     *  onto fxFbo (three's AdditiveBlending copy). Threshold 0.92 / strength 0.28 / radius 0.55. */
+    private fun drawBloom(sun: SunState) {
+        if (progBright == 0 || fxTex == 0) return
+
+        // 1. bright pass: fxFbo → bloomBright (half res)
+        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, bloomBrightFbo)
+        GLES30.glViewport(0, 0, bloomW[0], bloomH[0])
+        GLES30.glClearColor(0f, 0f, 0f, 0f)
+        GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT)
+        beginFullscreen(progBright)
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, fxTex)
+        GLES30.glUniform1i(u(progBright, "tDiffuse"), 0)
+        GLES30.glUniform3f(u(progBright, "defaultColor"), 0f, 0f, 0f)
+        GLES30.glUniform1f(u(progBright, "defaultOpacity"), 0f)
+        GLES30.glUniform1f(u(progBright, "luminosityThreshold"), 0.92f)
+        GLES30.glUniform1f(u(progBright, "smoothWidth"), 0.01f)
+        GLES30.glDrawArrays(GLES30.GL_TRIANGLE_STRIP, 0, 4)
+        endFullscreen()
+
+        // 2. progressive blur down the mip chain
+        var inputTex = bloomBrightTex
+        for (m in 0 until 5) {
+            val pr = progBlur[m]
+            if (pr == 0) return
+            // horizontal
+            GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, bloomHFbo[m])
+            GLES30.glViewport(0, 0, bloomW[m], bloomH[m])
+            GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT)
+            beginFullscreen(pr)
+            GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
+            GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, inputTex)
+            GLES30.glUniform1i(u(pr, "colorTexture"), 0)
+            GLES30.glUniform2f(u(pr, "invSize"), 1f / bloomW[m], 1f / bloomH[m])
+            GLES30.glUniform2f(u(pr, "direction"), 1f, 0f)
+            GLES30.glUniform1fv(u(pr, "gaussianCoefficients"), intArrayOf(6, 10, 14, 18, 22)[m], gaussianCoeffs[m], 0)
+            GLES30.glDrawArrays(GLES30.GL_TRIANGLE_STRIP, 0, 4)
+            endFullscreen()
+            // vertical
+            GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, bloomVFbo[m])
+            GLES30.glViewport(0, 0, bloomW[m], bloomH[m])
+            GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT)
+            beginFullscreen(pr)
+            GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
+            GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, bloomHTex[m])
+            GLES30.glUniform1i(u(pr, "colorTexture"), 0)
+            GLES30.glUniform2f(u(pr, "invSize"), 1f / bloomW[m], 1f / bloomH[m])
+            GLES30.glUniform2f(u(pr, "direction"), 0f, 1f)
+            GLES30.glUniform1fv(u(pr, "gaussianCoefficients"), intArrayOf(6, 10, 14, 18, 22)[m], gaussianCoeffs[m], 0)
+            GLES30.glDrawArrays(GLES30.GL_TRIANGLE_STRIP, 0, 4)
+            endFullscreen()
+            inputTex = bloomVTex[m]
+        }
+
+        // 3. composite into bloomHFbo[0]
+        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, bloomHFbo[0])
+        GLES30.glViewport(0, 0, bloomW[0], bloomH[0])
+        GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT)
+        beginFullscreen(progBloomComp)
+        for (m in 0 until 5) {
+            GLES30.glActiveTexture((GLES30.GL_TEXTURE0 + m))
+            GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, bloomVTex[m])
+        }
+        GLES30.glUniform1i(u(progBloomComp, "blurTexture1"), 0)
+        GLES30.glUniform1i(u(progBloomComp, "blurTexture2"), 1)
+        GLES30.glUniform1i(u(progBloomComp, "blurTexture3"), 2)
+        GLES30.glUniform1i(u(progBloomComp, "blurTexture4"), 3)
+        GLES30.glUniform1i(u(progBloomComp, "blurTexture5"), 4)
+        GLES30.glUniform1f(u(progBloomComp, "bloomStrength"), 0.28f)
+        GLES30.glUniform1f(u(progBloomComp, "bloomRadius"), 0.55f)
+        GLES30.glDrawArrays(GLES30.GL_TRIANGLE_STRIP, 0, 4)
+        endFullscreen()
+
+        // 4. additive blend onto fxFbo (the web's premultiplied AdditiveBlending CopyShader)
+        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, fxFbo)
+        GLES30.glViewport(0, 0, sceneW, sceneH)
+        GLES30.glEnable(GLES30.GL_BLEND)
+        GLES30.glBlendFunc(GLES30.GL_ONE, GLES30.GL_ONE)
+        GLES30.glDisable(GLES30.GL_DEPTH_TEST)
+        GLES30.glDepthMask(false)
+        GLES30.glDisable(GLES30.GL_CULL_FACE)
+        GLES30.glUseProgram(progCopy)
+        GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, postVbo)
+        GLES30.glEnableVertexAttribArray(0)
+        GLES30.glVertexAttribPointer(0, 3, GLES30.GL_FLOAT, false, 12, 0)
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, bloomHTex[0])
+        GLES30.glUniform1i(u(progCopy, "tDiffuse"), 0)
+        GLES30.glUniform1f(u(progCopy, "opacity"), 1f)
+        GLES30.glDrawArrays(GLES30.GL_TRIANGLE_STRIP, 0, 4)
+        GLES30.glDisable(GLES30.GL_BLEND)
+        GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, 0)
+        GLES30.glDepthMask(true)
+        GLES30.glEnable(GLES30.GL_DEPTH_TEST)
+        GLES30.glEnable(GLES30.GL_CULL_FACE)
+    }
+
+    /** ColorGradingPass luminance meter: 256 taps on the post-bloom frame, temporally
+     *  blended with the previous measurement (1×1 ping-pong, no CPU read-back). */
+    private fun drawMeter(sun: SunState, dt: Float) {
+        if (progMeter == 0 || fxTex == 0) return
+        val prev = meterTex[meterIndex]
+        val next = meterTex[meterIndex xor 1]
+        meterIndex = meterIndex xor 1
+        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, meterFbo[meterIndex])
+        GLES30.glViewport(0, 0, 1, 1)
+        beginFullscreen(progMeter)
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, fxTex)
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE1)
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, prev)
+        GLES30.glUniform1i(u(progMeter, "tScene"), 0)
+        GLES30.glUniform1i(u(progMeter, "tPrev"), 1)
+        GLES30.glUniform1f(u(progMeter, "uBlend"), gradeFx.adaptBlend.toFloat())
+        GLES30.glDrawArrays(GLES30.GL_TRIANGLE_STRIP, 0, 4)
+        endFullscreen()
+    }
+
+    /** ColorGradingPass + OutputPass: the site's grade (S-curve, saturation, split-tone,
+     *  sun glare, vignette, auto exposure) then AgX + sRGB → outFbo (sRGB-encoded LDR). */
+    private fun drawGrade(sun: SunState) {
+        if (progGrade == 0 || fxTex == 0) return
+        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, outFbo)
+        GLES30.glViewport(0, 0, sceneW, sceneH)
+        beginFullscreen(progGrade)
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, fxTex)
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE1)
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, occTex)
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE2)
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, meterTex[meterIndex])
+        GLES30.glUniform1i(u(progGrade, "tDiffuse"), 0)
+        GLES30.glUniform1i(u(progGrade, "tOcc"), 1)
+        GLES30.glUniform1i(u(progGrade, "tMeter"), 2)
+        GLES30.glUniform2f(u(progGrade, "uResolution"), sceneW.toFloat(), sceneH.toFloat())
+        GLES30.glUniform1f(u(progGrade, "uTime"), pudTime)
+        val g = gradeFx
+        GLES30.glUniform4f(u(progGrade, "uAuto"), g.uAuto[0].toFloat(), g.uAuto[1].toFloat(), g.uAuto[2].toFloat(), g.uAuto[3].toFloat())
+        GLES30.glUniform1f(u(progGrade, "uExposure"), g.uExposure.toFloat())
+        GLES30.glUniform1f(u(progGrade, "uContrast"), g.uContrast.toFloat())
+        GLES30.glUniform1f(u(progGrade, "uToe"), g.uToe.toFloat())
+        GLES30.glUniform1f(u(progGrade, "uShoulder"), g.uShoulder.toFloat())
+        GLES30.glUniform1f(u(progGrade, "uBlack"), g.uBlack.toFloat())
+        GLES30.glUniform1f(u(progGrade, "uSaturation"), g.uSaturation.toFloat())
+        GLES30.glUniform1f(u(progGrade, "uMidSat"), g.uMidSat.toFloat())
+        GLES30.glUniform1f(u(progGrade, "uHiDesat"), g.uHiDesat.toFloat())
+        GLES30.glUniform3f(u(progGrade, "uTint"), g.uTint[0].toFloat(), g.uTint[1].toFloat(), g.uTint[2].toFloat())
+        GLES30.glUniform3f(u(progGrade, "uLift"), g.uLift[0].toFloat(), g.uLift[1].toFloat(), g.uLift[2].toFloat())
+        GLES30.glUniform3f(u(progGrade, "uGain"), g.uGain[0].toFloat(), g.uGain[1].toFloat(), g.uGain[2].toFloat())
+        GLES30.glUniform3f(u(progGrade, "uShadowTint"), g.uShadowTint[0].toFloat(), g.uShadowTint[1].toFloat(), g.uShadowTint[2].toFloat())
+        GLES30.glUniform3f(u(progGrade, "uHighlightTint"), g.uHighlightTint[0].toFloat(), g.uHighlightTint[1].toFloat(), g.uHighlightTint[2].toFloat())
+        GLES30.glUniform2f(u(progGrade, "uVignette"), g.uVignette[0].toFloat(), g.uVignette[1].toFloat())
+        GLES30.glUniform4f(u(progGrade, "uSun"), g.uSun[0].toFloat(), g.uSun[1].toFloat(), g.uSun[2].toFloat(), 0f)
+        GLES30.glUniform3f(u(progGrade, "uSunColor"), g.uSunColor[0].toFloat(), g.uSunColor[1].toFloat(), g.uSunColor[2].toFloat())
+        GLES30.glUniform1f(u(progGrade, "uGlare"), g.uGlare.toFloat())
+        GLES30.glUniform1f(u(progGrade, "uLUTAmount"), 0f)
+        GLES30.glUniform1f(u(progGrade, "uExposureTone"), 1f)
+        GLES30.glUniform1i(u(progGrade, "uShimmerCount"), 0)
+        val zeros = FloatArray(4 * 6)
+        GLES30.glUniform4fv(u(progGrade, "uShimmer"), 6, zeros, 0)
+        GLES30.glDrawArrays(GLES30.GL_TRIANGLE_STRIP, 0, 4)
+        endFullscreen()
+    }
+
+    /** SMAAPass: edges → blending weights (the site's area/search LUTs) → neighborhood
+     *  blend to the screen at the letterbox viewport. */
+    private fun drawSmaa(sun: SunState) {
+        if (progSmaaEdges == 0 || progSmaaWeights == 0 || progSmaaBlend == 0 || outTex == 0) return
+        val resX = 1f / max(1, sceneW)
+        val resY = 1f / max(1, sceneH)
+
+        // pass 1: edges (cleared first — the shader discards non-edge pixels)
+        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, smaaEdgesFbo)
+        GLES30.glViewport(0, 0, sceneW, sceneH)
+        GLES30.glClearColor(0f, 0f, 0f, 1f)
+        GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT)
+        beginFullscreen(progSmaaEdges)
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, outTex)
+        GLES30.glUniform1i(u(progSmaaEdges, "tDiffuse"), 0)
+        GLES30.glUniform2f(u(progSmaaEdges, "resolution"), resX, resY)
+        GLES30.glDrawArrays(GLES30.GL_TRIANGLE_STRIP, 0, 4)
+        endFullscreen()
+
+        // pass 2: blending weights
+        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, smaaWeightsFbo)
+        GLES30.glViewport(0, 0, sceneW, sceneH)
+        GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT)
+        beginFullscreen(progSmaaWeights)
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, smaaEdgesTex)
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE1)
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, texSmaaArea)
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE2)
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, texSmaaSearch)
+        GLES30.glUniform1i(u(progSmaaWeights, "tDiffuse"), 0)
+        GLES30.glUniform1i(u(progSmaaWeights, "tArea"), 1)
+        GLES30.glUniform1i(u(progSmaaWeights, "tSearch"), 2)
+        GLES30.glUniform2f(u(progSmaaWeights, "resolution"), resX, resY)
+        GLES30.glDrawArrays(GLES30.GL_TRIANGLE_STRIP, 0, 4)
+        endFullscreen()
+
+        // pass 3: neighborhood blend to the backbuffer (this viewport is the letterbox already)
+        beginFullscreen(progSmaaBlend)
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, smaaWeightsTex)
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE1)
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, outTex)
+        GLES30.glUniform1i(u(progSmaaBlend, "tDiffuse"), 0)
+        GLES30.glUniform1i(u(progSmaaBlend, "tColor"), 1)
+        GLES30.glUniform2f(u(progSmaaBlend, "resolution"), resX, resY)
+        GLES30.glDrawArrays(GLES30.GL_TRIANGLE_STRIP, 0, 4)
+        endFullscreen()
+
+        // cheap self-check for the CI gate: mean of a 4×4 patch of the graded frame
+        if (gradeProbe[3] < 0.5f) { // once per stage-log window
+            try {
+                val px = FloatArray(16 * 4)
+                val pxBuf = java.nio.ByteBuffer.allocateDirect(px.size * 4).order(java.nio.ByteOrder.nativeOrder())
+                GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, outFbo)
+                GLES30.glReadPixels(sceneW / 2, sceneH / 2, 4, 4, GLES30.GL_RGBA, GLES30.GL_FLOAT, pxBuf)
+                GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
+                pxBuf.position(0)
+                var r = 0f; var gg = 0f; var b = 0f
+                for (i in 0 until 16) { r += pxBuf.float; gg += pxBuf.float; b += pxBuf.float }
+                gradeProbe[0] = r / 16f; gradeProbe[1] = gg / 16f; gradeProbe[2] = b / 16f
+                gradeProbe[3] = 1f // logged + re-armed by the stage log
+            } catch (e: Exception) {
+                Log.e(TAG, "probe read failed: $e")
+            }
+        }
+    }
+
+    /** The site's baked cloud textures (worldgen Clouds.kt = the web's Clouds.js CPU bakes).
+     *  The 64³ noise bake runs on the worker (see startAsyncBakes); uploads land on the GL thread. */
     private fun buildCloudTextures() {
-        if (texCloudNoise != 0) return
-        val noise = Clouds.buildCloudNoiseTexture(1337)
-        val weather = Clouds.buildWeatherTexture(1337)
-        val cirrus = Clouds.buildCirrusTexture(1337)
-        texCloudNoise = uploadTex3D(Clouds.NOISE_SIZE, Clouds.NOISE_SIZE, Clouds.NOISE_SIZE, noise)
-        texCloudWeather = uploadTex2D(
-            Clouds.WEATHER_SIZE, Clouds.WEATHER_SIZE, GLES30.GL_RGBA8, GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE,
-            wrapBytes(weather), repeat = true, mipmaps = false)
-        texCloudCirrus = uploadTex2D(
-            256, 256, GLES30.GL_RGBA8, GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE,
-            wrapBytes(cirrus), repeat = true, mipmaps = false)
+        startAsyncBakes()
         // R8 ground-shadow texture (CloudShadowMap), re-baked from updateCloudShadows()
         texCloudShadow = uploadTex2D(
             CloudShadowMap.SIZE, CloudShadowMap.SIZE, GLES30.GL_R8, GLES30.GL_RED, GLES30.GL_UNSIGNED_BYTE,
@@ -920,7 +1494,8 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         reflTex = genTex[0]; reflDepth = genRb[0]; reflFbo = genFb[0]
         reflW = w; reflH = h
         GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, reflTex)
-        GLES30.glTexImage2D(GLES30.GL_TEXTURE_2D, 0, GLES30.GL_RGBA8, w, h, 0, GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE, null)
+        // Water.js reflectionRT: THREE.HalfFloatType (HDR radiance survives the mirror)
+        GLES30.glTexImage2D(GLES30.GL_TEXTURE_2D, 0, GLES30.GL_RGBA16F, w, h, 0, GLES30.GL_RGBA, GLES30.GL_HALF_FLOAT, null)
         GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_MIN_FILTER, GLES30.GL_LINEAR)
         GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_MAG_FILTER, GLES30.GL_LINEAR)
         GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_WRAP_S, GLES30.GL_CLAMP_TO_EDGE)
@@ -1012,6 +1587,7 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         }
 
         if (pendingGfxUpload) uploadWorldGfx()
+        maybeUploadAsyncBakes()
         if (pendingRebakeUpload) {
             pendingRebakeUpload = false
             uploadTerrainRebake()
@@ -1050,7 +1626,9 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         val sun = updateSunState()
         renderReflection(sun) // Water.js renderReflection — before the main render
         updateWetLights(sun, dt) // WetLights emitter ranking (needs the fresh sun + traffic state)
-        // the whole scene renders into the GroundFX RT; the FX pass blits it to the backbuffer
+        // the effects/index.js post-chain driver steps every frame (damp chains + grade uniforms)
+        updateGradeFx(dt, sun)
+        // the whole scene renders into the HDR scene RT; the composer tail resolves it to the screen
         GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, sceneFbo)
         GLES30.glViewport(0, 0, sceneW, sceneH)
         GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT or GLES30.GL_DEPTH_BUFFER_BIT)
@@ -1073,10 +1651,39 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         drawPuddles(sun)
         drawWater(sun)
         drawClouds(sun)
+
+        // ---- the site's composer tail: GroundFX blit → particles → probe → bloom → grade → SMAA
+        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, fxFbo)
+        GLES30.glViewport(0, 0, sceneW, sceneH)
+        GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT)
+        drawGroundFX(sun) // the EffectsPass copy step (wet reflections, contact shadows, AO, aerial haze)
+        // precipitation composites AFTER the GroundFX blit (EffectsPass.fxScene ordering), depth off
+        GLES30.glDisable(GLES30.GL_DEPTH_TEST)
+        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, fxFbo)
         drawPrecipitation(sun)
         GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
+        drawSunOcclusionProbe(sun)
+        drawBloom(sun)
+        drawMeter(sun, dt)
+        drawGrade(sun)
+        // screen: clear the full surface (letterbox bars), then SMAA-blend the graded frame in
+        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
+        GLES30.glViewport(0, 0, surfaceW, surfaceH)
+        GLES30.glClearColor(0f, 0f, 0f, 1f)
+        GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT)
         GLES30.glViewport(letterbox[0].toInt(), letterbox[1].toInt(), letterbox[2].toInt(), letterbox[3].toInt())
-        drawGroundFX(sun)
+        drawSmaa(sun)
+
+        if (!firstFrameLogged) {
+            firstFrameLogged = true
+            Log.i(TAG, "frame 1 presented (post chain: bloom+grade+AgX+SMAA live)")
+        }
+        if (now - lastStageLog > 15_000_000_000L) {
+            lastStageLog = now
+            Log.i(TAG, "post stage px probe: centre mean r=%.3f g=%.3f b=%.3f | sky r=%.3f".format(
+                gradeProbe[0], gradeProbe[1], gradeProbe[2], sun.zenith[0]))
+            gradeProbe[3] = 0f // re-arm the 4×4 read for the next window
+        }
 
         if (!glErrorLogged) {
             val err = GLES30.glGetError()
@@ -1142,10 +1749,12 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         val cloudLightToward = FloatArray(3)
     }
 
-    /** Display key scales: the web multiplies radiance by exposure and tone-maps (AgX); the native
-     *  pipeline clips, so radiance x exposure is folded into the uniforms through one constant. */
-    private val K_LIGHT = 0.25
-    private val K_SKY = 0.32
+    /** Display key scales: RETIRED. The web multiplies radiance by exposure and tone-maps
+     *  through AgX in the composer tail — the native pipeline now does the same (RGBA16F HDR
+     *  scene buffer + the PostShaders grade pass), so the uniforms carry the web's literal
+     *  radiance × exposure and the K folding (0.25/0.32) that approximated clipping is gone. */
+    private val K_LIGHT = 1.0
+    private val K_SKY = 1.0
 
     /** Rebuild the lighting key from the ported site model. Refreshed at the web's cadence
      *  (0.15 s or on time jumps); between refreshes the last key is reused — the sun moves
@@ -1846,8 +2455,55 @@ class GlCityRenderer : GLSurfaceView.Renderer {
 
     /** The site's baked celestial textures (environment/StarField.js, seed 1337): a cube map with
      *  the Milky Way band and the equirect moon albedo map. Individual stars are procedural. */
-    private fun buildStars() {
-        val faces = Stars.buildStarCubeTexture(1337)
+    // --- async CPU bakes: the Milky Way cube + moon map and the 64³ cloud noise are expensive
+    //     (seconds on ART); they run on a worker while the first frames present, then upload
+    //     on the GL thread (the draw sites guard on the texture handles). ---
+    @Volatile private var pendingStarBake: Pair<Array<ByteArray>, ByteArray>? = null
+    @Volatile private var pendingCloudBake: Triple<ByteArray, ByteArray, ByteArray>? = null
+
+    private fun startAsyncBakes() {
+        if (pendingStarBake == null && texStars == 0) {
+            Thread {
+                try {
+                    val t0 = System.currentTimeMillis()
+                    val faces = Stars.buildStarCubeTexture(1337)
+                    val moon = Stars.buildMoonTexture(1337)
+                    pendingStarBake = faces to moon
+                    Log.i(TAG, "async bake stars done in ${System.currentTimeMillis() - t0} ms")
+                } catch (e: Exception) {
+                    Log.e(TAG, "star bake failed", e)
+                }
+            }.start()
+        }
+        if (pendingCloudBake == null && texCloudNoise == 0) {
+            Thread {
+                try {
+                    val t0 = System.currentTimeMillis()
+                    val noise = Clouds.buildCloudNoiseTexture(1337)
+                    val weather = Clouds.buildWeatherTexture(1337)
+                    val cirrus = Clouds.buildCirrusTexture(1337)
+                    pendingCloudBake = Triple(noise, weather, cirrus)
+                    Log.i(TAG, "async bake clouds done in ${System.currentTimeMillis() - t0} ms")
+                } catch (e: Exception) {
+                    Log.e(TAG, "cloud bake failed", e)
+                }
+            }.start()
+        }
+    }
+
+    /** Upload finished worker bakes (GL thread). */
+    private fun maybeUploadAsyncBakes() {
+        pendingStarBake?.let { (faces, moon) ->
+            pendingStarBake = null
+            uploadStars(faces, moon)
+        }
+        pendingCloudBake?.let { (noise, weather, cirrus) ->
+            pendingCloudBake = null
+            uploadClouds(noise, weather, cirrus)
+        }
+    }
+
+    private fun uploadStars(faces: Array<ByteArray>, moonData: ByteArray) {
         val handles = IntArray(1)
         GLES30.glGenTextures(1, handles, 0)
         texStars = handles[0]
@@ -1864,10 +2520,22 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         GLES30.glTexParameteri(GLES30.GL_TEXTURE_CUBE_MAP, GLES30.GL_TEXTURE_WRAP_S, GLES30.GL_CLAMP_TO_EDGE)
         GLES30.glTexParameteri(GLES30.GL_TEXTURE_CUBE_MAP, GLES30.GL_TEXTURE_WRAP_T, GLES30.GL_CLAMP_TO_EDGE)
         GLES30.glBindTexture(GLES30.GL_TEXTURE_CUBE_MAP, 0)
-
-        val moonData = Stars.buildMoonTexture(1337)
         texMoon = uploadTex2D(512, 256, GLES30.GL_RGBA8, GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE,
             ByteBuffer.allocateDirect(moonData.size).put(moonData).position(0), true, true)
+    }
+
+    private fun uploadClouds(noise: ByteArray, weather: ByteArray, cirrus: ByteArray) {
+        texCloudNoise = uploadTex3D(Clouds.NOISE_SIZE, Clouds.NOISE_SIZE, Clouds.NOISE_SIZE, noise)
+        texCloudWeather = uploadTex2D(
+            Clouds.WEATHER_SIZE, Clouds.WEATHER_SIZE, GLES30.GL_RGBA8, GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE,
+            wrapBytes(weather), repeat = true, mipmaps = false)
+        texCloudCirrus = uploadTex2D(
+            256, 256, GLES30.GL_RGBA8, GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE,
+            wrapBytes(cirrus), repeat = true, mipmaps = false)
+    }
+
+    private fun buildStars() {
+        startAsyncBakes()
     }
 
     private fun pushBox(data: FloatArray, o0: Int, cx: Float, cy: Float, cz: Float, sx: Float, sy: Float, sz: Float, part: Float): Int {
@@ -1964,7 +2632,7 @@ class GlCityRenderer : GLSurfaceView.Renderer {
     }
 
     private fun buildSky() {
-        val data = floatArrayOf(-1f, -1f, 0f, 1f, -1f, 0f, 1f, 1f, 0f)
+        val data = floatArrayOf(-1f, -1f, 0f, 1f, -1f, 0f, -1f, 1f, 0f, 1f, 1f, 0f)
         skyVbo = upload(data)
     }
 
@@ -2568,7 +3236,7 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         GLES30.glActiveTexture(GLES30.GL_TEXTURE2)
         GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, texCloudCirrus)
         GLES30.glUniform1i(u(progClouds, "uCirrus"), 2)
-        GLES30.glDrawArrays(GLES30.GL_TRIANGLES, 0, 3)
+        GLES30.glDrawArrays(GLES30.GL_TRIANGLE_STRIP, 0, 4)
         GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
         GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, 0)
 
@@ -2606,7 +3274,7 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
         GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, cloudRtTex[1]) // the just-written target
         GLES30.glUniform1i(u(progCloudComposite, "uTex"), 0)
-        GLES30.glDrawArrays(GLES30.GL_TRIANGLES, 0, 3)
+        GLES30.glDrawArrays(GLES30.GL_TRIANGLE_STRIP, 0, 4)
         GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
         GLES30.glDepthFunc(GLES30.GL_LESS)
         GLES30.glEnable(GLES30.GL_CULL_FACE)
@@ -3987,7 +4655,7 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         GLES30.glActiveTexture(GLES30.GL_TEXTURE1)
         GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, texMoon)
         GLES30.glUniform1i(u(progSky, "uMoonTex"), 1)
-        GLES30.glDrawArrays(GLES30.GL_TRIANGLES, 0, 3)
+        GLES30.glDrawArrays(GLES30.GL_TRIANGLE_STRIP, 0, 4)
         GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
         GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, 0)
         GLES30.glEnable(GLES30.GL_DEPTH_TEST)
