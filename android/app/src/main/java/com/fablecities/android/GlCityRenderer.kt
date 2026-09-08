@@ -1600,13 +1600,19 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         java.nio.ByteBuffer.allocateDirect(b.size).order(java.nio.ByteOrder.nativeOrder()).put(b).apply { flip() }
 
     private fun floatBytes(data: FloatArray): java.nio.Buffer {
-        val bb = java.nio.ByteBuffer.allocateDirect(data.size * 4).order(java.nio.ByteOrder.nativeOrder())
-        return bb.asFloatBuffer().put(data)
+        val fb = java.nio.ByteBuffer.allocateDirect(data.size * 4).order(java.nio.ByteOrder.nativeOrder())
+            .asFloatBuffer()
+        fb.put(data)
+        fb.position(0) // put() advances the position — the GLES wrapper checks remaining()×4
+        return fb
     }
 
     private fun shortBytes(data: ShortArray): java.nio.Buffer {
-        val bb = java.nio.ByteBuffer.allocateDirect(data.size * 2).order(java.nio.ByteOrder.nativeOrder())
-        return bb.asShortBuffer().put(data)
+        val sb = java.nio.ByteBuffer.allocateDirect(data.size * 2).order(java.nio.ByteOrder.nativeOrder())
+            .asShortBuffer()
+        sb.put(data)
+        sb.position(0)
+        return sb
     }
 
     private fun uploadTex3D(w: Int, h: Int, d: Int, data: ByteArray): Int {

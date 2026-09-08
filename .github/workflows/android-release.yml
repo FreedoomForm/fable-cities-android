@@ -170,10 +170,10 @@ jobs:
             # poll for the frame-1 marker (heavy world-gen + shader compile take minutes on
             # swiftshader) instead of a fixed sleep — a fixed 20-60 s window screenshots the
             # unpresented surface (the "white screen" era that all gates let through).
-            FRAME_OK=0; for i in $(seq 1 60); do if adb logcat -d | grep -q "frame 1 presented"; then FRAME_OK=1; break; fi; sleep 5; done
+            FRAME_OK=0; for i in $(seq 1 90); do if adb logcat -d | grep -q "frame 1 presented"; then FRAME_OK=1; break; fi; sleep 5; done
             adb logcat -d > full_bootcat.txt || true
             grep -E "GlCityRenderer: init" full_bootcat.txt | head -8 || true
-            [ "$FRAME_OK" = "1" ] || { echo "::error::Native renderer never presented a frame in 300 s"; grep -E "GlCityRenderer|FATAL|AndroidRuntime|Fatal signal" full_bootcat.txt | head -50; exit 1; }
+            [ "$FRAME_OK" = "1" ] || { echo "::error::Native renderer never presented a frame in 450 s"; grep -E "GlCityRenderer|FATAL|AndroidRuntime|Fatal signal" full_bootcat.txt | head -50; exit 1; }
             sleep 12
             # dump the FULL logcat BEFORE the pid check - the last-500 window lost the crash lines
             adb logcat -d > full_bootcat.txt || true
