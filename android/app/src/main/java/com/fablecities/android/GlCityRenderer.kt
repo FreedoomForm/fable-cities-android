@@ -196,6 +196,17 @@ class GlCityRenderer : GLSurfaceView.Renderer {
     private val gradeFx = GradeFx.State()
     private var firstFrameLogged = false
     private var lastStageLog = 0L
+    private var stageProbeFrames = 0
+
+    /** First-frames diagnostic: locate exactly which post stage raises a GL error. */
+    private fun stageCheck(label: String) {
+        if (stageProbeFrames >= 3) return
+        val err = GLES30.glGetError()
+        if (err != GLES30.GL_NO_ERROR) {
+            Log.e(TAG, "stage GL error 0x${Integer.toHexString(err)} after $label")
+            stageProbeFrames = 3
+        }
+    }
     // --- VehicleSpray (effects/VehicleSpray.js): instanced wet-road wake ---
     private var progSpray = 0
     private var sprayVbo = 0
@@ -546,6 +557,7 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         }
         GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
         setupPostFbos(w, h)
+        stageCheck("scene+post fbos setup")
     }
 
     private fun texParamsLinearClamp() {
@@ -646,8 +658,12 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         texParamsLinearClamp()
         GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, outFb[0])
         GLES30.glFramebufferTexture2D(GLES30.GL_FRAMEBUFFER, GLES30.GL_COLOR_ATTACHMENT0, GLES30.GL_TEXTURE_2D, outT[0], 0)
+        val status = GLES30.glCheckFramebufferStatus(GLES30.GL_FRAMEBUFFER)
         GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
         GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, 0)
+        if (status != GLES30.GL_FRAMEBUFFER_COMPLETE) {
+            Log.e(TAG, "hdr RT ${w}x$h incomplete 0x${Integer.toHexString(status)}")
+        }
     }
 
     private fun ldrRt(w: Int, h: Int, outFb: IntArray, outT: IntArray): Int {
@@ -660,8 +676,12 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         texParamsLinearClamp()
         GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, outFb[0])
         GLES30.glFramebufferTexture2D(GLES30.GL_FRAMEBUFFER, GLES30.GL_COLOR_ATTACHMENT0, GLES30.GL_TEXTURE_2D, outT[0], 0)
+        val status = GLES30.glCheckFramebufferStatus(GLES30.GL_FRAMEBUFFER)
         GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
         GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, 0)
+        if (status != GLES30.GL_FRAMEBUFFER_COMPLETE) {
+            Log.e(TAG, "ldr RT ${w}x$h incomplete 0x${Integer.toHexString(status)}")
+        }
         return outFb[0]
     }
 
@@ -1825,6 +1845,7 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         GLES30.glViewport(0, 0, sceneW, sceneH)
         GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT)
         drawGroundFX(sun) // the EffectsPass copy step (wet reflections, contact shadows, AO, aerial haze)
+        stageCheck("groundfx blit")
         // precipitation composites AFTER the GroundFX blit (EffectsPass.fxScene ordering), depth off
         GLES30.glDisable(GLES30.GL_DEPTH_TEST)
         GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, fxFbo)
@@ -1832,11 +1853,16 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         sprayTime += dt
         syncSpray(sun)
         drawSpray(sun)
+        stageCheck("particles")
         GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
         drawSunOcclusionProbe(sun)
+        stageCheck("occlusion probe")
         drawBloom(sun)
+        stageCheck("bloom")
         drawMeter(sun, dt)
+        stageCheck("meter")
         drawGrade(sun)
+        stageCheck("grade")
         // screen: clear the full surface (letterbox bars), then SMAA-blend the graded frame in
         GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
         GLES30.glViewport(0, 0, surfaceW, surfaceH)
@@ -1844,6 +1870,8 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT)
         GLES30.glViewport(letterbox[0].toInt(), letterbox[1].toInt(), letterbox[2].toInt(), letterbox[3].toInt())
         drawSmaa(sun)
+        stageCheck("smaa")
+        stageProbeFrames++
 
         if (!firstFrameLogged) {
             firstFrameLogged = true
