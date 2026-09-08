@@ -275,6 +275,7 @@ class GlCityRenderer : GLSurfaceView.Renderer {
     private var cloudRtW = 0
     private var cloudRtH = 0
     private var cloudRtFloat = false
+    private var cloudDisabled = false // set when no usable cloud target can be built (renders clean sky instead of a broken FBO)
     private var cloudFrame = 0
     private var cloudHistoryValid = false
     private val cloudRotView = FloatArray(16)
@@ -3361,6 +3362,7 @@ class GlCityRenderer : GLSurfaceView.Renderer {
     /** The site's ray-marched cloud deck (CloudLayer composite): depth-tested against the opaque
      *  pass, premultiplied over-blend, uniforms from the index.js feed. */
     private fun drawClouds(sun: SunState) {
+        if (cloudDisabled) return
         if (progClouds == 0 || skyVbo == 0) return
         val cover = weather.cloudCover
         val cirrus = weather.state.keys[WeatherPresets.I_CIRRUS]
@@ -3386,6 +3388,13 @@ class GlCityRenderer : GLSurfaceView.Renderer {
             }
             GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, 0)
             GLES30.glFramebufferTexture2D(GLES30.GL_FRAMEBUFFER, GLES30.GL_COLOR_ATTACHMENT0, GLES30.GL_TEXTURE_2D, cloudRtTex[writeIdx], 0)
+            GLES30.glGetError() // drain the residue of the failed float allocation before the checkpoint
+            if (GLES30.glCheckFramebufferStatus(GLES30.GL_FRAMEBUFFER) != GLES30.GL_FRAMEBUFFER_COMPLETE) {
+                Log.e(TAG, "cloud target still incomplete after RGBA8 fallback — clouds disabled this session")
+                cloudDisabled = true
+                GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
+                return
+            }
         }
         stageCheck("cloud attach")
         GLES30.glViewport(0, 0, rtW, rtH)
@@ -3516,13 +3525,24 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         cloudRtW = w; cloudRtH = h
         // float16 targets when the implementation can actually RENDER to them (HalfFloatType on
         // the web). The extension-string probe is unreliable (glGetString(GL_EXTENSIONS) is not
-        // even legal on GLES 3.0) — probe by RENDERING to a tiny RGBA16F framebuffer instead.
-        val useFloat = probeFloatRenderable()
+        // even legal on GLES 3.0) — probe by RENDERING to an RGBA16F framebuffer AT THE REAL
+        // SIZE (gfxstream on the API-30 emulator passes a 4×4 probe yet rejects the full-size
+        // upload with GL_INVALID_OPERATION — probe what you will actually allocate).
+        while (GLES30.glGetError() != GLES30.GL_NO_ERROR) { } // isolate allocation errors
+        val useFloat = probeFloatRenderable(w, h)
         cloudRtFloat = useFloat
         val ifmt = if (useFloat) 0x881A else GLES30.GL_RGBA8 // GL_RGBA16F
         for (i in 0..1) {
             GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, cloudRtTex[i])
             GLES30.glTexImage2D(GLES30.GL_TEXTURE_2D, 0, ifmt, w, h, 0, GLES30.GL_RGBA, if (useFloat) 0x8D61 /*HALF_FLOAT*/ else GLES30.GL_UNSIGNED_BYTE, null)
+            if (useFloat && GLES30.glGetError() != GLES30.GL_NO_ERROR) {
+                // belt-and-braces: the upload itself errored — re-specify as RGBA8 so the FBO
+                // never ends up attached to half-backed storage (the source of the 0x506)
+                Log.e(TAG, "cloud RGBA16F texImage2D errored — re-specifying as RGBA8")
+                cloudRtFloat = false
+                GLES30.glTexImage2D(GLES30.GL_TEXTURE_2D, 0, GLES30.GL_RGBA8, w, h, 0, GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE, null)
+                GLES30.glGetError() // drain residue of either upload
+            }
             GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_MIN_FILTER, GLES30.GL_LINEAR)
             GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_MAG_FILTER, GLES30.GL_LINEAR)
             GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_WRAP_S, GLES30.GL_CLAMP_TO_EDGE)
@@ -3533,29 +3553,33 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         // a reset here only costs one noise frame — simpler than resampling)
     }
 
-    /** True iff an RGBA16F attachment is actually renderable on this driver. */
+    /** True iff an RGBA16F attachment is actually renderable on this driver, at the real size. */
     private var floatProbeDone = false
     private var floatProbeResult = false
-    private fun probeFloatRenderable(): Boolean {
+    private fun probeFloatRenderable(w: Int, h: Int): Boolean {
         if (floatProbeDone) return floatProbeResult
         floatProbeDone = true
         val genT = IntArray(1); val genF = IntArray(1)
         GLES30.glGenTextures(1, genT, 0)
         GLES30.glGenFramebuffers(1, genF, 0)
         GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, genT[0])
-        GLES30.glTexImage2D(GLES30.GL_TEXTURE_2D, 0, GLES30.GL_RGBA16F, 4, 4, 0, GLES30.GL_RGBA, GLES30.GL_HALF_FLOAT, null)
+        GLES30.glTexImage2D(GLES30.GL_TEXTURE_2D, 0, GLES30.GL_RGBA16F, w, h, 0, GLES30.GL_RGBA, GLES30.GL_HALF_FLOAT, null)
         GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_MIN_FILTER, GLES30.GL_NEAREST)
         GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_MAG_FILTER, GLES30.GL_NEAREST)
         GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, genF[0])
         GLES30.glFramebufferTexture2D(GLES30.GL_FRAMEBUFFER, GLES30.GL_COLOR_ATTACHMENT0, GLES30.GL_TEXTURE_2D, genT[0], 0)
-        floatProbeResult = GLES30.glCheckFramebufferStatus(GLES30.GL_FRAMEBUFFER) == GLES30.GL_FRAMEBUFFER_COMPLETE
+        // the status check AND the error flag must both agree (gfxstream can report COMPLETE
+        // while the upload itself raised GL_INVALID_OPERATION — treat that as not renderable;
+        // glGetError also CONSUMES the flag so it cannot stick to a later stage)
+        floatProbeResult = GLES30.glCheckFramebufferStatus(GLES30.GL_FRAMEBUFFER) == GLES30.GL_FRAMEBUFFER_COMPLETE &&
+            GLES30.glGetError() == GLES30.GL_NO_ERROR
         GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
         GLES30.glDeleteFramebuffers(1, genF, 0)
         GLES30.glDeleteTextures(1, genT, 0)
         GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, 0)
-        // drain any error the probe raised so it never sticks to a later stage
-        GLES30.glGetError()
-        Log.i(TAG, "RGBA16F renderable probe: $floatProbeResult")
+        // drain anything the probe's teardown left behind
+        while (GLES30.glGetError() != GLES30.GL_NO_ERROR) { }
+        Log.i(TAG, "RGBA16F renderable probe (${w}x$h): $floatProbeResult")
         return floatProbeResult
     }
 
@@ -4074,10 +4098,10 @@ class GlCityRenderer : GLSurfaceView.Renderer {
                 b.getPixels(src, 0, w, 0, y, w, 1)
                 for (x in 0 until w) {
                     val c = src[x]
-                    row[x * 4] = (c and 0xFF).toByte()
-                    row[x * 4 + 1] = ((c shr 8) and 0xFF).toByte()
-                    row[x * 4 + 2] = ((c shr 16) and 0xFF).toByte()
-                    row[x * 4 + 3] = ((c ushr 24) and 0xFF).toByte()
+                    row[x * 4] = ((c shr 16) and 0xFF).toByte() // R (getPixels yields ARGB ints; the
+                    row[x * 4 + 1] = ((c shr 8) and 0xFF).toByte() //  shader samples plain RGB like the site's canvas upload)
+                    row[x * 4 + 2] = (c and 0xFF).toByte() // B
+                    row[x * 4 + 3] = ((c ushr 24) and 0xFF).toByte() // A
                 }
                 buf.position((h - 1 - y) * w * 4)
                 buf.put(row)

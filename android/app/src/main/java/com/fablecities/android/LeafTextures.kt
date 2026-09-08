@@ -24,6 +24,32 @@ object LeafTextures {
 
     class Card(val bitmap: Bitmap)
 
+    /** Draw on a PREMULTIPLIED bitmap via Canvas (Canvas(Bitmap) refuses non-premultiplied
+     *  bitmaps since API 28 — the crash that used to kill the whole world-gfx build), then
+     *  convert to straight alpha and store into a non-premultiplied bitmap so the GL upload
+     *  paths (copyPixelsToBuffer / getPixels) keep yielding straight RGBA, matching the site's
+     *  canvas textures (the shaders alpha-test the raw values). */
+    private fun straightFromCanvas(w: Int, h: Int, draw: (Canvas) -> Unit): Bitmap {
+        val tmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888) // premultiplied: Canvas-legal
+        draw(Canvas(tmp))
+        val px = IntArray(w * h)
+        tmp.getPixels(px, 0, w, 0, 0, w, h)
+        for (i in px.indices) {
+            val a = px[i] ushr 24
+            if (a == 0) { px[i] = 0; continue }
+            if (a != 255) {
+                val r = Math.min(255, ((px[i] shr 16) and 0xFF) * 255 / a)
+                val g = Math.min(255, ((px[i] shr 8) and 0xFF) * 255 / a)
+                val b = Math.min(255, (px[i] and 0xFF) * 255 / a)
+                px[i] = (a shl 24) or (r shl 16) or (g shl 8) or b
+            }
+        }
+        val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        out.setPremultiplied(false) // set BEFORE any data; never wrapped in a Canvas
+        out.setPixels(px, 0, w, 0, 0, w, h)
+        return out
+    }
+
     /** silhouette radius at angle th — Vegetation.js/textures.js radAt (5 harmonics + 3 notches). */
     private fun makeRadAt(rng: Rng, R: Float): (Double) -> Float {
         val harm = ArrayList<Triple<Int, Double, Double>>() // (k, amp, phase)
@@ -63,16 +89,17 @@ object LeafTextures {
         return (alpha shl 24) or (u(r) shl 16) or (u(g) shl 8) or u(b)
     }
 
+    /** one twig segment (broadleaf skeleton) */
+    private data class Twig(val x0: Float, val y0: Float, val x1: Float, val y1: Float, val w: Float, val a: Double)
+
     /** Broadleaf card: irregular silhouette, twig skeleton, clustered leaf patches. */
     fun broadleaf(size: Int, seed: Int, hueBase: Double, lightBase: Double, sat: Double): Card {
         val rng = Rng(seed)
-        val bmp = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
-        bmp.setPremultiplied(false) // straight-alpha: the shader alpha-tests the raw values
-        val canvas = Canvas(bmp)
         val cx = size * 0.5f
         val cy = size * 0.52f
         val R = size * 0.455f
         val radAt = makeRadAt(rng, R)
+        val bmp = straightFromCanvas(size, size) { canvas ->
 
         // trunk strip (visible below the crown, gives street-level depth)
         val trunkW = size * 0.035f
@@ -81,7 +108,6 @@ object LeafTextures {
 
         // twig skeleton: 5 mains fanning up, each with 3 forks (textures.js order)
         val twigPaint = Paint().apply { color = hslColor(28.0, 0.26, 0.15); isAntiAlias = true; strokeCap = Paint.Cap.ROUND }
-        data class Twig(val x0: Float, val y0: Float, val x1: Float, val y1: Float, val w: Float, val a: Double)
         val twigs = ArrayList<Twig>()
         val nMain = 5
         for (i in 0 until nMain) {
@@ -120,16 +146,15 @@ object LeafTextures {
             canvas.drawCircle(px, py, rad, leaf)
             n++
         }
+        } // straightFromCanvas
         return Card(bmp)
     }
 
     /** Conifer card: drooping bough tiers of needle strokes over a taller trunk. */
     fun conifer(size: Int, seed: Int, hueBase: Double, sat: Double): Card {
         val rng = Rng(seed)
-        val bmp = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
-        bmp.setPremultiplied(false) // straight-alpha: the shader alpha-tests the raw values
-        val canvas = Canvas(bmp)
         val cx = size * 0.5f
+        val bmp = straightFromCanvas(size, size) { canvas ->
 
         // trunk
         val trunkPaint = Paint().apply { color = hslColor(24.0, 0.28, 0.15); isAntiAlias = true }
@@ -158,6 +183,7 @@ object LeafTextures {
             }
             tier++
         }
+        } // straightFromCanvas
         return Card(bmp)
     }
 
@@ -221,10 +247,8 @@ object LeafTextures {
         val rng = Rng(seed)
         val w = size
         val h = size / 2
-        val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
-        bmp.setPremultiplied(false)
-        val canvas = Canvas(bmp)
         val cell = size / 4f
+        val bmp = straightFromCanvas(w, h) { canvas ->
 
         fun cellXY(k: Int) = floatArrayOf((k % 4) * cell, (k / 4).toFloat() * cell)
 
@@ -352,6 +376,7 @@ object LeafTextures {
         dots(canvas, 6, 7, listOf(0xFFCFC9B6.toInt(), 0xFFD2B64A.toInt(), 0xFFB8749A.toInt(), 0xFFD8D4C6.toInt()), 0.12, 0.55)
         // 7: dry sheet
         blades(canvas, 7, 130, 56.0, 0.20, 0.15, 0.33, 0.62, true, 0.32, 0.70, 0.80)
+        } // straightFromCanvas
         dilateAlpha(bmp, size, h, 40, 66, 30)
         return Atlas(bmp)
     }

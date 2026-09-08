@@ -140,11 +140,8 @@ jobs:
           disable-animations: true
           script: |
             # NOTE 1: android-emulator-runner runs this script LINE BY LINE (one sh -c per line) -
-            # no multi-line if/for. NOTE 2: variable expansion inside the script is unreliable
-            # (GITHUB_WORKSPACE renders masked, $() captures came back empty across 4 runs) - so
-            # this script uses ZERO shell variables: the artifact is a single file uploaded with
-            # path android/app/build/outputs/apk/debug/app-debug.apk, which lands at
-            # artifact/app-debug.apk after v4 strips the android/app/build root.
+            # no multi-line if/for AND NO SHELL VARIABLES SURVIVE BETWEEN LINES (FRAME_OK/SD
+            # regressions) - cross-line state MUST go through files in the working directory.
             ls -la artifact || true
             adb install -r artifact/app-debug.apk
             # keep the immersive-mode confirmation ("Viewing full screen") out of the screenshots
@@ -170,10 +167,12 @@ jobs:
             # poll for the frame-1 marker (heavy world-gen + shader compile take minutes on
             # swiftshader) instead of a fixed sleep — a fixed 20-60 s window screenshots the
             # unpresented surface (the "white screen" era that all gates let through).
-            FRAME_OK=0; for i in $(seq 1 90); do if adb logcat -d | grep -q "frame 1 presented"; then FRAME_OK=1; break; fi; sleep 5; done
+            # The flag is written to a FILE: the emulator runner executes this script line-by-line
+            # (one sh -c per line), so a shell variable set here would be lost before the check line.
+            rm -f frame_ok.txt; for i in $(seq 1 90); do if adb logcat -d | grep -q "frame 1 presented"; then echo 1 > frame_ok.txt; break; fi; sleep 5; done
             adb logcat -d > full_bootcat.txt || true
             grep -E "GlCityRenderer: init" full_bootcat.txt | head -8 || true
-            [ "$FRAME_OK" = "1" ] || { echo "::error::Native renderer never presented a frame in 450 s"; grep -E "GlCityRenderer|FATAL|AndroidRuntime|Fatal signal" full_bootcat.txt | head -50; exit 1; }
+            grep -q 1 frame_ok.txt || { echo "::error::Native renderer never presented a frame in 450 s"; grep -E "GlCityRenderer|FATAL|AndroidRuntime|Fatal signal" full_bootcat.txt | head -50; exit 1; }
             sleep 12
             # dump the FULL logcat BEFORE the pid check - the last-500 window lost the crash lines
             adb logcat -d > full_bootcat.txt || true
@@ -190,9 +189,11 @@ jobs:
             adb exec-out screencap -p > emulator_screen.png
             # BLANK-FRAME GATE: a uniform screenshot means the scene never rendered (the white
             # screen the old fixed-sleep gate kept passing). ImageMagick stddev must clear 0.02.
-            SD=$(identify -format "%[fx:standard_deviation]" emulator_screen.png 2>/dev/null || echo "1")
-            echo "native screenshot stddev: $SD"
-            python3 -c "import sys; sys.exit(0 if float('$SD') > 0.02 else 1)" || { echo "::error::Native screenshot is blank/uniform — the scene did not render"; exit 1; }
+            # File-based: the stddev is written to sd.txt because shell variables do not survive
+            # between the line-by-line sh -c invocations of the emulator runner script.
+            identify -format "%[fx:standard_deviation]" emulator_screen.png 2>/dev/null > sd.txt || echo "1" > sd.txt
+            echo "native screenshot stddev:"; cat sd.txt
+            python3 -c "import sys; sys.exit(0 if float(open('sd.txt').read().strip() or '1') > 0.02 else 1)" || { echo "::error::Native screenshot is blank/uniform — the scene did not render"; exit 1; }
             cp full_bootcat.txt full_logcat.txt
             # ---- GATE 3: rotation + background/resume stress (lifecycle gates from item 1) ----
             adb shell settings put system accelerometer_rotation 0 || true
