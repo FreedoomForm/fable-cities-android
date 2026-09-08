@@ -157,7 +157,7 @@ jobs:
             grep -E "\[ERROR:CONSOLE" parity_bootcat.txt | grep -v -i favicon && { echo "::error::Web-parity page reported console errors inside the WebView (shader compile / 404 / JS exception)"; grep -E "\[ERROR:CONSOLE" parity_bootcat.txt | head -20; exit 1; } || true
             adb shell input tap 1486 553 || true
             sleep 2
-            adb exec-out screencap -p > parity_screen.png
+            timeout 90 adb exec-out screencap -p > parity_screen.png || true
             # ---- GATE 2: native GLES renderer activity ----
             adb shell am force-stop com.fablecities.android
             sleep 2
@@ -186,7 +186,7 @@ jobs:
             grep -E "GlCityRenderer: (shader|link|GL error)" full_bootcat.txt && { echo "::error::GL renderer reported compile/link/runtime errors"; grep -E "GlCityRenderer: " full_bootcat.txt | head -30; exit 1; } || true
             adb shell input tap 1486 553 || true
             sleep 2
-            adb exec-out screencap -p > emulator_screen.png
+            timeout 90 adb exec-out screencap -p > emulator_screen.png || true
             # BLANK-FRAME GATE: a uniform screenshot means the scene never rendered (the white
             # screen the old fixed-sleep gate kept passing). ImageMagick stddev must clear 0.02.
             # File-based: the stddev is written to sd.txt because shell variables do not survive
@@ -209,7 +209,7 @@ jobs:
             adb shell pidof com.fablecities.android > pid_stress.txt || true
             grep -q "[0-9]" pid_stress.txt || { echo "::error::Native process died under rotation/background stress"; grep -E "Fatal signal|FATAL EXCEPTION|SIGSEGV|SIGABRT|AndroidRuntime" stress_logcat.txt | head -40; exit 1; }
             grep -E "FATAL EXCEPTION|Fatal signal" stress_logcat.txt && { echo "::error::Fatal during rotation/background stress"; grep -E -A 25 "FATAL EXCEPTION|Fatal signal" stress_logcat.txt | head -60; exit 1; } || true
-            adb exec-out screencap -p > stress_screen.png || true
+            timeout 90 adb exec-out screencap -p > stress_screen.png || true
             echo "Emulator gate PASSED: parity + native both alive, no fatal, no page/GL errors, rotation+background stress survived"
 
       - name: Upload emulator evidence
