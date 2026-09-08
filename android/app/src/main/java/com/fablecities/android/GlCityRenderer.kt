@@ -3374,9 +3374,11 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         val histIdx = 1
         GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, cloudRtFbo)
         GLES30.glFramebufferTexture2D(GLES30.GL_FRAMEBUFFER, GLES30.GL_COLOR_ATTACHMENT0, GLES30.GL_TEXTURE_2D, cloudRtTex[writeIdx], 0)
+        stageCheck("cloud attach")
         GLES30.glViewport(0, 0, rtW, rtH)
         GLES30.glClearColor(0f, 0f, 0f, 0f)
         GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT)
+        stageCheck("cloud clear")
         GLES30.glEnable(GLES30.GL_BLEND)
         GLES30.glBlendFunc(GLES30.GL_ONE, GLES30.GL_ONE_MINUS_SRC_ALPHA) // premultiplied output
         GLES30.glDepthMask(false)
@@ -3441,6 +3443,7 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, texCloudCirrus)
         GLES30.glUniform1i(u(progClouds, "uCirrus"), 2)
         GLES30.glDrawArrays(GLES30.GL_TRIANGLE_STRIP, 0, 4)
+        stageCheck("cloud march draw")
         GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
         GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, 0)
 
@@ -3479,6 +3482,7 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, cloudRtTex[1]) // the just-written target
         GLES30.glUniform1i(u(progCloudComposite, "uTex"), 0)
         GLES30.glDrawArrays(GLES30.GL_TRIANGLE_STRIP, 0, 4)
+        stageCheck("cloud composite draw")
         GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
         GLES30.glDepthFunc(GLES30.GL_LESS)
         GLES30.glEnable(GLES30.GL_CULL_FACE)
