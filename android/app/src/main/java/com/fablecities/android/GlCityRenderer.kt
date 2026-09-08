@@ -1426,7 +1426,10 @@ class GlCityRenderer : GLSurfaceView.Renderer {
     private fun terrainHeight(x: Float, z: Float): Float = worldHeight.getHeight(x.toDouble(), z.toDouble()).toFloat()
 
     private fun buildTerrain() {
-        val n = 224
+        // 320^2 cells = 6.4 m quads: the splat shader owns per-pixel shading, but the SILHOUETTE
+        // (river banks, road cuts, the shore) comes from geometry - the site's LOD0 is 2 m and
+        // the old 9.1 m grid read as terraced steps on the bluffs. ~2x one-time build cost.
+        val n = 320
         val step = mapHalf * 2f / n
         val data = FloatArray(n * n * 48) // 2 tris x 3 verts x 8 floats per cell
         var o = 0
