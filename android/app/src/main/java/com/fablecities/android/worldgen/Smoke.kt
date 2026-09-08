@@ -263,7 +263,7 @@ object Smoke {
         blocks: List<IndBlock>,
         seed: Int,
         cold: Boolean,
-    ): List<Emitter> {
+    ): MutableList<Emitter> {
         val industrial = ArrayList<Emitter>()
         val steam = ArrayList<Emitter>()
         val chimney = ArrayList<Emitter>()

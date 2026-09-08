@@ -11,6 +11,7 @@ import com.fablecities.android.worldgen.Environment
 import com.fablecities.android.worldgen.WeatherPresets
 import com.fablecities.android.worldgen.GradeFx
 import com.fablecities.android.worldgen.GroundControl
+import com.fablecities.android.worldgen.Growth
 import com.fablecities.android.worldgen.Heightmap
 import com.fablecities.android.worldgen.Smoke
 import com.fablecities.android.worldgen.Vegetation
@@ -347,8 +348,11 @@ class GlCityRenderer : GLSurfaceView.Renderer {
 
     // --- city data ---
     private class Building(
-        val x: Float, val y: Float, val z: Float, val w: Float, val d: Float, val h: Float,
-        val kind: Int, val yaw: Float, val seed: Int, val cell: Int, var removed: Boolean = false
+        val x: Float, val y: Float, val z: Float, val w: Float, val d: Float,
+        var h: Float,
+        var kind: Int, val yaw: Float, val seed: Int, val cell: Int, var removed: Boolean = false,
+        var progress: Float = 1f,      // construction progress (growth slice); 1 = built
+        var growthId: Int = -1,        // Growth.Building id when this building grew from a zone lot
     )
 
     private val buildings = ArrayList<Building>()
@@ -373,6 +377,14 @@ class GlCityRenderer : GLSurfaceView.Renderer {
     private lateinit var demo: DemoCity
     private val roadCells = HashSet<Int>()
     private val zoneCells = HashMap<Int, Int>() // cell -> 0 res, 1 com, 2 ind
+    // --- zone-driven growth (buildings/index.js: demand-filled lots, construction, level-ups) ---
+    private val growthLots = HashMap<Int, Growth.Lot>()   // cell index -> lot
+    private val growthBuildings = LinkedHashMap<Int, Growth.Building>()
+    private val growthByLot = HashMap<Int, Growth.Building>()
+    private val growthRenderers = HashMap<Int, Building>() // Growth.Building id -> renderer building
+    private var growthNextId = 1
+    private var growthAcc = 0.0
+    private val growthRng = Growth.growthRng(1337)
     private var editsDirty = false
     private var lastSaveHint = 0L
 
@@ -1687,6 +1699,15 @@ class GlCityRenderer : GLSurfaceView.Renderer {
                 b.stacks, b.vents))
         }
         val emitters = Smoke.scanEmitters(blocks, 1337, cold)
+        // construction sites emit dust gusts on their footprint (effects/index.js construction branch)
+        for (g in growthBuildings.values) {
+            if (g.state != "construction") continue
+            val lot = growthLots[g.lotId] ?: continue
+            val s = (cellSize.toDouble() / 16.0).coerceIn(0.6, 2.2) * 1.2
+            emitters.add(Smoke.Emitter("dust", lot.wx, terrainHeight(lot.wx.toFloat(), lot.wz.toFloat()) + 0.2,
+                lot.wz, scale = s, opacity = 0.6 * (1.0 - g.progress * 0.35),
+                rectW = cellSize.toDouble() * 0.86, rectD = cellSize.toDouble() * 0.86, rectYaw = cityYaw.toDouble()))
+        }
         val bufs = Smoke.build(emitters, Rng(1337 xor 0x3ffec7), SMOKE_MAX)
         if (!smokeInstAllocated) {
             GLES30.glGenBuffers(6, smokeInstVbo, 0)
@@ -2755,8 +2776,21 @@ class GlCityRenderer : GLSurfaceView.Renderer {
                 0 -> "res_low"; 1 -> "com"; 2 -> "ind"; else -> null
             } ?: continue
             val c = cellCenter(idx)
-            simBuildingList.add(SimBuilding("zone$idx", t, c[0].toDouble(), c[1].toDouble(),
-                cellSize.toDouble(), cellSize.toDouble(), 9.0))
+            // a painted cell with a grown building counts as that building (type/height follow the
+            // growth state); an unpicked lot keeps the placeholder footprint so the site's occupancy
+            // model sees the zoned land either way — never both at once
+            val g = growthByLot[idx]
+            val rb = g?.let { growthRenderers[it.id] }
+            if (g != null && rb != null) {
+                val gt = when (zoneGrowthType(kind)) {
+                    "res-low" -> "res_low"; "com-low" -> "com"; else -> "ind"
+                }
+                simBuildingList.add(SimBuilding("zone$idx", gt, c[0].toDouble(), c[1].toDouble(),
+                    cellSize.toDouble(), cellSize.toDouble(), rb.h.toDouble()))
+            } else {
+                simBuildingList.add(SimBuilding("zone$idx", t, c[0].toDouble(), c[1].toDouble(),
+                    cellSize.toDouble(), cellSize.toDouble(), 9.0))
+            }
         }
         simEconomy.buildingsVersion++
     }
@@ -2783,6 +2817,8 @@ class GlCityRenderer : GLSurfaceView.Renderer {
                 simMilestones.notifications.clear()
             }
         }
+        // zone-driven growth: the site's live growth steps (240 game-second granularity)
+        stepGrowth(dt * 180.0) // 3 game minutes per real second → 180 game seconds per second
     }
 
     // economy accessors for the HUD (the HUD draws before the GL surface is ready — guard lateinit)
@@ -3127,10 +3163,91 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         val cur = zoneCells[idx] ?: -1
         selectedBuilding = null
         if (cur >= 2) zoneCells.remove(idx) else zoneCells[idx] = cur + 1
+        syncGrowthLot(idx)
         syncSimBuildings()
         rebuildEditMeshes()
         editsDirty = true
         return zoneCells[idx] ?: -1
+    }
+
+    private fun zoneGrowthType(kind: Int): String? = when (kind) {
+        0 -> "res-low"; 1 -> "com-low"; 2 -> "ind"; else -> null
+    }
+
+    /** A painted cell becomes a growth lot; clearing it demolishes any building on it. */
+    private fun syncGrowthLot(idx: Int) {
+        val kind = zoneCells[idx]
+        val type = kind?.let { zoneGrowthType(it) }
+        if (type == null) {
+            growthLots.remove(idx)
+            val b = growthByLot.remove(idx)
+            if (b != null) {
+                growthBuildings.remove(b.id)
+                growthRenderers[b.id]?.removed = true
+                growthRenderers.remove(b.id)
+            }
+            return
+        }
+        if (!growthLots.containsKey(idx)) {
+            val c = cellCenter(idx)
+            growthLots[idx] = Growth.Lot(idx, c[0].toDouble(), c[1].toDouble(), type)
+        }
+    }
+
+    /** The site's growth step (buildings/index.js advance/growthStep) in game seconds. */
+    private fun stepGrowth(gameSeconds: Double) {
+        if (growthLots.isEmpty() && growthBuildings.isEmpty()) return
+        growthAcc += gameSeconds
+        var guard = 400
+        while (growthAcc >= Growth.LIVE_STEP && guard-- > 0) {
+            growthAcc -= Growth.LIVE_STEP
+            if (!simReady()) { growthAcc = 0.0; break }
+            val eco = Growth.Eco(simEconomy.e.demand, simEconomy.e.landValue, simEconomy.e.happiness)
+            val res = Growth.step(Growth.LIVE_STEP, growthLots.values.toList(), growthBuildings, growthByLot,
+                eco, growthRng, growthNextId)
+            growthNextId = maxOf(growthNextId, (growthBuildings.keys.maxOrNull() ?: 0) + 1)
+            for (b in res.spawned) spawnGrownBuilding(b)
+            for (id in res.levelledUp) {
+                val g = growthBuildings[id]
+                val rb = growthRenderers[id]
+                if (g != null && rb != null) {
+                    rb.h = grownHeight(g.type, g.level, g.seed)
+                    rb.kind = grownKind(g.type, g.level)
+                }
+            }
+            if (res.spawned.isNotEmpty() || res.levelledUp.isNotEmpty() || res.completed.isNotEmpty()) {
+                smokeDirty = true
+                simEconomy.buildingsVersion++
+            }
+        }
+    }
+
+    private fun grownHeight(type: String, level: Int, seed: Int): Float {
+        val base = when (type) {
+            "res-low" -> 9.0f; "com-low" -> 12.0f; "ind" -> 11.0f
+            "com-high" -> 30.0f; "office" -> 40.0f; else -> 20.0f // res-high
+        }
+        val j = Growth.jitter(seed, 0x33).toFloat() // 0..1 deterministic per-building noise
+        return base * (0.75f + 0.25f * level) * (0.85f + 0.30f * j)
+    }
+
+    private fun grownKind(type: String, level: Int): Int = when (type) {
+        "res-low" -> 0; "ind" -> 2
+        "com-low", "com-high" -> if (level >= 3) 2 else 1
+        else -> 2 // res-high / office read as the cool glass palette at height
+    }
+
+    private fun spawnGrownBuilding(g: Growth.Building) {
+        val lot = growthLots[g.lotId] ?: return
+        val c = cellCenter(g.lotId)
+        val gy = terrainHeight(c[0], c[1])
+        val rb = Building(c[0], gy, c[1], cellSize * 0.86f, cellSize * 0.86f,
+            grownHeight(g.type, g.level, g.seed), grownKind(g.type, g.level), cityYaw,
+            g.seed, g.lotId, false, 0f, g.id)
+        buildings.add(rb)
+        growthRenderers[g.id] = rb
+        growthByLot[g.lotId] = g
+        syncSimBuildings()
     }
 
     /** The site's 8 service types in SERVICE_IDS order; the SERVICE tool cycles through them. */
@@ -4947,7 +5064,9 @@ class GlCityRenderer : GLSurfaceView.Renderer {
             if (b.removed) continue
             val selected = selectedBuilding === b
             GLES30.glUniform3f(u(progBuilding, "uPos"), b.x, b.y, b.z)
-            GLES30.glUniform3f(u(progBuilding, "uScale"), b.w, b.h, b.d)
+            // construction sites rise through the site's progress (the web remounts construction mass)
+            val hNow = if (b.progress < 1f) b.h * (0.12f + 0.88f * b.progress) else b.h
+            GLES30.glUniform3f(u(progBuilding, "uScale"), b.w, hNow, b.d)
             GLES30.glUniform1f(u(progBuilding, "uYaw"), b.yaw)
             val pal = when (b.kind) {
                 0 -> floatArrayOf(0.74f, 0.62f, 0.50f)
