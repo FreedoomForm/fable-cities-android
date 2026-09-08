@@ -599,6 +599,9 @@ class GlCityRenderer : GLSurfaceView.Renderer {
             camEye(eye)
             GLES30.glUniform3f(u(progBuilding, "uCamPos"), eye[0], eye[1], eye[2])
             GLES30.glUniform1f(u(progBuilding, "uDayFactor"), sun.dayFactor)
+        GLES30.glUniform1f(u(progBuilding, "uWetB"), sun.wetness)
+        GLES30.glUniform1f(u(progBuilding, "uSnowB"), sun.snowCover)
+        GLES30.glUniform1f(u(progBuilding, "uNightB"), sun.nightFactor)
             GLES30.glUniform1f(u(progBuilding, "uFogDensity"), sun.fogDensity)
             GLES30.glActiveTexture(GLES30.GL_TEXTURE4)
             GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, texCloudShadow)
@@ -671,6 +674,22 @@ class GlCityRenderer : GLSurfaceView.Renderer {
                         val wx = v.x + ca * ox - sa * hz
                         val wz = v.z - sa * ox - ca * hz
                         gl.add(wx, gy + 0.66, wz, 1.00 * tI, 0.075 * tI, 0.030 * tI)
+                    }
+                }
+                // turn indicators: amber bulbs front + rear on the blink side (Traffic.kt publishes
+                // veh.blink = blinkSide * flashPhase, on from ~26 m before a turn to its end)
+                val flash = kotlin.math.abs(v.blink)
+                if (flash > 0.05f) {
+                    val side = v.blinkSide.toFloat()
+                    val hwI = (v.spec.wid * 0.5 * 0.94)
+                    val hzI = (v.spec.len * 0.5)
+                    val ca = cos(v.yaw); val sa = sin(v.yaw)
+                    val iI = 0.95f * flash * fade * (0.35f + 0.65f * sun.nightFactor)
+                    for (k in 0 until 2) {
+                        val along = if (k == 0) -hzI else hzI
+                        val wx = v.x + ca * (side * hwI) + sa * along
+                        val wz = v.z - sa * (side * hwI) + ca * along
+                        gl.add(wx, gy + 0.60, wz, 0.98 * iI, 0.56 * iI, 0.07 * iI)
                     }
                 }
             }
@@ -951,6 +970,11 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         }
 
         if (pendingGfxUpload) uploadWorldGfx()
+        if (pendingRebakeUpload) {
+            pendingRebakeUpload = false
+            uploadTerrainRebake()
+        }
+        maybeProcessTerrainEdits(now)
         pudTime += dt
         if (!paused) {
             hour += dt / 20f // World.js: secondsPerHour = 20 at speed 1
@@ -1919,8 +1943,19 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         val center = cellCenter(idx)
         if (roadDistance(center[0], center[1]) < 1f) return 0
         val removed = roadCells.remove(idx)
-        if (!removed) roadCells.add(idx)
+        if (!removed) {
+            roadCells.add(idx)
+            // grade the corridor into the heightmap through the site's own mechanism (the same
+            // bed rule the demo streets use), so the asphalt sits on graded ground, not a decal
+            val h0 = worldHeight.getHeight((center[0] - cellSize).toDouble(), (center[1] - cellSize).toDouble())
+            val h1 = worldHeight.getHeight((center[0] + cellSize).toDouble(), (center[1] + cellSize).toDouble())
+            val bed = maxOf(h0, h1) + 0.4
+            worldHeight.flattenRect(
+                (center[0] - cellSize / 2).toDouble(), (center[1] - cellSize / 2).toDouble(),
+                (center[0] + cellSize / 2).toDouble(), (center[1] + cellSize / 2).toDouble(), bed, 6.0)
+        }
         selectedBuilding = null
+        afterTerrainEdit()
         // terrain/index.js roads:changed → vegetation.clearPolyline(corridor width + 3); a cell road
         // is a 24 m square corridor → the flattenRect-style clear with the same +3 margin
         forest?.let { f ->
@@ -2670,6 +2705,7 @@ class GlCityRenderer : GLSurfaceView.Renderer {
      *  the GL thread consumes everything in uploadWorldGfx() at the top of the next frame. */
     @Volatile private var splatReady = false
     @Volatile private var pendingGfxUpload = false
+    @Volatile private var pendingRebakeUpload = false
     @Volatile private var pendingLayerArrays: TerrainGfx.LayerArrays? = null
     @Volatile private var pendingCtrl: Pair<ByteArray, ByteArray>? = null
     @Volatile private var pendingNrm: ByteArray? = null
@@ -3237,6 +3273,86 @@ class GlCityRenderer : GLSurfaceView.Renderer {
     }
     private var cachedShoreData: ByteArray? = null
 
+    // --- terrain:changed side effects (terrain/index.js update() dirty pipeline): after a
+    //     heightmap edit the water height/shore textures refresh NOW, the terrain mesh and the
+    //     puddle field rebuild debounced, and the control maps re-bake once the edits settle.
+    private var lastMeshRebuildAt = 0L
+    @Volatile private var terrainMeshDirty = false
+    @Volatile private var mapsDirtyAt = 0L
+    @Volatile private var mapRebakeBusy = false
+    @Volatile private var pendingCtrlRebake: Pair<ByteArray, ByteArray>? = null
+    @Volatile private var pendingNrmRebake: ByteArray? = null
+
+    private fun afterTerrainEdit() {
+        cachedShoreData = null
+        refreshWaterTextures()
+        buildPuddles()
+        terrainMeshDirty = true
+        mapsDirtyAt = System.nanoTime()
+    }
+
+    private fun refreshWaterTextures() {
+        val n = worldHeight.N
+        val hb = ByteBuffer.allocateDirect(n * n * 2).order(ByteOrder.nativeOrder())
+        for (i in 0 until n * n) hb.putShort(WaterMath.toHalfFloat(worldHeight.data[i].toDouble()).toShort())
+        hb.position(0)
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, texHeight)
+        GLES30.glTexSubImage2D(GLES30.GL_TEXTURE_2D, 0, 0, 0, n, n, GLES30.GL_RED, GLES30.GL_HALF_FLOAT, hb)
+        val shore = WaterMath.computeShoreDistance(worldHeight)
+        cachedShoreData = shore
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, texShore)
+        GLES30.glTexSubImage2D(GLES30.GL_TEXTURE_2D, 0, 0, 0, n, n, GLES30.GL_RED, GLES30.GL_UNSIGNED_BYTE,
+            ByteBuffer.allocateDirect(shore.size).put(shore).position(0))
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, 0)
+    }
+
+    /** GL-thread debounce: mesh rebuild (1 s) + settled control-map re-bake (worker, 2.5 s). */
+    private fun maybeProcessTerrainEdits(now: Long) {
+        if (terrainMeshDirty && now - lastMeshRebuildAt > 1_000_000_000L) {
+            terrainMeshDirty = false
+            lastMeshRebuildAt = now
+            buildTerrain()
+        }
+        if (mapsDirtyAt != 0L && !mapRebakeBusy && splatReady &&
+            System.nanoTime() - mapsDirtyAt > 2_500_000_000L) {
+            mapsDirtyAt = 0L
+            mapRebakeBusy = true
+            Thread({
+                try {
+                    pendingCtrlRebake = TerrainGfx.bakeControlMaps(worldHeight, 1337)
+                    pendingNrmRebake = TerrainGfx.bakeNormalMap(worldHeight)
+                    pendingRebakeUpload = true
+                } catch (e: Exception) {
+                    Log.e(TAG, "control-map rebake failed", e)
+                } finally { mapRebakeBusy = false }
+            }, "terrain-rebake").start()
+        }
+    }
+
+    /** GL-thread consumer for the settled control-map re-bake: texSubImage into the live textures. */
+    private fun uploadTerrainRebake() {
+        val rc = pendingCtrlRebake ?: return
+        val rn = pendingNrmRebake ?: return
+        pendingCtrlRebake = null
+        pendingNrmRebake = null
+        val (ctrl, ctrl2) = rc
+        val canopy = canopyData
+        if (canopy != null) for (k in canopy.indices) ctrl2[k * 4] = (255.0 * canopy[k]).toInt().toByte()
+        ctrlData = ctrl
+        ctrl2Data = ctrl2
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, texControl)
+        GLES30.glTexSubImage2D(GLES30.GL_TEXTURE_2D, 0, 0, 0, TerrainGfx.CONTROL_RES, TerrainGfx.CONTROL_RES,
+            GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE, ByteBuffer.allocateDirect(ctrl.size).put(ctrl).position(0))
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, texControl2)
+        GLES30.glTexSubImage2D(GLES30.GL_TEXTURE_2D, 0, 0, 0, TerrainGfx.CONTROL_RES, TerrainGfx.CONTROL_RES,
+            GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE, ByteBuffer.allocateDirect(ctrl2.size).put(ctrl2).position(0))
+        val nres = worldHeight.N - 1
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, texTNormal)
+        GLES30.glTexSubImage2D(GLES30.GL_TEXTURE_2D, 0, 0, 0, nres, nres,
+            GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE, ByteBuffer.allocateDirect(rn.size).put(rn).position(0))
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, 0)
+    }
+
     private fun drawUndergrowth(sun: SunState) {
         if (progUndergrowth == 0 || underVbo == 0 || underInstVbo == 0 || underInstCount == 0) return
         GLES30.glUseProgram(progUndergrowth)
@@ -3323,6 +3439,11 @@ class GlCityRenderer : GLSurfaceView.Renderer {
 
     /** effects/PuddleField.js: drainage raster + merged feathered pool discs from the demo roads. */
     private fun buildPuddles() {
+        // re-runnable: the web marks puddles dirty on roads:changed and rebuilds the whole field
+        if (pudVbo != 0) { GLES30.glDeleteBuffers(1, intArrayOf(pudVbo), 0); pudVbo = 0 }
+        if (pudIbo != 0) { GLES30.glDeleteBuffers(1, intArrayOf(pudIbo), 0); pudIbo = 0 }
+        if (texDrainage != 0) { GLES30.glDeleteTextures(1, intArrayOf(texDrainage), 0); texDrainage = 0 }
+        pudIdxCount = 0
         val segs = demo.roads.mapIndexed { i, r ->
             PuddleField.SegIn(
                 "d$i", r.type, DemoCity.halfWidth(r.type).toDouble() * 2.0,
@@ -3596,6 +3717,9 @@ class GlCityRenderer : GLSurfaceView.Renderer {
             camTarget[1] + camDist * sin(camPitch),
             camTarget[2] + camDist * cos(camPitch) * cos(camYaw))
         GLES30.glUniform1f(u(progBuilding, "uDayFactor"), sun.dayFactor)
+        GLES30.glUniform1f(u(progBuilding, "uWetB"), sun.wetness)
+        GLES30.glUniform1f(u(progBuilding, "uSnowB"), sun.snowCover)
+        GLES30.glUniform1f(u(progBuilding, "uNightB"), sun.nightFactor)
         GLES30.glUniform1f(u(progBuilding, "uFogDensity"), sun.fogDensity)
         GLES30.glActiveTexture(GLES30.GL_TEXTURE4)
         GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, texCloudShadow)
@@ -3642,6 +3766,9 @@ class GlCityRenderer : GLSurfaceView.Renderer {
             camTarget[1] + camDist * sin(camPitch),
             camTarget[2] + camDist * cos(camPitch) * cos(camYaw))
         GLES30.glUniform1f(u(progBuilding, "uDayFactor"), sun.dayFactor)
+        GLES30.glUniform1f(u(progBuilding, "uWetB"), sun.wetness)
+        GLES30.glUniform1f(u(progBuilding, "uSnowB"), sun.snowCover)
+        GLES30.glUniform1f(u(progBuilding, "uNightB"), sun.nightFactor)
         GLES30.glUniform1f(u(progBuilding, "uFogDensity"), sun.fogDensity)
         GLES30.glActiveTexture(GLES30.GL_TEXTURE4)
         GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, texCloudShadow)
@@ -3935,6 +4062,9 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         uniform vec3 uColor;
         uniform vec3 uScale;
         uniform float uDayFactor;
+        uniform float uWetB;
+        uniform float uSnowB;
+        uniform float uNightB;
         uniform float uSeed;
         uniform float uKind;
         uniform float uSelected;
@@ -4010,6 +4140,12 @@ class GlCityRenderer : GLSurfaceView.Renderer {
                     if (!curtain && !ground && f.y < 0.08) col *= 0.86;
                 }
                 if (n.y > 0.5) col = uColor * 0.55 * (uAmbient + uSunColor * ndl * csB);
+                // WetSurfaces-style weather grade: water pools on UP-facing surfaces only
+                float upB = clamp(n.y, 0.0, 1.0);
+                col *= 1.0 - 0.30 * uWetB * upB;
+                col += uAmbient * uWetB * upB * 0.35;               // wet sheen toward the sky colour
+                col = mix(col, vec3(0.82, 0.85, 0.90) * (uAmbient + uSunColor * ndl) * 1.25, uSnowB * upB * 0.72);
+                col *= mix(vec3(1.0), vec3(0.90, 0.96, 1.14), uNightB * 0.35);
                 colOut = col;
                 if (uSelected > 0.5) colOut = mix(colOut, vec3(0.35, 0.85, 1.0), 0.45);
             } else {
