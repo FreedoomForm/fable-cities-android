@@ -1813,6 +1813,7 @@ class GlCityRenderer : GLSurfaceView.Renderer {
 
         val sun = updateSunState()
         renderReflection(sun) // Water.js renderReflection — before the main render
+        stageCheck("renderReflection")
         updateWetLights(sun, dt) // WetLights emitter ranking (needs the fresh sun + traffic state)
         // the effects/index.js post-chain driver steps every frame (damp chains + grade uniforms)
         updateGradeFx(dt, sun)
@@ -1827,6 +1828,7 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         GLES30.glEnable(GLES30.GL_DEPTH_TEST)
 
         drawTerrain(sun)
+        stageCheck("terrain")
         drawCityGround(sun)
         updateUndergrowth(sun)
         drawUndergrowth(sun)
@@ -1837,8 +1839,11 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         drawLamps(sun)
         drawProps(sun)
         drawPuddles(sun)
+        stageCheck("city objects")
         drawWater(sun)
+        stageCheck("water")
         drawClouds(sun)
+        stageCheck("clouds")
 
         // ---- the site's composer tail: GroundFX blit → particles → probe → bloom → grade → SMAA
         GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, fxFbo)
