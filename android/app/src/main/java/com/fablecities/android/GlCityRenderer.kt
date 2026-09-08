@@ -1714,12 +1714,16 @@ class GlCityRenderer : GLSurfaceView.Renderer {
             smokeInstAllocated = true
         }
         val parts = Smoke.interleave(bufs)
-        val floats = intArrayOf(SMOKE_MAX * 3, SMOKE_MAX * 3, SMOKE_MAX * 4, SMOKE_MAX * 4, SMOKE_MAX * 4, SMOKE_MAX * 2)
-        for (i in 0 until 6) {
-            GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, smokeInstVbo[i])
-            GLES30.glBufferData(GLES30.GL_ARRAY_BUFFER, floats[i] * 4, floatBytes(parts[i]), GLES30.GL_STATIC_DRAW)
+        // the interleave returns count-sized arrays — the GL wrapper requires remaining() == size
+        // exactly, so allocate from the ACTUAL array length (rebuilds are rare; a zero count
+        // leaves the previous buffers in place and the draw guard skips rendering)
+        if (bufs.count > 0) {
+            for (i in 0 until 6) {
+                GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, smokeInstVbo[i])
+                GLES30.glBufferData(GLES30.GL_ARRAY_BUFFER, parts[i].size * 4, floatBytes(parts[i]), GLES30.GL_STATIC_DRAW)
+            }
+            GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, 0)
         }
-        GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, 0)
         smokeLive = bufs.count
         if (smokeLive > 0) Log.d(TAG, "smoke rebuilt: ${emitters.size} emitters -> $smokeLive puffs (cold=$cold)")
     }
