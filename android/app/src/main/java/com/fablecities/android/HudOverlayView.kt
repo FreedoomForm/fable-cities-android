@@ -86,6 +86,13 @@ class HudOverlayView(context: Context) : View(context) {
             invalidate()
             return true
         }
+        // web-parity chip (top left, below the title panel) — opens the bundled 1:1 web build
+        if (x in 34f..262f && y in 118f..174f) {
+            context.startActivity(android.content.Intent(context, ParityActivity::class.java))
+            showMessage("Opening the 1:1 web-parity build…")
+            invalidate()
+            return true
+        }
         // weather chip (top centre) — cycles the site's five weather presets
         if (x in 640f..960f && y in 28f..106f) {
             val gv = gameView ?: return false
@@ -145,6 +152,10 @@ class HudOverlayView(context: Context) : View(context) {
         text(canvas, "¤${money() / 1000}k", 1320f, 64f, 21f, Color.rgb(255, 218, 126), true)
         text(canvas, "POP ${population()}", 1500f, 64f, 18f, Color.rgb(143, 222, 255), true)
         text(canvas, if (paused()) "PAUSED" else "${milestone()} • SIM LIVE", 1320f, 90f, 13f, Color.rgb(210, 220, 226), false)
+
+        glass(canvas, RectF(34f, 118f, 262f, 174f))
+        text(canvas, "WEB-PARITY", 52f, 144f, 15f, Color.WHITE, true)
+        text(canvas, "open the 1:1 web build", 52f, 163f, 10f, Color.rgb(184, 202, 211), false)
 
         val weatherChip = gv?.renderer?.weatherName()?.uppercase() ?: "CLEAR"
         glass(canvas, RectF(640f, 28f, 960f, 106f))

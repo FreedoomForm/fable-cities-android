@@ -20,8 +20,9 @@ import androidx.webkit.WebViewAssetLoader
 /**
  * Web-parity activity: runs the exact production web build (three.js PBR + CSM shadows + bloom +
  * SMAA post stack) bundled into android assets, so the on-device look is 1:1 with the browser
- * game the user approved. This is the launcher. The hand-written native GLES renderer remains
- * installable and CI-gated as MainActivity (track B).
+ * game the user approved. It is the SECONDARY track: the app entry point is the native GLES
+ * renderer (MainActivity, launcher); this activity opens from the native HUD "WEB-PARITY" chip
+ * (and is still launched by component name in CI).
  *
  * Serving: WebViewAssetLoader maps https://appassets.androidplatform.net/assets/... onto
  * /android_asset/... — ES-module scripts and fetch()/localStorage require a real http(s) origin,
@@ -79,12 +80,22 @@ class ParityActivity : Activity() {
         web.loadUrl("https://appassets.androidplatform.net/assets/web/index.html")
     }
 
-    /** Back button sends Escape to the page (menus/pause), matching the desktop binding. */
+    /** Back button sends Escape to the page (menus/pause); a second press within 2.5 s leaves
+     *  the web-parity track and returns to the native renderer. */
+    private var lastBackAt = 0L
+
     @Deprecated("Deprecated in Java")
     override fun onBackPressed() {
+        val now = System.currentTimeMillis()
+        val doublePress = now - lastBackAt < 2500
+        lastBackAt = now
         runOnUiThread {
             web.evaluateJavascript(ESC_DISPATCH, null)
-            Toast.makeText(this, "Back = Esc (menus) • press again to leave", Toast.LENGTH_SHORT).show()
+            if (doublePress) {
+                finish()
+            } else {
+                Toast.makeText(this, "Back = Esc (menus) • press Back again to return to the native renderer", Toast.LENGTH_SHORT).show()
+            }
         }
     }
 

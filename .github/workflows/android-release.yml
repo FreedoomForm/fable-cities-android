@@ -147,7 +147,7 @@ jobs:
             # keep the immersive-mode confirmation ("Viewing full screen") out of the screenshots
             adb shell settings put global immersive_mode_confirmations dismissed || true
             adb shell settings put global policy_control immersive.full=* || true
-            # ---- GATE 1: web-parity launcher (WebView + three.js, slow first boot on swiftshader) ----
+            # ---- GATE 1: web-parity track (WebView + three.js, slow first boot on swiftshader) ----
             adb logcat -c
             adb shell am start -W -n com.fablecities.android/.ParityActivity
             sleep 90
@@ -247,7 +247,7 @@ jobs:
             "$APK" \
             --target "$GITHUB_SHA" \
             --title "Android build ${short_sha}" \
-            --notes "Fable Cities for Android, commit ${GITHUB_SHA}. Contains BOTH tracks: the web-parity launcher (the full production web game bundled and served offline in-app) and the native GLES renderer build. CI gates passed: build + unit tests, emulator boot for both activities (process alive, no fatal exceptions, no page console errors, no GL errors), screenshots in the emulator-${GITHUB_SHA} artifact." \
+            --notes "Fable Cities for Android, commit ${GITHUB_SHA}. The NATIVE GLES renderer app (MainActivity) is the entry point — tap the icon and the native build runs. The bundled 1:1 web-parity build (the full production web game served offline in-app) remains installed as ParityActivity: open it from the native HUD 'WEB-PARITY' chip; Back twice returns to native. CI gates passed: build + unit tests, emulator boot for both activities (process alive, no fatal exceptions, no page console errors, no GL errors), rotation/background stress, screenshots in the emulator-${GITHUB_SHA} artifact." \
             --prerelease
 
   web-check:
