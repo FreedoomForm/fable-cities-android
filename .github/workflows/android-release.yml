@@ -273,6 +273,14 @@ jobs:
           node tools/check.mjs --url "http://127.0.0.1:5180/?quality=low&map=1024" --frames 12 --ready-timeout 600000 --soft-crash 2>&1 | tee /tmp/check.json
           grep -q environmentalCrash /tmp/check.json && echo "::warning::Headless GPU crashed (SwiftShader limitation) — module-level gate unavailable on this runner; see docs/ANDROID_PORT.md" || true
 
+      - name: Write STATUS.json quality snapshot
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          node -e "const fs=require('fs');let obj=null;try{const raw=fs.readFileSync('/tmp/check.json','utf8');const i=raw.indexOf('{');const j=raw.lastIndexOf('}');if(i>=0&&j>i)obj=JSON.parse(raw.slice(i,j+1));}catch(e){obj={parse_error:String(e)};}fs.writeFileSync('STATUS.json',JSON.stringify({sha:process.env.GITHUB_SHA||'unknown',runner:'swiftshader-headless',check:obj},null,2));console.log('STATUS.json written');"
+          ls -la STATUS.json || true
+
       - name: Capture screenshots (day / dusk / night, three cameras)
         shell: bash
         run: |
@@ -295,6 +303,7 @@ jobs:
           name: web-check-${{ github.sha }}
           path: |
             /tmp/check.json
+            STATUS.json
             shots/**
           if-no-files-found: warn
           retention-days: 30
