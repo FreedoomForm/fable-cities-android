@@ -1469,9 +1469,12 @@ class GlCityRenderer : GLSurfaceView.Renderer {
             wrapBytes(Sprites.makeSpray(1337)), repeat = false, mipmaps = false)
         val gen = IntArray(5); GLES30.glGenBuffers(5, gen, 0)
         sprayVbo = gen[0]; sprayIbo = gen[1]; spraySeedVbo = gen[2]; sprayEmitVbo = gen[3]; sprayVelVbo = gen[4]
-        // base quad: aCorner (vec2) 4 verts; drawn as two triangles from the index buffer
+        // base quad: aCorner (vec2) 4 verts; drawn as two triangles from the index buffer.
+        // NOTE: the size must equal the FloatBuffer's remaining()×4 — the GLES wrapper throws
+        // IllegalArgumentException("remaining() < size < needed") on any mismatch.
+        val corner = floatArrayOf(-1f, -1f, 1f, -1f, 1f, 1f, -1f, 1f)
         GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, sprayVbo)
-        GLES30.glBufferData(GLES30.GL_ARRAY_BUFFER, 4 * 2 * 4, floatBytes(floatArrayOf(-1f, -1f, 1f, -1f, 1f, 1f, -1f, 1f)), GLES30.GL_STATIC_DRAW)
+        GLES30.glBufferData(GLES30.GL_ARRAY_BUFFER, corner.size * 4, floatBytes(corner), GLES30.GL_STATIC_DRAW)
         GLES30.glBindBuffer(GLES30.GL_ELEMENT_ARRAY_BUFFER, sprayIbo)
         GLES30.glBufferData(GLES30.GL_ELEMENT_ARRAY_BUFFER, 6 * 2, shortBytes(shortArrayOf(0, 1, 2, 0, 2, 3)), GLES30.GL_STATIC_DRAW)
         GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, spraySeedVbo)
