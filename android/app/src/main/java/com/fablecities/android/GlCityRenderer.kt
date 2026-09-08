@@ -302,11 +302,53 @@ class GlCityRenderer : GLSurfaceView.Renderer {
 
     // ---------------------------------------------------------------- lifecycle
 
+    private var glContextWarm = false
+
+    /** Invalidate every cached GL object handle (EGL context loss resume path). GLSurfaceView
+     *  re-invokes onSurfaceCreated with a brand-new context; without this every guard
+     *  (if (texX != 0) return) would skip re-uploading into it and the world draws black. */
+    private fun resetGlHandles() {
+        progTerrain = 0; progFlat = 0; progBuilding = 0; progWater = 0; progSky = 0; progPrecip = 0
+        progClouds = 0; progPuddle = 0; progTrees = 0; progUndergrowth = 0; progGroundFX = 0
+        progLampHead = 0; progCloudComposite = 0
+        terrainVbo = 0; terrainCount = 0; cityGroundVbo = 0; cityGroundCount = 0
+        waterVbo = 0; waterCount = 0; cubeVbo = 0
+        carVbo = 0; carCount = 0; pedVbo = 0; pedCount = 0; vanVbo = 0; vanCount = 0
+        truckVbo = 0; truckCount = 0; busVbo = 0; busCount = 0
+        skyVbo = 0; editRoadVbo = 0; editRoadCount = 0; editZoneVbo = 0; editZoneCount = 0
+        precipVbo = 0; lampPoleVbo = 0; lampPoleCount = 0; lampHeadVbo = 0; lampHeadCount = 0
+        propBoxVbo = 0; propBoxCount = 0; propPitVbo = 0; propPitCount = 0
+        treeVbo = 0; treeIbo = 0; treeIdxCount = 0; treeInstVbo = 0; treeInstCount = 0
+        underVbo = 0; underIbo = 0; underIdxCount = 0; underInstVbo = 0; underInstCount = 0
+        pudVbo = 0; pudIbo = 0; pudIdxCount = 0
+        sceneFbo = 0; sceneTex = 0; sceneDepth = 0; sceneW = 0; sceneH = 0
+        reflFbo = 0; reflTex = 0; reflDepth = 0; reflW = 0; reflH = 0
+        texHeight = 0; texShore = 0; texNoise = 0; texWNormal = 0
+        texAlbedoArr = 0; texNormalArr = 0; texControl = 0; texControl2 = 0; texTNormal = 0
+        texDrainage = 0; texStars = 0; texMoon = 0; texUnderAtlas = 0
+        texCloudNoise = 0; texCloudWeather = 0; texCloudCirrus = 0; texCloudShadow = 0
+        cloudShadowBakedCover = -1.0
+        cloudHistoryValid = false
+        cachedShoreData = null
+        splatReady = false
+        // force the world-gfx pipeline to re-upload everything it still holds in its caches
+        pendingGfxUpload = true
+        glReady = false
+    }
+
     override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
         GLES30.glEnable(GLES30.GL_DEPTH_TEST)
         GLES30.glEnable(GLES30.GL_CULL_FACE)
         GLES30.glCullFace(GLES30.GL_BACK)
         GLES30.glClearColor(0.03f, 0.05f, 0.08f, 1f)
+        // GLSurfaceView may hand us a BRAND-NEW EGL context (preserveEGLContextOnPause covers
+        // brief pauses only). All cached object handles are invalid then - zero them so every
+        // build/guard re-runs against the fresh context (the CPU-side world stays cached).
+        if (!glContextWarm) {
+            glContextWarm = true
+        } else {
+            resetGlHandles()
+        }
 
         progTerrain = buildProgram(TerrainShaders.VS_TERRAIN, TerrainShaders.FS_TERRAIN, "terrain")
         progFlat = buildProgram(VS_LIT, TerrainShaders.FS_LIT_WET, "flat")

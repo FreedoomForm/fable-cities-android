@@ -183,7 +183,22 @@ jobs:
             sleep 2
             adb exec-out screencap -p > emulator_screen.png
             cp full_bootcat.txt full_logcat.txt
-            echo "Emulator gate PASSED: parity + native both alive, no fatal, no page/GL errors"
+            # ---- GATE 3: rotation + background/resume stress (lifecycle gates from item 1) ----
+            adb shell settings put system accelerometer_rotation 0 || true
+            adb shell settings put system user_rotation 1 || true
+            sleep 4
+            adb shell settings put system user_rotation 0 || true
+            sleep 4
+            adb shell input keyevent KEYCODE_HOME || true
+            sleep 4
+            adb shell am start -W -n com.fablecities.android/.MainActivity || true
+            sleep 8
+            adb logcat -d > stress_logcat.txt || true
+            adb shell pidof com.fablecities.android > pid_stress.txt || true
+            grep -q "[0-9]" pid_stress.txt || { echo "::error::Native process died under rotation/background stress"; grep -E "Fatal signal|FATAL EXCEPTION|SIGSEGV|SIGABRT|AndroidRuntime" stress_logcat.txt | head -40; exit 1; }
+            grep -E "FATAL EXCEPTION|Fatal signal" stress_logcat.txt && { echo "::error::Fatal during rotation/background stress"; grep -E -A 25 "FATAL EXCEPTION|Fatal signal" stress_logcat.txt | head -60; exit 1; } || true
+            adb exec-out screencap -p > stress_screen.png || true
+            echo "Emulator gate PASSED: parity + native both alive, no fatal, no page/GL errors, rotation+background stress survived"
 
       - name: Upload emulator evidence
         if: always()
@@ -198,6 +213,9 @@ jobs:
             full_bootcat.txt
             full_logcat.txt
             pid.txt
+            stress_logcat.txt
+            pid_stress.txt
+            stress_screen.png
             frames.txt
           if-no-files-found: warn
           retention-days: 30
