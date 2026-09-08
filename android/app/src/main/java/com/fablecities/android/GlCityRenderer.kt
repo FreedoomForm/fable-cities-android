@@ -15,6 +15,7 @@ import com.fablecities.android.worldgen.Heightmap
 import com.fablecities.android.worldgen.Vegetation
 import com.fablecities.android.worldgen.hash2Signed
 import com.fablecities.android.worldgen.SimplexNoise
+import com.fablecities.android.worldgen.Sprites
 import com.fablecities.android.worldgen.v8Hypot
 import com.fablecities.android.worldgen.WetLights
 import com.fablecities.android.worldgen.Props
@@ -195,6 +196,19 @@ class GlCityRenderer : GLSurfaceView.Renderer {
     private val gradeFx = GradeFx.State()
     private var firstFrameLogged = false
     private var lastStageLog = 0L
+    // --- VehicleSpray (effects/VehicleSpray.js): instanced wet-road wake ---
+    private var progSpray = 0
+    private var sprayVbo = 0
+    private var sprayIbo = 0
+    private var sprayEmitVbo = 0
+    private var sprayVelVbo = 0
+    private var spraySeedVbo = 0
+    private var texSpray = 0
+    private val sprayEmit = FloatArray(44 * 36 * 4)
+    private val sprayVel = FloatArray(44 * 36 * 4)
+    private var sprayLive = 0
+    private val sprayPrev = HashMap<Int, FloatArray>()
+    private var sprayTime = 0.0
     // --- street lamps (the site's ROAD_TYPES lamp definitions) + WetLights emitter feed ---
     private var lampPoleVbo = 0
     private var lampPoleCount = 0
@@ -381,6 +395,8 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         progOccl = 0; progBright = 0; for (i in 0 until 5) progBlur[i] = 0
         progBloomComp = 0; progMeter = 0; progGrade = 0
         progSmaaEdges = 0; progSmaaWeights = 0; progSmaaBlend = 0; progCopy = 0
+        progSpray = 0; sprayVbo = 0; sprayIbo = 0; sprayEmitVbo = 0; sprayVelVbo = 0; spraySeedVbo = 0; texSpray = 0
+        sprayLive = 0; sprayPrev.clear()
         texSmaaArea = 0; texSmaaSearch = 0
         meterIndex = 0
         reflFbo = 0; reflTex = 0; reflDepth = 0; reflW = 0; reflH = 0
@@ -436,6 +452,8 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         progSmaaWeights = buildProgram(PostShaders.VS_SMAA_WEIGHTS, PostShaders.FS_SMAA_WEIGHTS, "smaaweights")
         progSmaaBlend = buildProgram(PostShaders.VS_SMAA_BLEND, PostShaders.FS_SMAA_BLEND, "smaablend")
         progCopy = buildProgram(PostShaders.VS_POST, PostShaders.FS_COPY, "copy")
+        progSpray = buildProgram(VS_SPRAY, FS_SPRAY, "spray")
+        buildSpray()
         Log.i(TAG, "init: programs compiled")
         buildPrecipBuffer()
         buildCloudTextures()
@@ -577,10 +595,7 @@ class GlCityRenderer : GLSurfaceView.Renderer {
             GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, postVbo)
             // 4-vertex triangle strip covering NDC (the old 3-vertex triangle left the
             // upper-left half of every fullscreen pass unrasterised!)
-            GLES30.glBufferData(GLES30.GL_ARRAY_BUFFER, 12 * 4,
-                java.nio.ByteBuffer.allocateDirect(12 * 4).order(java.nio.ByteOrder.nativeOrder())
-                    .put(floatArrayOf(-1f, -1f, 0f, 1f, -1f, 0f, -1f, 1f, 0f, 1f, 1f, 0f)).position(0),
-                GLES30.GL_STATIC_DRAW)
+            GLES30.glBufferData(GLES30.GL_ARRAY_BUFFER, 12 * 4, floatBytes(floatArrayOf(-1f, -1f, 0f, 1f, -1f, 0f, -1f, 1f, 0f, 1f, 1f, 0f)), GLES30.GL_STATIC_DRAW)
             GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, 0)
         }
         if (texSmaaArea == 0) loadSmaaTextures()
@@ -1444,8 +1459,152 @@ class GlCityRenderer : GLSurfaceView.Renderer {
             wrapBytes(ByteArray(CloudShadowMap.SIZE * CloudShadowMap.SIZE) { 255.toByte() }), repeat = true, mipmaps = false)
     }
 
+    // ---------------------------------------------------------------- VehicleSpray
+
+    /** effects/sprites.js makeSpray texture + the instanced quad layout (corner + index buffer
+     *  + per-instance emit/vel/seed blocks with the exact xorshift jitter stream). */
+    private fun buildSpray() {
+        if (texSpray != 0) return
+        texSpray = uploadTex2D(64, 64, GLES30.GL_RGBA8, GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE,
+            wrapBytes(Sprites.makeSpray(1337)), repeat = false, mipmaps = false)
+        val gen = IntArray(5); GLES30.glGenBuffers(5, gen, 0)
+        sprayVbo = gen[0]; sprayIbo = gen[1]; spraySeedVbo = gen[2]; sprayEmitVbo = gen[3]; sprayVelVbo = gen[4]
+        // base quad: aCorner (vec2) 4 verts; drawn as two triangles from the index buffer
+        GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, sprayVbo)
+        GLES30.glBufferData(GLES30.GL_ARRAY_BUFFER, 4 * 2 * 4, floatBytes(floatArrayOf(-1f, -1f, 1f, -1f, 1f, 1f, -1f, 1f)), GLES30.GL_STATIC_DRAW)
+        GLES30.glBindBuffer(GLES30.GL_ELEMENT_ARRAY_BUFFER, sprayIbo)
+        GLES30.glBufferData(GLES30.GL_ELEMENT_ARRAY_BUFFER, 6 * 2, shortBytes(shortArrayOf(0, 1, 2, 0, 2, 3)), GLES30.GL_STATIC_DRAW)
+        GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, spraySeedVbo)
+        val seed = Sprites.spraySeedBlock(44, 36)
+        GLES30.glBufferData(GLES30.GL_ARRAY_BUFFER, seed.size * 4, floatBytes(seed), GLES30.GL_STATIC_DRAW)
+        GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, sprayEmitVbo)
+        GLES30.glBufferData(GLES30.GL_ARRAY_BUFFER, sprayEmit.size * 4, null, GLES30.GL_DYNAMIC_DRAW)
+        GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, sprayVelVbo)
+        GLES30.glBufferData(GLES30.GL_ARRAY_BUFFER, sprayVel.size * 4, null, GLES30.GL_DYNAMIC_DRAW)
+        GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, 0)
+        GLES30.glBindBuffer(GLES30.GL_ELEMENT_ARRAY_BUFFER, 0)
+    }
+
+    /** VehicleSpray.sync: rewrite the emitter blocks from the traffic list (O(vehicles)). */
+    private fun syncSpray(sun: SunState) {
+        val sim = trafficSim ?: run { sprayLive = 0; return }
+        val wet = gradeFx.wetness
+        val snowing = gradeFx.snowAmt > 0.02
+        if (sun.precip <= 0.005f || wet < 0.10 || snowing) { sprayLive = 0; return }
+        val per = 36
+        val maxE = 44
+        val range = 150.0
+        val range2 = range * range
+        val camX = camTarget[0].toDouble(); val camY = camTarget[1].toDouble(); val camZ = camTarget[2].toDouble()
+        var n = 0
+        for (v in sim.vehicles) {
+            if (n >= maxE) break
+            if (v.dead) continue
+            val speed = v.v
+            if (speed < 1.8) continue
+            val dx = v.x - camX; val dz = v.z - camZ; val dy = v.y - camY
+            val d2 = dx * dx + dz * dz + dy * dy
+            if (d2 > range2) continue
+            var p = sprayPrev[v.id]
+            if (p == null) { p = floatArrayOf(v.x.toFloat(), v.z.toFloat(), 0f, 1f); sprayPrev[v.id] = p }
+            val mx = v.x - p[0]; val mz = v.z - p[1]
+            val ml = v8Hypot(mx, mz)
+            if (ml > 1e-4) { p[2] = (mx / ml).toFloat(); p[3] = (mz / ml).toFloat() }
+            p[0] = v.x.toFloat(); p[1] = v.z.toFloat()
+            val half = if (v.half > 0.0) v.half else 2.0
+            val rx = v.x - p[2] * half * 0.82
+            val rz = v.z - p[3] * half * 0.82
+            val strength = Math.min(1.0, (speed - 1.6) / 5.0) * Math.pow(1.0 - Math.sqrt(d2) / range, 0.6)
+            val base = n * per * 4
+            for (k in 0 until per) {
+                val o = base + k * 4
+                sprayEmit[o] = rx.toFloat(); sprayEmit[o + 1] = (v.y + 0.05).toFloat()
+                sprayEmit[o + 2] = rz.toFloat(); sprayEmit[o + 3] = p[2]
+                sprayVel[o] = p[3]; sprayVel[o + 1] = speed.toFloat()
+                sprayVel[o + 2] = strength.toFloat(); sprayVel[o + 3] = 0f
+            }
+            n++
+        }
+        if (sprayPrev.size > maxE * 8) sprayPrev.clear()
+        sprayLive = n
+        if (n > 0) {
+            val floats = n * per * 4
+            GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, sprayEmitVbo)
+            GLES30.glBufferSubData(GLES30.GL_ARRAY_BUFFER, 0, floats * 4, floatBytes(java.util.Arrays.copyOf(sprayEmit, floats)))
+            GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, sprayVelVbo)
+            GLES30.glBufferSubData(GLES30.GL_ARRAY_BUFFER, 0, floats * 4, floatBytes(java.util.Arrays.copyOf(sprayVel, floats)))
+            GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, 0)
+        }
+    }
+
+    /** VehicleSpray draw (the fxScene tail — after precipitation, into fxFbo). */
+    private fun drawSpray(sun: SunState) {
+        if (progSpray == 0 || sprayVbo == 0 || texSpray == 0 || sprayLive == 0 || sceneDepth == 0) return
+        val night = sun.nightFactor
+        val warm = 0.045f + 0.52f * night
+        GLES30.glEnable(GLES30.GL_BLEND)
+        GLES30.glBlendFunc(GLES30.GL_ONE, GLES30.GL_ONE)
+        GLES30.glDisable(GLES30.GL_DEPTH_TEST)
+        GLES30.glDepthMask(false)
+        GLES30.glDisable(GLES30.GL_CULL_FACE)
+        GLES30.glUseProgram(progSpray)
+        GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, sprayVbo)
+        GLES30.glEnableVertexAttribArray(0)
+        GLES30.glVertexAttribPointer(0, 2, GLES30.GL_FLOAT, false, 8, 0)
+        GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, sprayEmitVbo)
+        GLES30.glEnableVertexAttribArray(1)
+        GLES30.glVertexAttribPointer(1, 4, GLES30.GL_FLOAT, false, 16, 0)
+        GLES30.glVertexAttribDivisor(1, 1)
+        GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, sprayVelVbo)
+        GLES30.glEnableVertexAttribArray(2)
+        GLES30.glVertexAttribPointer(2, 4, GLES30.GL_FLOAT, false, 16, 0)
+        GLES30.glVertexAttribDivisor(2, 1)
+        GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, spraySeedVbo)
+        GLES30.glEnableVertexAttribArray(3)
+        GLES30.glVertexAttribPointer(3, 4, GLES30.GL_FLOAT, false, 16, 0)
+        GLES30.glVertexAttribDivisor(3, 1)
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, texSpray)
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE1)
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, sceneDepth)
+        GLES30.glUniformMatrix4fv(u(progSpray, "uProj"), 1, false, projM, 0)
+        GLES30.glUniformMatrix4fv(u(progSpray, "uView"), 1, false, viewM, 0)
+        GLES30.glUniform1f(u(progSpray, "uTime"), sprayTime.toFloat())
+        GLES30.glUniform1f(u(progSpray, "uWet"), Environment.smoothstep(0.12, 0.55, gradeFx.wetness).toFloat())
+        GLES30.glUniform1f(u(progSpray, "uFogDensity"), sun.fogDensity.toDouble().toFloat())
+        GLES30.glUniform1i(u(progSpray, "uTex"), 0)
+        GLES30.glUniform1i(u(progSpray, "tDepth"), 1)
+        GLES30.glUniform1f(u(progSpray, "uHasDepth"), 1f)
+        GLES30.glUniform2f(u(progSpray, "uResolution"), sceneW.toFloat(), sceneH.toFloat())
+        GLES30.glUniform2f(u(progSpray, "uNearFar"), 5f, 2600f)
+        GLES30.glUniform3f(u(progSpray, "uColor"),
+            sun.skyColor[0] * 1.30f + warm, sun.skyColor[1] * 1.30f + 0.88f * warm, sun.skyColor[2] * 1.30f + 0.70f * warm)
+        GLES30.glUniform1f(u(progSpray, "uOpacity"), 2.8f * (0.45f + 0.55f * gradeFx.rainAmt.toFloat()))
+        GLES30.glBindBuffer(GLES30.GL_ELEMENT_ARRAY_BUFFER, sprayIbo)
+        GLES30.glDrawElementsInstanced(GLES30.GL_TRIANGLES, 6, GLES30.GL_UNSIGNED_SHORT, 0, sprayLive * 36)
+        GLES30.glBindBuffer(GLES30.GL_ELEMENT_ARRAY_BUFFER, 0)
+        GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, 0)
+        GLES30.glDisable(GLES30.GL_BLEND)
+        GLES30.glDepthMask(true)
+        GLES30.glEnable(GLES30.GL_DEPTH_TEST)
+        GLES30.glEnable(GLES30.GL_CULL_FACE)
+        GLES30.glVertexAttribDivisor(1, 0)
+        GLES30.glVertexAttribDivisor(2, 0)
+        GLES30.glVertexAttribDivisor(3, 0)
+    }
+
     private fun wrapBytes(b: ByteArray): java.nio.Buffer =
         java.nio.ByteBuffer.allocateDirect(b.size).order(java.nio.ByteOrder.nativeOrder()).put(b).apply { flip() }
+
+    private fun floatBytes(data: FloatArray): java.nio.Buffer {
+        val bb = java.nio.ByteBuffer.allocateDirect(data.size * 4).order(java.nio.ByteOrder.nativeOrder())
+        return bb.asFloatBuffer().put(data)
+    }
+
+    private fun shortBytes(data: ShortArray): java.nio.Buffer {
+        val bb = java.nio.ByteBuffer.allocateDirect(data.size * 2).order(java.nio.ByteOrder.nativeOrder())
+        return bb.asShortBuffer().put(data)
+    }
 
     private fun uploadTex3D(w: Int, h: Int, d: Int, data: ByteArray): Int {
         val ids = IntArray(1)
@@ -1661,6 +1820,9 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         GLES30.glDisable(GLES30.GL_DEPTH_TEST)
         GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, fxFbo)
         drawPrecipitation(sun)
+        sprayTime += dt
+        syncSpray(sun)
+        drawSpray(sun)
         GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
         drawSunOcclusionProbe(sun)
         drawBloom(sun)
@@ -5274,6 +5436,84 @@ class GlCityRenderer : GLSurfaceView.Renderer {
                 a *= smoothstep(0.5, 0.12, length(d));
             }
             fragColor = vec4(uTint, a);
+        }
+    """.trimIndent()
+
+    // --- VehicleSpray (effects/VehicleSpray.js port): instanced wet-road wake billboards.
+    // Emitters = the nearest fast-moving vehicles; puffs animate entirely in the VS from
+    // uTime + per-instance seeds; additive against the wet road, depth-soft against the
+    // real scene depth, fog-attenuated like the web's fog_fragment (exp2). ---
+    private val VS_SPRAY = """
+        #version 300 es
+        precision highp float;
+        layout(location=0) in vec2 aCorner;
+        layout(location=1) in vec4 aEmit;   // rear x, y, z, direction x
+        layout(location=2) in vec4 aVel;    // direction z, speed (m/s), strength 0..1, unused
+        layout(location=3) in vec4 aSeed;   // phase, lateral offset (m), size (m), rand
+        uniform mat4 uProj;
+        uniform mat4 uView;
+        uniform float uTime;
+        uniform float uWet;
+        uniform float uFogDensity;
+        out vec2 vUv;
+        out float vAlpha;
+        out float vViewZ;
+        out float vU;
+        out float vFogDepth;
+        void main() {
+          float strength = aVel.z * uWet;
+          float life = 0.55 + aSeed.w * 0.40;
+          float u = fract(uTime / life + aSeed.x);
+          float age = u * life;
+          vec3 dir = vec3(aEmit.w, 0.0, aVel.x);
+          vec3 side = vec3(-dir.z, 0.0, dir.x);
+          float speed = aVel.y;
+          vec3 p = aEmit.xyz;
+          p -= dir * (speed * age * 0.70);
+          p += side * aSeed.y * (0.85 + 3.0 * u);
+          p.y += 0.04 + (1.15 * u - 0.90 * u * u) * (0.75 + 0.09 * speed);
+          float s = aSeed.z * (0.55 + 3.3 * u) * (0.62 + 0.05 * speed);
+          p.y += s * 0.45;
+          vAlpha = smoothstep(0.0, 0.08, u) * pow(1.0 - u, 1.5) * strength;
+          vUv = aCorner * 0.5 + 0.5;
+          vU = u;
+          vec4 mv = uView * vec4(p, 1.0);
+          mv.xy += aCorner * s * 0.5;
+          vViewZ = mv.z;
+          vFogDepth = -mv.z;
+          gl_Position = uProj * mv;
+        }
+    """.trimIndent()
+
+    private val FS_SPRAY = """
+        #version 300 es
+        precision highp float;
+        uniform sampler2D uTex;
+        uniform sampler2D tDepth;
+        uniform float uHasDepth;
+        uniform vec2 uResolution;
+        uniform vec2 uNearFar;
+        uniform vec3 uColor;
+        uniform float uOpacity;
+        uniform float uFogDensity;
+        in vec2 vUv;
+        in float vAlpha;
+        in float vViewZ;
+        in float vU;
+        in float vFogDepth;
+        out vec4 fragColor;
+        float effectsSceneViewZ() {
+          float d = texture(tDepth, gl_FragCoord.xy / uResolution).x;
+          return -((uNearFar.x * uNearFar.y) / ((uNearFar.y - uNearFar.x) * d - uNearFar.y));
+        }
+        void main() {
+          float openU = mix(0.62, 0.95, smoothstep(0.0, 0.9, vU));
+          vec2 uvS = vec2(vUv.x, vUv.y * openU + (1.0 - openU) * 0.30);
+          float a = texture(uTex, uvS).a * vAlpha * uOpacity;
+          if (uHasDepth > 0.5) a *= clamp((vViewZ - effectsSceneViewZ() + 0.45) / 0.75, 0.0, 1.0);
+          if (a < 0.003) discard;
+          float fogAtt = exp(-uFogDensity * uFogDensity * vFogDepth * vFogDepth);
+          fragColor = vec4(uColor * a * fogAtt, a);
         }
     """.trimIndent()
 
