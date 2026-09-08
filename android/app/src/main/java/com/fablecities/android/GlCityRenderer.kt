@@ -408,6 +408,8 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         progSmaaEdges = 0; progSmaaWeights = 0; progSmaaBlend = 0; progCopy = 0
         progSpray = 0; sprayVbo = 0; sprayIbo = 0; sprayEmitVbo = 0; sprayVelVbo = 0; spraySeedVbo = 0; texSpray = 0
         sprayLive = 0; sprayPrev.clear()
+        cloudRtFbo = 0; cloudRtTex[0] = 0; cloudRtTex[1] = 0; cloudRtW = 0; cloudRtH = 0
+        floatProbeDone = false; floatProbeResult = false
         texSmaaArea = 0; texSmaaSearch = 0
         meterIndex = 0
         reflFbo = 0; reflTex = 0; reflDepth = 0; reflW = 0; reflH = 0
@@ -3374,6 +3376,17 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         val histIdx = 1
         GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, cloudRtFbo)
         GLES30.glFramebufferTexture2D(GLES30.GL_FRAMEBUFFER, GLES30.GL_COLOR_ATTACHMENT0, GLES30.GL_TEXTURE_2D, cloudRtTex[writeIdx], 0)
+        // if the float attach turned out non-renderable, fall back to RGBA8 and re-attach
+        if (GLES30.glCheckFramebufferStatus(GLES30.GL_FRAMEBUFFER) != GLES30.GL_FRAMEBUFFER_COMPLETE && cloudRtFloat) {
+            Log.e(TAG, "cloud RGBA16F attach incomplete — falling back to RGBA8")
+            cloudRtFloat = false
+            for (i in 0..1) {
+                GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, cloudRtTex[i])
+                GLES30.glTexImage2D(GLES30.GL_TEXTURE_2D, 0, GLES30.GL_RGBA8, cloudRtW, cloudRtH, 0, GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE, null)
+            }
+            GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, 0)
+            GLES30.glFramebufferTexture2D(GLES30.GL_FRAMEBUFFER, GLES30.GL_COLOR_ATTACHMENT0, GLES30.GL_TEXTURE_2D, cloudRtTex[writeIdx], 0)
+        }
         stageCheck("cloud attach")
         GLES30.glViewport(0, 0, rtW, rtH)
         GLES30.glClearColor(0f, 0f, 0f, 0f)
@@ -3501,9 +3514,10 @@ class GlCityRenderer : GLSurfaceView.Renderer {
             cloudRtTex[0] = genTex[0]; cloudRtTex[1] = genTex[1]
         }
         cloudRtW = w; cloudRtH = h
-        // float16 targets when the implementation can render to them (HalfFloatType on the web)
-        val useFloat = GLES30.glGetString(GLES30.GL_EXTENSIONS)?.contains("color_buffer_float") == true ||
-            GLES30.glGetString(GLES30.GL_EXTENSIONS)?.contains("color_buffer_half_float") == true
+        // float16 targets when the implementation can actually RENDER to them (HalfFloatType on
+        // the web). The extension-string probe is unreliable (glGetString(GL_EXTENSIONS) is not
+        // even legal on GLES 3.0) — probe by RENDERING to a tiny RGBA16F framebuffer instead.
+        val useFloat = probeFloatRenderable()
         cloudRtFloat = useFloat
         val ifmt = if (useFloat) 0x881A else GLES30.GL_RGBA8 // GL_RGBA16F
         for (i in 0..1) {
@@ -3517,6 +3531,32 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, 0)
         cloudHistoryValid = false // resize drops the history (stays valid across sizes on the web;
         // a reset here only costs one noise frame — simpler than resampling)
+    }
+
+    /** True iff an RGBA16F attachment is actually renderable on this driver. */
+    private var floatProbeDone = false
+    private var floatProbeResult = false
+    private fun probeFloatRenderable(): Boolean {
+        if (floatProbeDone) return floatProbeResult
+        floatProbeDone = true
+        val genT = IntArray(1); val genF = IntArray(1)
+        GLES30.glGenTextures(1, genT, 0)
+        GLES30.glGenFramebuffers(1, genF, 0)
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, genT[0])
+        GLES30.glTexImage2D(GLES30.GL_TEXTURE_2D, 0, GLES30.GL_RGBA16F, 4, 4, 0, GLES30.GL_RGBA, GLES30.GL_HALF_FLOAT, null)
+        GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_MIN_FILTER, GLES30.GL_NEAREST)
+        GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_MAG_FILTER, GLES30.GL_NEAREST)
+        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, genF[0])
+        GLES30.glFramebufferTexture2D(GLES30.GL_FRAMEBUFFER, GLES30.GL_COLOR_ATTACHMENT0, GLES30.GL_TEXTURE_2D, genT[0], 0)
+        floatProbeResult = GLES30.glCheckFramebufferStatus(GLES30.GL_FRAMEBUFFER) == GLES30.GL_FRAMEBUFFER_COMPLETE
+        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
+        GLES30.glDeleteFramebuffers(1, genF, 0)
+        GLES30.glDeleteTextures(1, genT, 0)
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, 0)
+        // drain any error the probe raised so it never sticks to a later stage
+        GLES30.glGetError()
+        Log.i(TAG, "RGBA16F renderable probe: $floatProbeResult")
+        return floatProbeResult
     }
 
     /** Rain / snow particles: camera-following volume, alpha from the weather precipitation. */
