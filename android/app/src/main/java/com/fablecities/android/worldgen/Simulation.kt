@@ -725,7 +725,9 @@ class SimMilestones(private val economy: SimEconomy) {
         check("happiness", pop >= 100 && e.happiness < 0.4)
         check("deficit", e.net < 0 && e.money < 60000)
         check("bankrupt", e.money < 0)
-        e.alerts.clear()
-        e.alerts.addAll(alerts)
+        synchronized(e.alerts) {
+            e.alerts.clear()
+            e.alerts.addAll(alerts)
+        }
     }
 }

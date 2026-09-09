@@ -62,6 +62,8 @@ class FableCitiesView(context: Context) : GLSurfaceView(context) {
         renderer.setHour(savedState.hour)
         renderer.day = savedState.day
         if (savedState.money > 0) renderer.setEconMoney(savedState.money)
+        renderer.simSpeed = savedState.speed.coerceIn(0, 4)
+        if (savedState.cityName.isNotBlank()) renderer.setCityName(savedState.cityName)
     }
 
     private var persistPending = false
@@ -78,7 +80,11 @@ class FableCitiesView(context: Context) : GLSurfaceView(context) {
     fun persistNow() {
         savedState.money = renderer.econMoney()
         savedState.population = renderer.econPopulation()
-        savedState.selectedTool = hud?.selectedTool?.name ?: savedState.selectedTool
+        hud?.let {
+            savedState.selectedTool = it.toolToken
+            savedState.speed = renderer.simSpeed
+        }
+        savedState.cityName = renderer.cityName()
         savedState.edits = renderer.editsState()
         savedState.camera = renderer.cameraState()
         savedState.hour = renderer.hour
@@ -135,8 +141,10 @@ class FableCitiesView(context: Context) : GLSurfaceView(context) {
                 val moved = hypot(event.x - downX, event.y - downY)
                 val elapsed = System.currentTimeMillis() - downTime
                 if (mode == MODE_DRAG && moved <= TAP_SLOP && elapsed <= TAP_MS) {
-                    val tool = hud?.selectedTool?.name ?: "SELECT"
-                    val msg = renderer.tapTool(event.x, event.y, tool)
+                    // tool TOKEN: "SELECT" | "BULLDOZE" | "ROAD:<id>" | "ZONE:<id>" | "SERVICE:<id>"
+                    val token = hud?.toolToken ?: "SELECT"
+                    val parts = token.split(':', limit = 2)
+                    val msg = renderer.tapTool(event.x, event.y, parts[0], parts.getOrNull(1))
                     hud?.showMessage(msg)
                     persistSoon()
                 }

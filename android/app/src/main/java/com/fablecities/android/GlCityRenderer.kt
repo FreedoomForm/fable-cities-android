@@ -376,7 +376,12 @@ class GlCityRenderer : GLSurfaceView.Renderer {
     private var cityYaw = 0f
     private lateinit var demo: DemoCity
     private val roadCells = HashSet<Int>()
-    private val zoneCells = HashMap<Int, Int>() // cell -> 0 res, 1 com, 2 ind
+    private val roadCellTypes = HashMap<Int, Int>() // cell -> ROAD_SPECS index (catalog.js ROAD_TYPES)
+    private val roadCellCost = HashMap<Int, Int>()  // build cost paid per cell, for the 50 % refund
+    private var lastRoadRefund = 0
+    private val zoneCells = HashMap<Int, Int>() // cell -> ZONE_SPECS index (0 res-low … 5 office)
+    /** Simulation speed step: 0 = pause, 1/2/4 — the site's speedMultipliers [0,1,2,4]. */
+    var simSpeed = 1
     // --- zone-driven growth (buildings/index.js: demand-filled lots, construction, level-ups) ---
     private val growthLots = HashMap<Int, Growth.Lot>()   // cell index -> lot
     private val growthBuildings = LinkedHashMap<Int, Growth.Building>()
@@ -2020,17 +2025,19 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         }
         maybeProcessTerrainEdits(now)
         pudTime += dt
-        if (!paused) {
-            hour += dt / 20f // World.js: secondsPerHour = 20 at speed 1
+        val spd = if (paused) 0f else simSpeed.coerceAtLeast(0).toFloat()
+        if (spd > 0f) {
+            val sdt = dt * spd
+            hour += sdt / 20f // World.js: secondsPerHour = 20 at speed 1
             if (hour >= 24f) {
                 hour -= 24f
                 day++
                 listener?.onHourChanged(hour, day)
             }
             // the site drives weather off the game clock (deterministic per seed + time)
-            weather.update(dt.toDouble(), ((day * 24.0 + hour) * 3600.0))
-            updateVehicles(dt)
-            stepSimulation(dt)
+            weather.update(sdt.toDouble(), ((day * 24.0 + hour) * 3600.0))
+            updateVehicles(sdt)
+            stepSimulation(sdt)
         }
         updateCamera(dt)
         if (editsDirty && now - lastSaveHint > 900_000_000L) {
@@ -2817,6 +2824,7 @@ class GlCityRenderer : GLSurfaceView.Renderer {
                     if (n.second.startsWith("Milestone:")) {
                         listener?.onMessage(n.second + " • reward paid")
                     }
+                    uiFeed.add(n)
                 }
                 simMilestones.notifications.clear()
             }
@@ -2836,6 +2844,64 @@ class GlCityRenderer : GLSurfaceView.Renderer {
     fun econDemandResidential(): Double = if (simReady()) simEconomy.e.demand["residential"] ?: 0.0 else 0.0
     fun econDemandCommercial(): Double = if (simReady()) simEconomy.e.demand["commercial"] ?: 0.0 else 0.0
     fun econDemandIndustrial(): Double = if (simReady()) simEconomy.e.demand["industrial"] ?: 0.0 else 0.0
+    fun econDemandOffice(): Double = if (simReady()) simEconomy.e.demand["office"] ?: 0.0 else 0.0
+    fun econJobs(): Int = if (simReady()) simEconomy.e.jobs else 0
+    fun econHouseholds(): Int = if (simReady()) simEconomy.e.households else 0
+    fun econMilestoneNext(): String? = if (simReady()) simEconomy.e.milestone.next else null
+    fun econMilestoneNextPopulation(): Int? = if (simReady()) simEconomy.e.milestone.nextPopulation else null
+    fun econMilestoneProgress(): Double = if (simReady()) simEconomy.e.milestone.progress else 1.0
+    fun cityName(): String = if (simReady()) simEconomy.e.cityName else "New Fable"
+    fun setCityName(v: String) {
+        if (simReady()) simEconomy.e.cityName = v
+        listener?.onCityEdited()
+    }
+
+    /** Milestone/alert feed for the notifications centre — the UI drains it (thread-safe queue:
+     *  the sim tick runs on the GL thread, the HUD drains on the UI thread). */
+    private val uiFeed = java.util.concurrent.ConcurrentLinkedQueue<Pair<String, String>>()
+
+    fun drainUiFeed(): List<Pair<String, String>> {
+        if (uiFeed.isEmpty()) return emptyList()
+        val out = ArrayList<Pair<String, String>>()
+        while (true) { val n = uiFeed.poll() ?: break; out.add(n) }
+        return out
+    }
+
+    /** Active city alerts (power/water/…) — readable labels resolved in the HUD. */
+    fun activeAlerts(): List<String> {
+        if (!simReady()) return emptyList()
+        return synchronized(simEconomy.e.alerts) { ArrayList(simEconomy.e.alerts) }
+    }
+
+    /** The site-style info lines for the selected building (info panel), or null. */
+    fun buildingInfo(): String? {
+        val b = selectedBuilding ?: return null
+        if (b.removed) return null
+        val rows = ArrayList<String>()
+        val g = if (b.growthId >= 0) growthBuildings[b.growthId] else null
+        val title: String
+        if (g != null) {
+            val zs = ZONE_SPECS.firstOrNull { it.id == g.type }
+            title = (zs?.label ?: g.type) + " · Level " + g.level
+            rows.add("Grown from a painted zone lot")
+        } else if (b.kind == 3) {
+            val svc = simServices.list.firstOrNull {
+                kotlin.math.abs(it.x - b.x) <= it.w / 2 + 2 && kotlin.math.abs(it.z - b.z) <= it.d / 2 + 2
+            }
+            title = svc?.name ?: "City service"
+            if (svc != null) {
+                rows.add("Radius: ${svc.radius.toInt()} m")
+                rows.add("Upkeep: ${fmtMoney(svc.upkeep.toDouble())} / week")
+            }
+        } else {
+            title = when (b.kind) {
+                0 -> "Residences"; 1 -> "Commercial block"; 2 -> "Office tower"; else -> "Building"
+            }
+        }
+        rows.add("Height: ${b.h.toInt()} m")
+        if (b.progress < 1f) rows.add("Under construction — ${(b.progress * 100).toInt()} %")
+        return (listOf(title) + rows).joinToString("\n")
+    }
 
     // ---------------------------------------------------------------- static meshes
 
@@ -3128,14 +3194,19 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         return floatArrayOf(-cityHalf + gx * cellSize + cellSize / 2f, -cityHalf + gz * cellSize + cellSize / 2f)
     }
 
-    /** @return 1 = placed, -1 = removed, 0 = blocked (prebuilt road) */
-    fun toggleRoadCell(idx: Int): Int {
+    /** @return 1 = placed, -1 = removed, 0 = blocked (prebuilt road). typeIdx = ROAD_SPECS index. */
+    fun toggleRoadCell(idx: Int, typeIdx: Int = 0): Int {
         if (!simReady()) return 0
         val center = cellCenter(idx)
         if (roadDistance(center[0], center[1]) < 1f) return 0
         val removed = roadCells.remove(idx)
+        roadCellTypes.remove(idx)
+        lastRoadRefund = 0
         if (!removed) {
             roadCells.add(idx)
+            val t = typeIdx.coerceIn(0, ROAD_SPECS.size - 1)
+            roadCellTypes[idx] = t
+            val spec = ROAD_SPECS[t]
             // grade the corridor into the heightmap through the site's own mechanism (the same
             // bed rule the demo streets use), so the asphalt sits on graded ground, not a decal
             val h0 = worldHeight.getHeight((center[0] - cellSize).toDouble(), (center[1] - cellSize).toDouble())
@@ -3144,6 +3215,14 @@ class GlCityRenderer : GLSurfaceView.Renderer {
             worldHeight.flattenRect(
                 (center[0] - cellSize / 2).toDouble(), (center[1] - cellSize / 2).toDouble(),
                 (center[0] + cellSize / 2).toDouble(), (center[1] + cellSize / 2).toDouble(), bed, 6.0)
+            // tools charge per metre of built road; one cell tap = one cellSize length
+            val cost = (spec.cost * cellSize).toInt()
+            simEconomy.e.money -= cost
+            roadCellCost[idx] = cost
+        } else {
+            val refund = (roadCellCost.remove(idx) ?: 0) / 2
+            if (refund > 0) simEconomy.e.money += refund
+            lastRoadRefund = refund
         }
         selectedBuilding = null
         afterTerrainEdit()
@@ -3156,17 +3235,18 @@ class GlCityRenderer : GLSurfaceView.Renderer {
             repackTreeInstances()
         }
         rebuildEditMeshes()
-        // player roads are local streets: 24 m cell x ¤0.30/m/week (economy.js ROAD_COST.local)
-        simEconomy.extraRoadCost = demoRoadCost + roadCells.size * cellSize * 0.30
+        // economy.js ROAD_COST per type, per metre per week
+        simEconomy.extraRoadCost = demoRoadCost + roadCells.sumOf { cellSize * ROAD_SPECS[roadCellTypes[it] ?: 0].upkeep }
         editsDirty = true
         return if (removed) -1 else 1
     }
 
-    fun cycleZoneCell(idx: Int): Int {
+    /** Paint a zone of a catalog kind (0..5); tapping the same kind again clears the lot. */
+    fun paintZoneCell(idx: Int, kind: Int = 0): Int {
         if (!simReady()) return -1
-        val cur = zoneCells[idx] ?: -1
         selectedBuilding = null
-        if (cur >= 2) zoneCells.remove(idx) else zoneCells[idx] = cur + 1
+        val k = kind.coerceIn(0, ZONE_SPECS.size - 1)
+        if (zoneCells[idx] == k) zoneCells.remove(idx) else zoneCells[idx] = k
         syncGrowthLot(idx)
         syncSimBuildings()
         rebuildEditMeshes()
@@ -3174,8 +3254,11 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         return zoneCells[idx] ?: -1
     }
 
+    /** Legacy cycle behaviour (old saves / CI taps): res -> com -> ind -> clear. */
+    fun cycleZoneCell(idx: Int): Int = paintZoneCell(idx, ((zoneCells[idx] ?: -1) + 1).coerceIn(0, 2))
+
     private fun zoneGrowthType(kind: Int): String? = when (kind) {
-        0 -> "res-low"; 1 -> "com-low"; 2 -> "ind"; else -> null
+        0 -> "res-low"; 1 -> "com-low"; 2 -> "ind"; 3 -> "res-high"; 4 -> "com-high"; 5 -> "office"; else -> null
     }
 
     /** A painted cell becomes a growth lot; clearing it demolishes any building on it. */
@@ -3254,14 +3337,16 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         syncSimBuildings()
     }
 
-    /** The site's 8 service types in SERVICE_IDS order; the SERVICE tool cycles through them. */
+    /** The site's 8 service types in SERVICE_IDS order; the SERVICE tool cycles through them when
+     *  the UI does not pin a type (legacy path). */
     private val serviceOrder = listOf("power", "water", "sewage", "garbage", "police", "fire", "health", "education")
     private var serviceTypeIdx = 0
 
-    fun placeService(idx: Int): String {
+    fun placeService(idx: Int, type: String? = null): String {
         if (!simReady()) return "Still loading — try again in a second"
-        val type = serviceOrder[serviceTypeIdx % serviceOrder.size]
-        val def = SERVICE_TYPES[type]!!
+        val explicit = type != null && SERVICE_TYPES.containsKey(type)
+        val type2 = if (explicit) type!! else serviceOrder[serviceTypeIdx % serviceOrder.size]
+        val def = SERVICE_TYPES[type2]!!
         val center = cellCenter(idx)
         if (roadDistance(center[0], center[1]) < 1f) return "Too close to a road"
         for (b in buildings) if (!b.removed && b.cell == idx) return "Blocked — pick an empty lot"
@@ -3280,12 +3365,15 @@ class GlCityRenderer : GLSurfaceView.Renderer {
             repackTreeInstances()
         }
         val label = def.name
-        val next = SERVICE_TYPES[serviceOrder[(serviceTypeIdx + 1) % serviceOrder.size]]!!.name
-        serviceTypeIdx = (serviceTypeIdx + 1) % serviceOrder.size
+        var next: String? = null
+        if (!explicit) {
+            next = SERVICE_TYPES[serviceOrder[(serviceTypeIdx + 1) % serviceOrder.size]]!!.name
+            serviceTypeIdx = (serviceTypeIdx + 1) % serviceOrder.size
+        }
         selectedBuilding = null
         rebuildEditMeshes()
         editsDirty = true
-        return "$label built • ¤${def.cost} — next tap: $next"
+        return if (next != null) "$label built • ¤${def.cost} — next tap: $next" else "$label built • ¤${def.cost}"
     }
 
     /** Remove a service building on `idx` if one is there (bulldoze). */
@@ -3299,19 +3387,28 @@ class GlCityRenderer : GLSurfaceView.Renderer {
     }
 
     private fun rebuildEditMeshes() {
-        // roads: cell quad + centre line; zones: tinted translucent quad
-        val roads = FloatArray(roadCells.size * 2 * 6 * 8)
+        // roads: per-type width/colour quad + lane marking(s); zones: catalog-coloured translucent quad
+        val roads = FloatArray(roadCells.size * 3 * 6 * 8)
         var o = 0
         for (idx in roadCells) {
             val c = cellCenter(idx)
-            val x0 = c[0] - cellSize / 2 + 1.5f
-            val x1 = c[0] + cellSize / 2 - 1.5f
-            val z0 = c[1] - cellSize / 2 + 1.5f
-            val z1 = c[1] + cellSize / 2 - 1.5f
+            val spec = ROAD_SPECS[roadCellTypes[idx] ?: 0]
+            val half = (spec.widthM / 2f).coerceAtMost(cellSize / 2f - 1.0f)
+            val x0 = c[0] - half
+            val x1 = c[0] + half
+            val z0 = c[1] - half
+            val z1 = c[1] + half
             val y = terrainHeight(c[0], c[1]) + 0.05f
-            val asphalt = floatArrayOf(0.115f, 0.12f, 0.135f)
-            o = putQuad(roads, o, x0, z0, x1, z1, y, asphalt)
-            o = putQuad(roads, o, c[0] - 0.3f, z0, c[0] + 0.3f, z1, y + 0.01f, floatArrayOf(0.72f, 0.70f, 0.52f))
+            o = putQuad(roads, o, x0, z0, x1, z1, y, spec.asphalt)
+            if (spec.id != "path") {
+                if (spec.id == "highway") {
+                    // dual carriageway: two centre dashes
+                    o = putQuad(roads, o, c[0] - 0.3f, z0, c[0] + 0.3f, c[1] - 0.6f, y + 0.01f, floatArrayOf(0.72f, 0.70f, 0.52f))
+                    o = putQuad(roads, o, c[0] - 0.3f, c[1] + 0.6f, c[0] + 0.3f, z1, y + 0.01f, floatArrayOf(0.72f, 0.70f, 0.52f))
+                } else {
+                    o = putQuad(roads, o, c[0] - 0.3f, z0, c[0] + 0.3f, z1, y + 0.01f, floatArrayOf(0.72f, 0.70f, 0.52f))
+                }
+            }
         }
         editRoadCount = o / 8
         if (editRoadVbo != 0) GLES30.glDeleteBuffers(1, intArrayOf(editRoadVbo), 0)
@@ -3321,11 +3418,7 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         o = 0
         for ((idx, kind) in zoneCells) {
             val c = cellCenter(idx)
-            val col = when (kind) {
-                0 -> floatArrayOf(0.20f, 0.65f, 0.30f)
-                1 -> floatArrayOf(0.20f, 0.45f, 0.80f)
-                else -> floatArrayOf(0.85f, 0.65f, 0.15f)
-            }
+            val col = ZONE_SPECS[kind.coerceIn(0, ZONE_SPECS.size - 1)].color
             o = putQuad(zones, o, c[0] - cellSize / 2 + 2f, c[1] - cellSize / 2 + 2f,
                 c[0] + cellSize / 2 - 2f, c[1] + cellSize / 2 - 2f, terrainHeight(c[0], c[1]) + 0.04f, col)
         }
@@ -3440,30 +3533,38 @@ class GlCityRenderer : GLSurfaceView.Renderer {
     }
 
     /** Applies the active tool at the tapped screen position; returns a status message. */
-    fun tapTool(sx: Float, sy: Float, tool: String): String {
+    fun tapTool(sx: Float, sy: Float, tool: String): String = tapTool(sx, sy, tool, null)
+
+    /** opt carries the catalog item id: ROAD -> ROAD_SPECS id, ZONE -> ZONE_SPECS id,
+     *  SERVICE -> SERVICE_TYPES id. */
+    fun tapTool(sx: Float, sy: Float, tool: String, opt: String?): String {
         if (!simReady()) return "Still loading — try again in a second"
         val ray = rayFromScreen(sx, sy)
         return when (tool) {
             "ROAD" -> {
                 val p = groundPoint(ray) ?: return "Aim inside the map"
-                when (toggleRoadCell(cellIndexAt(p[0], p[1]))) {
-                    1 -> "Road placed"
-                    -1 -> "Road removed • +$300 refund"
-                    else -> "Blocked by a road"
+                val t = opt?.let { id -> ROAD_SPECS.indexOfFirst { it.id == id } } ?: -1
+                val ti = if (t >= 0) t else 0
+                when (val r = toggleRoadCell(cellIndexAt(p[0], p[1]), ti)) {
+                    1 -> "${ROAD_SPECS[ti].label} placed • ${fmtMoney((ROAD_SPECS[ti].cost * cellSize).toDouble())}"
+                    -1 -> if (lastRoadRefund > 0) "Road removed • +${fmtMoney(lastRoadRefund.toDouble())} refund" else "Road removed"
+                    else -> if (r == 0) "Blocked by a road" else "Aim inside the map"
                 }
             }
             "ZONE" -> {
                 val p = groundPoint(ray) ?: return "Aim inside the map"
-                when (cycleZoneCell(cellIndexAt(p[0], p[1]))) {
-                    0 -> "Residential zone painted"
-                    1 -> "Commercial zone painted"
-                    2 -> "Industrial zone painted"
-                    else -> "Zone cleared"
-                }
+                val k = opt?.let { id -> ZONE_SPECS.indexOfFirst { it.id == id } } ?: -1
+                val r = paintZoneCell(cellIndexAt(p[0], p[1]), if (k >= 0) k else 0)
+                if (r < 0) "Zone cleared" else "${ZONE_SPECS[r].label} zone painted"
             }
             "SERVICE" -> {
                 val p = groundPoint(ray) ?: return "Aim inside the map"
-                placeService(cellIndexAt(p[0], p[1]))
+                placeService(cellIndexAt(p[0], p[1]), opt)
+            }
+            "INFO" -> {
+                // data overlays (traffic/landvalue/pollution/…): the tray is live; the terrain
+                // colour overlay lands with the info-views slice
+                "Info overlay: ${INFO_VIEW_LABELS[opt] ?: opt ?: "info view"} — picking still selects"
             }
             "BULLDOZE" -> {
                 val b = buildingAt(ray)
@@ -3581,6 +3682,11 @@ class GlCityRenderer : GLSurfaceView.Renderer {
     /** traffic.stats().congestion for the HUD (0..1, the site's global congestion figure). */
     fun trafficCongestion(): Double = trafficSim?.congestion ?: 0.0
 
+    /** UI closes the building info panel. */
+    fun clearSelection() {
+        selectedBuilding = null
+    }
+
     // ---------------------------------------------------------------- persistence
 
     fun editsState(): String {
@@ -3604,11 +3710,20 @@ class GlCityRenderer : GLSurfaceView.Renderer {
 
     private fun applyEdits(state: String) {
         roadCells.clear()
+        roadCellTypes.clear()
+        roadCellCost.clear()
         zoneCells.clear()
         for (token in state.split(';')) {
             if (token.isEmpty()) continue
             if (token[0] == 'r') {
-                token.substring(1).toIntOrNull()?.let { roadCells.add(it) }
+                val parts = token.substring(1).split(':')
+                val idx = parts[0].toIntOrNull()
+                if (idx != null) {
+                    roadCells.add(idx)
+                    val t = if (parts.size == 2) (parts[1].toIntOrNull() ?: 0) else 0
+                    roadCellTypes[idx] = t.coerceIn(0, ROAD_SPECS.size - 1)
+                    roadCellCost[idx] = (ROAD_SPECS[roadCellTypes[idx]!!].cost * cellSize).toInt()
+                }
             } else if (token[0] == 'z') {
                 val parts = token.substring(1).split(':')
                 if (parts.size == 2) {
@@ -3621,7 +3736,7 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         rebuildEditMeshes()
         if (glReady) {
             syncSimBuildings()
-            simEconomy.extraRoadCost = demoRoadCost + roadCells.size * cellSize * 0.30
+            simEconomy.extraRoadCost = demoRoadCost + roadCells.sumOf { cellSize * ROAD_SPECS[roadCellTypes[it] ?: 0].upkeep }
         }
     }
 

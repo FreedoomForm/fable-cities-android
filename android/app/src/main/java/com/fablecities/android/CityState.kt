@@ -4,8 +4,10 @@ import android.content.Context
 
 /**
  * Persistent state for the native city; kept separate from rendering for later system ports.
- * Edits are stored as a compact token string ("r<idx>;z<idx>:<kind>;"), camera as seven floats
+ * Edits are stored as a compact token string ("r<idx>:<t>;z<idx>:<kind>;"), camera as seven floats
  * (target xyz, yaw, pitch, distance, hour) packed into a comma-separated string.
+ * selectedTool is a tool TOKEN: "SELECT", "BULLDOZE", "ROAD:<id>", "ZONE:<id>", "SERVICE:<id>",
+ * "INFO:<id>" (pre-catalog saves used the bare names ROAD/ZONE/SERVICE — mapped below).
  */
 data class CityState(
     var money: Int = 350_000,   // the site's World.js starting money (the sim model owns it now)
@@ -13,6 +15,8 @@ data class CityState(
     var day: Int = 1,
     var hour: Float = 14f,
     var selectedTool: String = "SELECT",
+    var cityName: String = "New Fable",
+    var speed: Int = 1,
     var edits: String = "",
     var camera: FloatArray? = null
 ) {
@@ -23,6 +27,8 @@ data class CityState(
             .putInt("day", day)
             .putFloat("hour", hour)
             .putString("selectedTool", selectedTool)
+            .putString("cityName", cityName)
+            .putInt("speed", speed)
             .putString("edits", edits)
         edit.putString("camera", camera?.joinToString(",") { it.toString() } ?: "")
         edit.apply()
@@ -33,6 +39,15 @@ data class CityState(
 
     companion object {
         private const val FILE = "fable_cities_city"
+
+        /** Legacy bare tool names (pre-catalog saves) map onto the catalog tokens. */
+        fun normalizeTool(raw: String): String = when (raw) {
+            "ROAD" -> "ROAD:local"
+            "ZONE" -> "ZONE:res-low"
+            "SERVICE" -> "SERVICE:power"
+            "BULLDOZE" -> "BULLDOZE"
+            else -> if (raw in listOf("SELECT") || ':' in raw) raw else "SELECT"
+        }
 
         fun load(context: Context): CityState {
             val prefs = context.getSharedPreferences(FILE, Context.MODE_PRIVATE)
@@ -48,7 +63,9 @@ data class CityState(
                 population = prefs.getInt("population", 0),
                 day = prefs.getInt("day", 1),
                 hour = prefs.getFloat("hour", 14f),
-                selectedTool = prefs.getString("selectedTool", "SELECT") ?: "SELECT",
+                selectedTool = normalizeTool(prefs.getString("selectedTool", "SELECT") ?: "SELECT"),
+                cityName = prefs.getString("cityName", "New Fable") ?: "New Fable",
+                speed = prefs.getInt("speed", 1).coerceIn(0, 4),
                 edits = prefs.getString("edits", "") ?: "",
                 camera = cam
             )
