@@ -110,15 +110,18 @@ class MenuOverlayView(context: Context) : View(context) {
         if (previewBmp != null && previewSeed == seed) return
         if (previewRunning) return
         if (previewAt != 0L && now - previewAt < 400) return // debounce like the web (140/460 ms)
+        val live = game?.renderer
+        // Boot discipline (the emulator gate caught this): NEVER allocate anything heavy while
+        // the GL thread is building the world — the 192 MB app heap OOMs. Wait until the world
+        // exists; then the matching seed samples the LIVE heightmap (no allocation) and a
+        // different seed gets a temp heightmap on this user-paced thread.
+        if (live == null || !live.worldReady()) return
         previewAt = now
         previewSeed = seed
         previewRunning = true
         Thread {
             try {
-                // the world the renderer already built serves as the height source when the
-                // seed matches — no second Heightmap allocation racing the GL boot
-                val live = game?.renderer
-                val useLive = live != null && live.worldSeedMatches(seed)
+                val useLive = live.worldSeedMatches(seed)
                 val hm = if (useLive) null else Heightmap(size = 2048, spacing = 4, seed = seed).generate()
                 val g = previewGrid
                 val viewHalf = 1180.0
@@ -127,7 +130,7 @@ class MenuOverlayView(context: Context) : View(context) {
                 for (j in 0 until g) for (i in 0 until g) {
                     val x = -viewHalf + i * step
                     val z = -viewHalf + j * step
-                    H[j * g + i] = (if (useLive) live!!.heightAt(x, z).toDouble() else hm!!.getHeight(x, z)).toFloat()
+                    H[j * g + i] = (if (useLive) live.heightAt(x, z).toDouble() else hm!!.getHeight(x, z)).toFloat()
                 }
                 val px = IntArray(g * g)
                 val c = FloatArray(3)

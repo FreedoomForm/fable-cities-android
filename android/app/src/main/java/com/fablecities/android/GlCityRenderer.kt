@@ -3401,6 +3401,7 @@ class GlCityRenderer : GLSurfaceView.Renderer {
     /** The menu's seed preview samples the LIVE world heightmap when the seed matches
      *  (no second Heightmap allocation at boot — the emulator heap is at the edge). */
     fun worldSeedMatches(seed: Int): Boolean = glReady && seed == worldSeed
+    fun worldReady(): Boolean = glReady
     fun heightAt(x: Double, z: Double): Float = worldHeight.getHeight(x, z).toFloat()
 
     /** Audio state feeds (WeatherState precipitation / wind strength). */
