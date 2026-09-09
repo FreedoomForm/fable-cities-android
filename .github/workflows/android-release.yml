@@ -220,9 +220,13 @@ jobs:
   web-check:
     name: Browser verification loop (check + screenshots)
     needs: changes
-    # the APK bundles the web dist, but when the web sources are untouched the dist is
-    # byte-identical to the last browser-verified build — skip the soak to save the runner
+    # the APK no longer bundles the web dist (single native track), but the website itself
+    # still lives in this repo as the porting source of truth — this loop only audits it.
+    # continue-on-error: the site check is INFORMATIONAL and must never paint the run red
+    # (a SwiftShader stall in headless Chromium burned its 600 s ready-timeout and blocked
+    # the perceived release even though the APK gate + publish had already succeeded).
     if: needs.changes.outputs.web == 'true'
+    continue-on-error: true
     runs-on: ubuntu-latest
     steps:
       - name: Check out commit
@@ -250,9 +254,11 @@ jobs:
 
       - name: Smoke check (modules, console errors, perf)
         shell: bash
+        # fail fast: a healthy headless run is ready well under 3 min; 600 s only ever
+        # burned the runner while users read the red X as "the APK build failed".
         run: |
           set -o pipefail
-          node tools/check.mjs --url "http://127.0.0.1:5180/?quality=low&map=1024" --frames 12 --ready-timeout 600000 --soft-crash 2>&1 | tee /tmp/check.json
+          node tools/check.mjs --url "http://127.0.0.1:5180/?quality=low&map=1024" --frames 12 --ready-timeout 180000 --soft-crash 2>&1 | tee /tmp/check.json
           grep -q environmentalCrash /tmp/check.json && echo "::warning::Headless GPU crashed (SwiftShader limitation) — module-level gate unavailable on this runner; see docs/ANDROID_PORT.md" || true
 
       - name: Write STATUS.json quality snapshot
