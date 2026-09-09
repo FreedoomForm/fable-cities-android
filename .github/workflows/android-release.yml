@@ -85,9 +85,11 @@ jobs:
     name: Boot APK on emulator (crash + render + screenshot gate)
     runs-on: ubuntu-latest
     needs: build-test
-    # a healthy gate ends in ~20 min (boot ≤ 10, frame poll ≤ 8, stress+release ≤ 2) — two
-    # consecutive runner-side boot hangs burned the full 75 min; fail FAST on flakes instead
-    timeout-minutes: 30
+    # a healthy gate ends in ~20-25 min (boot ≤ 10, world build ~5.5 on swiftshader, frame poll
+    # ≤ 8, stress+release ≤ 2) — 30 min left ZERO margin: run 0f41994 had GATE 1 passed, then
+    # 'adb logcat -d' hung 20 min (classic adb pipe stall) until the 30-min job kill. Every adb
+    # call below now carries its own timeout, so the job ceiling only bounds real slowness.
+    timeout-minutes: 45
 
     steps:
       - name: Check out commit
@@ -139,14 +141,14 @@ jobs:
             # unpresented surface (the "white screen" era that all gates let through).
             # The flag is written to a FILE: the emulator runner executes this script line-by-line
             # (one sh -c per line), so a shell variable set here would be lost before the check line.
-            rm -f frame_ok.txt; for i in $(seq 1 90); do if adb logcat -d | grep -q "frame 1 presented"; then echo 1 > frame_ok.txt; break; fi; sleep 5; done
-            adb logcat -d > full_bootcat.txt || true
+            rm -f frame_ok.txt; for i in $(seq 1 90); do if timeout 30 adb logcat -d | grep -q "frame 1 presented"; then echo 1 > frame_ok.txt; break; fi; sleep 5; done
+            timeout 60 adb logcat -d > full_bootcat.txt || timeout 60 adb logcat -d > full_bootcat.txt || true
             grep -E "GlCityRenderer: init" full_bootcat.txt | head -8 || true
             grep -q 1 frame_ok.txt || { echo "::error::Native renderer never presented a frame in 450 s"; grep -E "GlCityRenderer|FATAL|AndroidRuntime|Fatal signal" full_bootcat.txt | head -50; exit 1; }
             sleep 12
             # dump the FULL logcat BEFORE the pid check - the last-500 window lost the crash lines
-            adb logcat -d > full_bootcat.txt || true
-            adb shell pidof com.fablecities.android > pid.txt || true
+            timeout 60 adb logcat -d > full_bootcat.txt || timeout 60 adb logcat -d > full_bootcat.txt || true
+            timeout 30 adb shell pidof com.fablecities.android > pid.txt || true
             grep -q "[0-9]" pid.txt || { echo "::error::Native APK process died during launch (the gate that used to be missing)"; grep -E "Fatal signal|FATAL EXCEPTION|SIGSEGV|SIGABRT|AndroidRuntime|fablecities|GlCityRenderer" full_bootcat.txt | head -50; exit 1; }
             grep -E "FATAL EXCEPTION|AndroidRuntime|Fatal signal" full_bootcat.txt && { echo "::error::Fatal in logcat during boot"; grep -E -A 25 "FATAL EXCEPTION|Fatal signal" full_bootcat.txt | head -80; exit 1; } || true
             # RENDER GATE: gfxinfo counts only HWUI frames (always 0 for a raw GLSurfaceView app),
@@ -175,8 +177,8 @@ jobs:
             sleep 4
             adb shell am start -W -n com.fablecities.android/.MainActivity || true
             sleep 8
-            adb logcat -d > stress_logcat.txt || true
-            adb shell pidof com.fablecities.android > pid_stress.txt || true
+            timeout 60 adb logcat -d > stress_logcat.txt || timeout 60 adb logcat -d > stress_logcat.txt || true
+            timeout 30 adb shell pidof com.fablecities.android > pid_stress.txt || true
             # a guest system_server death (DeadSystemException on gms/phone/etc.) takes every app
             # down with it — that is emulator infrastructure, not an app crash. Fail only when OUR
             # process is gone WITHOUT a system-server death, or when a fatal names OUR process.
