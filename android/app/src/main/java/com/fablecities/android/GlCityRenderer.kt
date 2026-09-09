@@ -1982,7 +1982,7 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         trafficTintVerts?.let { verts ->
             if (verts.isEmpty()) return
             GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, trafficVbo)
-            GLES30.glBufferSubData(GLES30.GL_ARRAY_BUFFER, 0, verts.size * 4, floatBytes(verts))
+            GLES30.glBufferData(GLES30.GL_ARRAY_BUFFER, verts.size * 4, floatBytes(verts), GLES30.GL_DYNAMIC_DRAW)
             GLES30.glEnable(GLES30.GL_BLEND)
             GLES30.glBlendFunc(GLES30.GL_SRC_ALPHA, GLES30.GL_ONE_MINUS_SRC_ALPHA)
             GLES30.glDepthMask(false)
@@ -2005,7 +2005,11 @@ class GlCityRenderer : GLSurfaceView.Renderer {
     }
 
     private fun buildTrafficTintVerts(sim: Traffic.TrafficSim) {
-        val out = ArrayList<Float>(4096)
+        var out = FloatArray(8192)
+        var n = 0
+        fun ensure(extra: Int) {
+            if (n + extra > out.size) out = out.copyOf(maxOf(out.size * 2, n + extra))
+        }
         val col = FloatArray(3)
         val lanes = sim.net.laneElems
         for (ei in lanes) {
@@ -2025,14 +2029,15 @@ class GlCityRenderer : GLSurfaceView.Renderer {
                 val y0 = terrainHeight(x0, z0) + 0.30f
                 val y1 = terrainHeight(x1, z1) + 0.30f
                 fun v(px: Float, py: Float, pz: Float) {
-                    out.add(px); out.add(py); out.add(pz)
-                    out.add(col[0]); out.add(col[1]); out.add(col[2]); out.add(1f)
+                    ensure(7)
+                    out[n++] = px; out[n++] = py; out[n++] = pz
+                    out[n++] = col[0]; out[n++] = col[1]; out[n++] = col[2]; out[n++] = 1f
                 }
                 v(x0 - nx, y0, z0 - nz); v(x1 - nx, y1, z1 - nz); v(x1 + nx, y1, z1 + nz)
                 v(x0 - nx, y0, z0 - nz); v(x1 + nx, y1, z1 + nz); v(x0 + nx, y0, z0 + nz)
             }
         }
-        trafficTintVerts = out.toFloatArray()
+        trafficTintVerts = out.copyOf(n)
     }
 
     /** The site's baked cloud textures (worldgen Clouds.kt = the web's Clouds.js CPU bakes).
@@ -3393,6 +3398,11 @@ class GlCityRenderer : GLSurfaceView.Renderer {
     fun econLandValue(): Double = if (simReady()) simEconomy.e.landValue else 0.3
     fun econPollution(): Double = if (simReady()) simEconomy.e.pollution else 0.0
     fun econCoverage(id: String): Double = if (simReady()) simEconomy.e.coverage[id] ?: 0.0 else 0.0
+    /** The menu's seed preview samples the LIVE world heightmap when the seed matches
+     *  (no second Heightmap allocation at boot — the emulator heap is at the edge). */
+    fun worldSeedMatches(seed: Int): Boolean = glReady && seed == worldSeed
+    fun heightAt(x: Double, z: Double): Float = worldHeight.getHeight(x, z).toFloat()
+
     /** Audio state feeds (WeatherState precipitation / wind strength). */
     fun weatherPrecip(): Double = weather.precipitation
     fun weatherWind(): Double = weather.windStrength

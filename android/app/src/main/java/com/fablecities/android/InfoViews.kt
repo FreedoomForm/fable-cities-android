@@ -22,8 +22,7 @@ object InfoViews {
 
     // ------------------------------------------------------------------ shader sources
 
-    val VS_INFOOVERLAY = """
-        #version 300 es
+    val VS_INFOOVERLAY = """#version 300 es
         precision highp float;
         layout(location=0) in vec2 aXZ;   // world-plane vertex (metres)
         layout(location=1) in float aY;   // draped terrain height + 0.45
@@ -38,8 +37,7 @@ object InfoViews {
         }
     """
 
-    val FS_INFOOVERLAY = """
-        #version 300 es
+    val FS_INFOOVERLAY = """#version 300 es
         precision highp float;
         uniform sampler2D tex;            // R coverage (strain-scaled), G boundary ramp, B developed mask
         uniform vec3 colCovered;
@@ -104,8 +102,7 @@ object InfoViews {
     // ------------------------------------------------------------------ traffic tint
 
     /** Traffic tint shader: per-vertex colour quad strips along the lane polylines. */
-    val VS_TRAFFIC_TINT = """
-        #version 300 es
+    val VS_TRAFFIC_TINT = """#version 300 es
         precision highp float;
         layout(location=0) in vec3 aPos;
         layout(location=1) in vec4 aCol;
@@ -119,8 +116,7 @@ object InfoViews {
         }
     """
 
-    val FS_TRAFFIC_TINT = """
-        #version 300 es
+    val FS_TRAFFIC_TINT = """#version 300 es
         precision highp float;
         uniform float uAlpha;
         uniform vec3 uFogColor;

@@ -103,21 +103,31 @@ class MenuOverlayView(context: Context) : View(context) {
     // ---------------------------------------------------------------- seed preview (Minimap.js)
 
     /** paintRelief: hillshaded survey chart from the REAL generator at 160² samples. */
+    private var previewRunning = false
+
     private fun ensurePreview() {
         val now = System.currentTimeMillis()
         if (previewBmp != null && previewSeed == seed) return
+        if (previewRunning) return
         if (previewAt != 0L && now - previewAt < 400) return // debounce like the web (140/460 ms)
         previewAt = now
         previewSeed = seed
+        previewRunning = true
         Thread {
             try {
-                val hm = Heightmap(size = 2048, spacing = 4, seed = seed).generate()
+                // the world the renderer already built serves as the height source when the
+                // seed matches — no second Heightmap allocation racing the GL boot
+                val live = game?.renderer
+                val useLive = live != null && live.worldSeedMatches(seed)
+                val hm = if (useLive) null else Heightmap(size = 2048, spacing = 4, seed = seed).generate()
                 val g = previewGrid
                 val viewHalf = 1180.0
                 val step = viewHalf * 2 / (g - 1)
                 val H = FloatArray(g * g)
                 for (j in 0 until g) for (i in 0 until g) {
-                    H[j * g + i] = hm.getHeight(-viewHalf + i * step, -viewHalf + j * step).toFloat()
+                    val x = -viewHalf + i * step
+                    val z = -viewHalf + j * step
+                    H[j * g + i] = (if (useLive) live!!.heightAt(x, z).toDouble() else hm!!.getHeight(x, z)).toFloat()
                 }
                 val px = IntArray(g * g)
                 val c = FloatArray(3)
@@ -147,6 +157,8 @@ class MenuOverlayView(context: Context) : View(context) {
                 postInvalidate()
             } catch (t: Throwable) {
                 previewAt = 0L
+            } finally {
+                previewRunning = false
             }
         }.start()
     }
