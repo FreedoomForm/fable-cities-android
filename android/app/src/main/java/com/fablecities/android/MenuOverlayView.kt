@@ -294,7 +294,9 @@ class MenuOverlayView(context: Context) : View(context) {
         canvas.drawRoundRect(rDemo, 12f, 12f, paint)
         text(canvas, "DEMO CITY", rDemo.centerX(), rDemo.centerY() + 7f, 17f, Color.WHITE, true, Paint.Align.CENTER)
         if (phase == 1 || !ready) {
-            val dot = "...".repeat(1 + ((System.currentTimeMillis() / 500).toInt() % 3))
+            // Long/500 overflows Int (3.5e9 > Int.MAX) — toInt() goes NEGATIVE and repeat(-1)
+            // crashes the first onDraw (the emulator gate caught this). Modulo the Long first.
+            val dot = "...".repeat(1 + ((System.currentTimeMillis() / 500L % 3L).toInt()))
             val err = game?.renderer?.initError
             if (err != null) {
                 text(canvas, "GPU init failed: $err", rCard.centerX(), rCard.bottom - 40f, 13f, Color.rgb(255, 128, 128), true, Paint.Align.CENTER)
