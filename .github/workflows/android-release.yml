@@ -128,13 +128,17 @@ jobs:
             # no multi-line if/for AND NO SHELL VARIABLES SURVIVE BETWEEN LINES (FRAME_OK/SD
             # regressions) - cross-line state MUST go through files in the working directory.
             ls -la artifact || true
-            adb install -r artifact/app-debug.apk
+            timeout 120 adb install -r artifact/app-debug.apk || { adb kill-server >/dev/null 2>&1; sleep 3; timeout 120 adb install -r artifact/app-debug.apk; }
             # keep the immersive-mode confirmation ("Viewing full screen") out of the screenshots
-            adb shell settings put global immersive_mode_confirmations dismissed || true
-            adb shell settings put global policy_control immersive.full=* || true
+            # EVERY adb call is wrapped: the runner's adb pipe stalls at random points (twice seen:
+            # 'adb logcat -d' 20 min, 'adb shell settings put' 35 min) — both AFTER all critical
+            # gates had passed, both burning the job ceiling. timeout + one kill-server retry
+            # bounds the damage to ~2 min per call instead of 35.
+            timeout 45 adb shell settings put global immersive_mode_confirmations dismissed || { adb kill-server >/dev/null 2>&1; sleep 3; timeout 45 adb shell settings put global immersive_mode_confirmations dismissed; } || true
+            timeout 45 adb shell settings put global policy_control immersive.full=* || { adb kill-server >/dev/null 2>&1; sleep 3; timeout 45 adb shell settings put global policy_control immersive.full=*; } || true
             # ---- GATE 1: native GLES renderer activity (the whole app — no WebView track) ----
-            adb logcat -c
-            adb shell am start -W -n com.fablecities.android/.MainActivity
+            timeout 30 adb logcat -c || { adb kill-server >/dev/null 2>&1; sleep 3; timeout 30 adb logcat -c; } || true
+            timeout 60 adb shell am start -W -n com.fablecities.android/.MainActivity || { adb kill-server >/dev/null 2>&1; sleep 3; timeout 60 adb shell am start -W -n com.fablecities.android/.MainActivity; }
             # the renderer must actually PRESENT its first frame before the gate can judge it:
             # poll for the frame-1 marker (heavy world-gen + shader compile take minutes on
             # swiftshader) instead of a fixed sleep — a fixed 20-60 s window screenshots the
@@ -156,7 +160,7 @@ jobs:
             # GL runtime error means the frame can not be trusted. The screenshot artifact carries
             # the visual proof alongside the release.
             grep -E "GlCityRenderer: (shader|link|GL error)" full_bootcat.txt && { echo "::error::GL renderer reported compile/link/runtime errors"; grep -E "GlCityRenderer: " full_bootcat.txt | head -30; exit 1; } || true
-            adb shell input tap 1486 553 || true
+            timeout 45 adb shell input tap 1486 553 || { adb kill-server >/dev/null 2>&1; sleep 3; timeout 45 adb shell input tap 1486 553; } || true
             sleep 2
             timeout 90 adb exec-out screencap -p > emulator_screen.png || true
             # BLANK-FRAME GATE: a uniform screenshot means the scene never rendered (the white
@@ -168,14 +172,14 @@ jobs:
             python3 -c "import sys; sys.exit(0 if float(open('sd.txt').read().strip() or '1') > 0.02 else 1)" || { echo "::error::Native screenshot is blank/uniform — the scene did not render"; exit 1; }
             cp full_bootcat.txt full_logcat.txt
             # ---- GATE 2: rotation + background/resume stress (lifecycle gates from item 1) ----
-            adb shell settings put system accelerometer_rotation 0 || true
-            adb shell settings put system user_rotation 1 || true
+            timeout 45 adb shell settings put system accelerometer_rotation 0 || { adb kill-server >/dev/null 2>&1; sleep 3; timeout 45 adb shell settings put system accelerometer_rotation 0; } || true
+            timeout 45 adb shell settings put system user_rotation 1 || { adb kill-server >/dev/null 2>&1; sleep 3; timeout 45 adb shell settings put system user_rotation 1; } || true
             sleep 4
-            adb shell settings put system user_rotation 0 || true
+            timeout 45 adb shell settings put system user_rotation 0 || { adb kill-server >/dev/null 2>&1; sleep 3; timeout 45 adb shell settings put system user_rotation 0; } || true
             sleep 4
-            adb shell input keyevent KEYCODE_HOME || true
+            timeout 45 adb shell input keyevent KEYCODE_HOME || { adb kill-server >/dev/null 2>&1; sleep 3; timeout 45 adb shell input keyevent KEYCODE_HOME; } || true
             sleep 4
-            adb shell am start -W -n com.fablecities.android/.MainActivity || true
+            timeout 60 adb shell am start -W -n com.fablecities.android/.MainActivity || { adb kill-server >/dev/null 2>&1; sleep 3; timeout 60 adb shell am start -W -n com.fablecities.android/.MainActivity; } || true
             sleep 8
             timeout 60 adb logcat -d > stress_logcat.txt || timeout 60 adb logcat -d > stress_logcat.txt || true
             timeout 30 adb shell pidof com.fablecities.android > pid_stress.txt || true
