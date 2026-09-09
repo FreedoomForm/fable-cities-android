@@ -769,7 +769,7 @@ object Traffic {
         var nextElem: Int? = null
     }
 
-    class TrafficSim(private val net: LaneNetwork, seed: Int, salt: Int) {
+    class TrafficSim(val net: LaneNetwork, seed: Int, salt: Int) {
         private val rng = Rng(seed).fork(salt)
         val vehicles = ArrayList<Vehicle>()
         val peds = ArrayList<Ped>()

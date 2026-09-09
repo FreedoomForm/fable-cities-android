@@ -43,6 +43,22 @@ class FableCitiesView(context: Context) : GLSurfaceView(context) {
         setRenderer(renderer)
         renderMode = RENDERMODE_CONTINUOUSLY
         preserveEGLContextOnPause = true
+        // the menu's world choice (seed + mode) BEFORE the surface builds it (menu/index.js:
+        // the start screen runs before the module loop so the seed reaches the generator)
+        renderer.worldSeed = savedState.seed
+        renderer.startMode = savedState.mode
+        // graphics preferences BEFORE the surface exists, so the scene RTs are allocated at the
+        // right render scale (the settings.js quality default is 'high')
+        context.getSharedPreferences("fable_cities_city", Context.MODE_PRIVATE).let { p ->
+            p.getString("qualityName", null)?.let { renderer.setQuality(it) }
+            renderer.qualityAuto = p.getBoolean("qualityAuto", true)
+            for (k in listOf("gtao", "bloom", "smaa", "post")) {
+                when (p.getString("ov_$k", null)) {
+                    "on" -> renderer.setPostToggle(k, true)
+                    "off" -> renderer.setPostToggle(k, false)
+                }
+            }
+        }
         renderer.listener = object : GlCityRenderer.Listener {
             override fun onMessage(text: String) {
                 hud?.showMessage(text)
@@ -77,6 +93,11 @@ class FableCitiesView(context: Context) : GLSurfaceView(context) {
         }, 900)
     }
 
+    /** menu/index.js → main.js: the start screen's New / Demo choice, run on the GL thread. */
+    fun regenerate(seed: Int, mode: Int, cityName: String?) {
+        queueEvent { renderer.regenerateNow(seed, mode, cityName) }
+    }
+
     fun persistNow() {
         savedState.money = renderer.econMoney()
         savedState.population = renderer.econPopulation()
@@ -89,6 +110,8 @@ class FableCitiesView(context: Context) : GLSurfaceView(context) {
         savedState.camera = renderer.cameraState()
         savedState.hour = renderer.hour
         savedState.day = renderer.day
+        savedState.seed = renderer.worldSeed
+        savedState.mode = renderer.startMode
         savedState.save(context)
     }
 

@@ -65,6 +65,7 @@ class HudOverlayView(context: Context) : View(context) {
             if (running) {
                 if (messageTime > 0f) messageTime = (messageTime - dt).coerceAtLeast(0f)
                 pollFeed(now)
+                gameView?.let { onbTick(it, dt) }
                 infoLines = if (toolToken == "SELECT" && !hudHidden) gameView?.renderer?.buildingInfo()?.split('\n') else null
                 invalidate()
                 postOnAnimation(this)
@@ -165,7 +166,7 @@ class HudOverlayView(context: Context) : View(context) {
     private val rHints = RectF(1580f, 996f, 1892f, 1046f)
     private val rMessage = RectF(28f, 902f, 330f, 1010f)
     private val rSheetNotif = RectF(1280f, 120f, 1892f, 820f)
-    private val rSheetSettings = RectF(1280f, 120f, 1892f, 860f)
+    private val rSheetSettings = RectF(1280f, 120f, 1892f, 1044f)
     private val rGhost = RectF(28f, 28f, 150f, 74f)
 
     private fun trayItemRect(i: Int): RectF =
@@ -179,6 +180,15 @@ class HudOverlayView(context: Context) : View(context) {
     private val rToggleHide = RectF(1800f, 414f, 1868f, 454f)
     private val rRowRename = RectF(1296f, 470f, 1876f, 520f)
     private val rRowWeb = RectF(1296f, 530f, 1876f, 580f)
+    // graphics section (settings.js parity): quality seg, post toggles, auto-quality, camera presets
+    private val QUALITY_NAMES = QualityPreset.PRESET_ORDER
+    private val rQualitySeg = List(4) { RectF(1304f + it * 148f, 610f, 1304f + it * 148f + 136f, 652f) }
+    private val POST_TOGGLES = listOf("gtao" to "GTAO", "bloom" to "Bloom", "smaa" to "Anti-aliasing", "post" to "Post-processing")
+    private val rPostToggles = List(4) {
+        RectF(1304f + (it % 2) * 292f, 684f + (it / 2) * 56f, 1304f + (it % 2) * 292f + 272f, 684f + (it / 2) * 56f + 44f)
+    }
+    private val rToggleAuto = RectF(1800f, 806f, 1868f, 846f)
+    private val rCamPresets = List(4) { RectF(1304f + it * 148f, 896f, 1304f + it * 148f + 136f, 938f) }
 
     private fun infoPanelRect(lines: Int): RectF = RectF(28f, 120f, 420f, 132f + (lines + 1) * 24f + 14f)
 
@@ -253,6 +263,7 @@ class HudOverlayView(context: Context) : View(context) {
             }
             return false
         }
+        if (onbTap(x, y)) { invalidate(); return true }
         // sheets swallow everything while open
         if (showNotifications) {
             if (sheetCloseRect(rSheetNotif).contains(x, y)) { showNotifications = false; unread = 0; invalidate(); return true }
@@ -281,6 +292,35 @@ class HudOverlayView(context: Context) : View(context) {
             if (rRowRename.contains(x, y)) { showSettings = false; renameDialog(); invalidate(); return true }
             if (rRowWeb.contains(x, y)) {
                 context.startActivity(android.content.Intent(context, ParityActivity::class.java))
+                invalidate(); return true
+            }
+            // graphics: quality preset (Config.js QUALITY) — persisted, RTs re-allocated live
+            for ((i, qn) in QUALITY_NAMES.withIndex()) if (rQualitySeg[i].contains(x, y)) {
+                gv.renderer.setQuality(qn)
+                prefs().edit().putString("qualityName", qn).apply()
+                toast("Quality: $qn", COL_CYAN)
+                invalidate(); return true
+            }
+            // post-effect toggles (settings.js toggleDefs): tap = flip (override), instant
+            for ((i, td) in POST_TOGGLES.withIndex()) if (rPostToggles[i].contains(x, y)) {
+                val cur = effectiveToggle(gv.renderer, td.first)
+                gv.renderer.setPostToggle(td.first, !cur)
+                prefs().edit().putString("ov_${td.first}", if (!cur) "on" else "off").apply()
+                toast("${td.second} ${if (!cur) "on" else "off"}", COL_CYAN)
+                invalidate(); return true
+            }
+            // performance: auto quality (perfguard)
+            if (rToggleAuto.contains(x, y) || x < 1500f && y > 806f && y < 846f) {
+                val on = !gv.renderer.qualityAuto
+                gv.renderer.qualityAuto = on
+                prefs().edit().putBoolean("qualityAuto", on).apply()
+                toast("Auto quality ${if (on) "on" else "off"}", COL_CYAN)
+                invalidate(); return true
+            }
+            // camera presets (DebugAPI.js presets)
+            val camNames = listOf("city", "street", "skyline", "aerial")
+            for ((i, cn) in camNames.withIndex()) if (rCamPresets[i].contains(x, y)) {
+                if (gv.renderer.applyCameraPreset(cn)) toast("Camera: $cn", COL_CYAN)
                 invalidate(); return true
             }
             return true
@@ -312,21 +352,39 @@ class HudOverlayView(context: Context) : View(context) {
             }
         }
 
+        // legend panel (ui/infoview.js): close disarms the info tool, toggles flip overlays
+        if (armedInfoView() != null) {
+            if (legendCloseRect().contains(x, y)) {
+                setTool("SELECT")
+                openCat = null
+                showMessage("Info view closed")
+                invalidate(); return true
+            }
+            val togRects = listOf("buildings", "terrain")
+            for ((i, key) in togRects.withIndex()) {
+                if (legendToggleRect(i).contains(x, y)) {
+                    if (key == "buildings") gv.renderer.infoTintBuildings = !gv.renderer.infoTintBuildings
+                    else gv.renderer.infoTintTerrain = !gv.renderer.infoTintTerrain
+                    invalidate(); return true
+                }
+            }
+        }
+
         // dock (before the tray: the toggle semantics of a category button win)
         for ((i, cat) in Cat.entries.withIndex()) {
             if (rDockBtns[i].contains(x, y)) {
                 if (cat.direct) {
-                    toolToken = if (toolToken == "BULLDOZE") "SELECT" else "BULLDOZE"
+                    setTool(if (toolToken == "BULLDOZE") "SELECT" else "BULLDOZE")
                     showMessage(if (toolToken == "BULLDOZE") "Bulldoze ready — 50 % refund" else "Tool cancelled")
                 } else if (openCat === cat) {
                     openCat = null
-                    toolToken = "SELECT"
+                    setTool("SELECT")
                     showMessage("Tool cancelled")
                 } else {
                     openCat = cat
                     val armId = lastItem[cat.id] ?: items(cat).firstOrNull()?.id
                     val item = itemOf(cat, armId)
-                    if (item != null) toolToken = armedTool(cat, item)
+                    if (item != null) setTool(armedTool(cat, item))
                     showMessage("${cat.label}: pick an option")
                 }
                 invalidate(); return true
@@ -338,7 +396,7 @@ class HudOverlayView(context: Context) : View(context) {
             val its = items(cat)
             for ((i, item) in its.withIndex()) {
                 if (trayItemRect(i).contains(x, y)) {
-                    toolToken = armedTool(cat, item)
+                    setTool(armedTool(cat, item))
                     lastItem[cat.id] = item.id
                     openCat = null // phone behaviour: the chooser gets out of the way, tool stays armed
                     showMessage("${item.label} — ${item.desc()}")
@@ -352,8 +410,37 @@ class HudOverlayView(context: Context) : View(context) {
 
         // tool pill -> back to select
         if (rPill.contains(x, y) && toolToken != "SELECT") {
-            toolToken = "SELECT"
+            setTool("SELECT")
             showMessage("Tool cancelled")
+            invalidate(); return true
+        }
+        return false
+    }
+
+    /**
+     * The site's hud.escape() (ui/index.js) driven by the Android Back button: close the topmost
+     * layer, one per press — settings, notification centre, armed tool (+ its tray), the tray
+     * itself, then the selection panel. Returns false when nothing is left, so Back falls through
+     * to the activity (double-press exits).
+     */
+    fun escape(): Boolean {
+        if (showSettings) { showSettings = false; invalidate(); return true }
+        if (showNotifications) { showNotifications = false; unread = 0; invalidate(); return true }
+        if (hudHidden) { // cinematic mode: Back is the touch equivalent of the web's H key
+            hudHidden = false
+            prefs().edit().putBoolean("hudHidden", false).apply()
+            invalidate(); return true
+        }
+        if (toolToken != "SELECT") { // web: toolbar.closeTray() + selectTool('select')
+            setTool("SELECT")
+            openCat = null
+            showMessage("Tool cancelled")
+            invalidate(); return true
+        }
+        if (openCat != null) { openCat = null; invalidate(); return true }
+        if (gameView?.renderer?.hasSelection() == true) {
+            gameView?.renderer?.clearSelection()
+            infoLines = null
             invalidate(); return true
         }
         return false
@@ -408,6 +495,7 @@ class HudOverlayView(context: Context) : View(context) {
         drawTopbar(canvas)
         drawDemand(canvas)
         drawWebChip(canvas)
+        drawLegend(canvas)
         drawTray(canvas)
         drawDock(canvas)
         drawPillAndHints(canvas)
@@ -416,7 +504,294 @@ class HudOverlayView(context: Context) : View(context) {
         drawInfoPanel(canvas)
         if (showNotifications) drawNotifSheet(canvas)
         if (showSettings) drawSettingsSheet(canvas)
+        drawOnboarding(canvas)
         canvas.restore()
+    }
+
+    // ---------------------------------------------------------------- legend panel (ui/infoview.js)
+
+    private val rLegend = RectF(28f, 320f, 470f, 830f)
+    private fun legendCloseRect() = RectF(rLegend.right - 52f, rLegend.top + 8f, rLegend.right - 12f, rLegend.top + 48f)
+    private fun legendToggleRect(i: Int) = RectF(44f, rLegend.bottom - 92f + i * 36f, 44f + 24f, rLegend.bottom - 92f + i * 36f + 24f)
+
+    /** The armed info view id ("INFO:<id>" tool) or null. */
+    private fun armedInfoView(): String? =
+        if (toolToken.startsWith("INFO:")) toolToken.drop(5) else null
+
+    /** Central tool arming (the site's hud.selectTool): keeps the renderer's info view
+     *  overlay in sync with the INFO:* tool token. */
+    private fun setTool(token: String) {
+        toolToken = token
+        gameView?.renderer?.setInfoView(if (token.startsWith("INFO:")) token.drop(5) else null)
+    }
+
+    private fun drawLegend(canvas: Canvas) {
+        val gv = gameView ?: return
+        val id = armedInfoView() ?: return
+        val def = InfoViews.def(id) ?: return
+        // keep the renderer's overlay in sync with the armed tool (tool:select -> setInfoView)
+        if (gv.renderer.infoViewId != id) gv.renderer.setInfoView(id)
+        val rows = gv.renderer.infoViewStats(id)
+
+        // measure: head 56 + desc (wrapped) + legend bar or chips + rows + toggles
+        var y = rLegend.top + 58f
+        val descLines = wrap(def.desc, 408f, 12.5f)
+        y += descLines.size * 19f + 14f
+        y += if (def.chips) 96f else 64f
+        y += rows.size * 26f + 10f
+        y += 108f // toggles block
+        rLegend.bottom = kotlin.math.min(rLegend.bottom, y).coerceAtLeast(rLegend.top + 180f)
+        glass(canvas, rLegend)
+
+        // head: colour icon + kicker + title + close
+        val iconCol = Color.parseColor(def.color)
+        paint.color = iconCol
+        canvas.drawRoundRect(RectF(44f, rLegend.top + 14f, 84f, rLegend.top + 54f), 9f, 9f, paint)
+        paint.color = Color.argb(50, 0, 0, 0)
+        text(canvas, def.label.take(1), 64f, rLegend.top + 42f, 20f, Color.WHITE, true, Paint.Align.CENTER)
+        text(canvas, "INFO VIEW", 100f, rLegend.top + 30f, 10f, COL_SUB, true)
+        text(canvas, def.label, 100f, rLegend.top + 52f, 17f, Color.WHITE, true)
+        text(canvas, "✕", rLegend.right - 32f, rLegend.top + 36f, 15f, COL_SUB, true, Paint.Align.CENTER)
+
+        // description
+        var ty = rLegend.top + 76f
+        for (ln in descLines) { text(canvas, ln, 44f, ty, 12.5f, COL_SUB, false); ty += 19f }
+        ty += 8f
+
+        if (def.chips) {
+            // zoning: categorical chips (ZONE_LABELS + colours, catalog.js)
+            val chips = ZONE_SPECS
+            for ((i, z) in chips.withIndex()) {
+                val cx = 44f + (i % 2) * 210f
+                val cy = ty + (i / 2) * 30f
+                paint.color = colOf(z.color)
+                canvas.drawRoundRect(RectF(cx, cy, cx + 18f, cy + 18f), 5f, 5f, paint)
+                text(canvas, z.label, cx + 26f, cy + 14f, 11.5f, Color.WHITE, false)
+            }
+            ty += ((chips.size + 1) / 2) * 30f + 6f
+        } else if (def.stops != null) {
+            // gradient bar with the city average marker (ui/infoview.js gradWrap)
+            val bar = RectF(44f, ty, rLegend.right - 44f, ty + 14f)
+            val stops = def.stops.map { InfoViews.hex(it) }
+            val step = (bar.width() / (stops.size - 1).coerceAtLeast(1)).toInt().coerceAtLeast(2)
+            var x = bar.left
+            for (i in 0 until (stops.size - 1)) {
+                val c0 = stops[i]; val c1 = stops[i + 1]
+                var sx = 0
+                while (sx < step) {
+                    val t = sx.toFloat() / step
+                    paint.color = Color.rgb(
+                        (c0[0] + (c1[0] - c0[0]) * t * 255f).toInt().coerceIn(0, 255),
+                        (c0[1] + (c1[1] - c0[1]) * t * 255f).toInt().coerceIn(0, 255),
+                        (c0[2] + (c1[2] - c0[2]) * t * 255f).toInt().coerceIn(0, 255))
+                    canvas.drawRect(x + sx, bar.top, x + sx + 2f, bar.bottom, paint)
+                    sx += 2
+                }
+                x += step
+            }
+            text(canvas, def.low ?: "", 44f, bar.bottom + 16f, 11f, COL_SUB, false)
+            text(canvas, def.high ?: "", rLegend.right - 44f, bar.bottom + 16f, 11f, COL_SUB, false, Paint.Align.RIGHT)
+            // the city-average marker sits on the bar (stat read live from the simulation)
+            val avg = avgFor(id)
+            if (avg >= 0f) {
+                val frac = (if (def.invert) 1f - avg else avg).coerceIn(0f, 1f)
+                val mx = bar.left + bar.width() * frac
+                paint.color = Color.WHITE
+                canvas.drawCircle(mx, bar.top + 7f, 6.5f, paint)
+                paint.color = Color.argb(220, 13, 21, 29)
+                canvas.drawCircle(mx, bar.top + 7f, 3f, paint)
+            }
+            ty = bar.bottom + 34f
+        }
+
+        // live stats rows (only values the simulation actually produced)
+        for ((k, v, cls) in rows) {
+            text(canvas, k, 44f, ty + 10f, 12f, COL_SUB, false)
+            val vc = when (cls) { 1 -> COL_GREEN; 2 -> COL_RED; else -> Color.WHITE }
+            text(canvas, v, rLegend.right - 44f, ty + 10f, 12.5f, vc, true, Paint.Align.RIGHT)
+            ty += 26f
+        }
+
+        // colour toggles (ui/infoview.js opts.buildings / opts.terrain)
+        val tog = listOf("Colour buildings" to gv.renderer.infoTintBuildings,
+            "Colour terrain" to gv.renderer.infoTintTerrain)
+        for ((i, t) in tog.withIndex()) {
+            val r = legendToggleRect(i)
+            text(canvas, t.first, 80f, r.centerY() + 5f, 12f, Color.WHITE, false)
+            paint.color = if (t.second) COL_CYAN else Color.argb(50, 255, 255, 255)
+            val sw = RectF(rLegend.right - 92f, r.centerY() - 10f, rLegend.right - 44f, r.centerY() + 10f)
+            canvas.drawRoundRect(sw, 10f, 10f, paint)
+            paint.color = Color.WHITE
+            canvas.drawCircle(if (t.second) sw.right - 10f else sw.left + 10f, r.centerY(), 7f, paint)
+        }
+    }
+
+    private fun avgFor(id: String): Float = when (id) {
+        "traffic" -> (gameView?.renderer?.trafficCongestion() ?: 0.0).toFloat()
+        "landvalue" -> (gameView?.renderer?.econLandValue() ?: 0.3).toFloat()
+        "pollution" -> (gameView?.renderer?.econPollution() ?: 0.0).toFloat()
+        "happiness" -> (gameView?.renderer?.econHappiness() ?: 0.0).toFloat().let { it }
+        "power" -> ((gameView?.renderer?.econCoverage("power")) ?: 0.0).toFloat()
+        "water" -> ((gameView?.renderer?.econCoverage("water")) ?: 0.0).toFloat()
+        else -> -1f
+    }
+
+    /** Word wrap for HUD text (logical units). */
+    private fun wrap(textStr: String, maxWidth: Float, size: Float): List<String> {
+        paint.textSize = size
+        paint.typeface = android.graphics.Typeface.DEFAULT
+        val words = textStr.split(' ')
+        val lines = ArrayList<String>()
+        var cur = StringBuilder()
+        for (w in words) {
+            val cand = if (cur.isEmpty()) w else "$cur $w"
+            if (paint.measureText(cand) > maxWidth && cur.isNotEmpty()) {
+                lines.add(cur.toString()); cur = StringBuilder(w)
+            } else cur = StringBuilder(cand)
+        }
+        if (cur.isNotEmpty()) lines.add(cur.toString())
+        return lines
+    }
+
+    // ---------------------------------------------------------------- onboarding (ui/onboarding.js)
+
+    /** One guided-start step: copy, the control it rings, and the world event that finishes it. */
+    private class OnbStep(
+        val id: String, val title: String, val text: String, val armedText: String?,
+        val color: Int, val toolPrefix: String?, // armed when toolToken starts with this
+    )
+    private val onbSteps = listOf(
+        OnbStep("road", "Draw your first road",
+            "Roads is the first button below. Open it, then tap the ground — everything in a city grows along a street.",
+            "Road tool ready. Tap across the ground to lay it.",
+            Color.rgb(127, 212, 255), "ROAD:"),
+        OnbStep("zone", "Zone homes beside it",
+            "Open Zoning, take Low Density Residential, and tap the ground next to your road.",
+            "Now tap the grass within about 30 m of the road — plots only appear where a street reaches them.",
+            Color.rgb(140, 233, 154), "ZONE:"),
+        OnbStep("speed", "Let the clock run",
+            "Nothing is built while time crawls. Push the speed to 4× up in the clock — the plots start building straight away.",
+            null,
+            Color.rgb(255, 214, 107), null),
+        OnbStep("grow", "Watch them move in",
+            "Scaffolding goes up on each plot, then residents arrive. The demand bars bottom-left tell you what to zone next.",
+            null,
+            Color.rgb(255, 168, 197), null),
+    )
+    private var onbActive = false
+    private var onbChecked = false
+    private var onbStep = 0
+    private var onbPulse = 0f
+    private val rOnbCard = RectF(620f, 780f, 1300f, 1052f)
+
+    /** onboarding.js eligible: never over a city that already exists, once per install unless dismissed. */
+    private fun onbEligible(gv: FableCitiesView): Boolean {
+        if (prefs().getBoolean("onbDone", false)) return false
+        // a world with roads or buildings (the demo city, a loaded city) never sees the guide
+        return !gv.renderer.hasAnyRoads() && !gv.renderer.hasAnyBuildings()
+    }
+
+    private fun onbStart(gv: FableCitiesView) {
+        onbActive = true; onbStep = 0
+        showMessage("Getting started")
+        gv.renderer.pushUiFeedPublic("info", "Getting started: draw a road to begin")
+    }
+
+    private fun onbDismiss() {
+        onbActive = false
+        prefs().edit().putBoolean("onbDone", true).apply()
+    }
+
+    /** Called every HUD frame: advance on the real world event (never a timer), like tick(dt). */
+    private fun onbTick(gv: FableCitiesView, dt: Float) {
+        if (!onbChecked) {
+            onbChecked = true
+            if (onbEligible(gv)) onbStart(gv)
+            return
+        }
+        if (!onbActive) return
+        onbPulse = (onbPulse + dt * 2.2f) % 1f
+        val r = gv.renderer
+        val done = when (onbSteps[onbStep].id) {
+            "road" -> r.hasAnyRoads()
+            "zone" -> r.hasAnyZones()
+            "speed" -> !r.paused && r.simSpeed >= 2
+            "grow" -> r.hasAnyBuildings()
+            else -> true
+        }
+        if (done) {
+            if (onbStep < onbSteps.size - 1) onbStep++
+            else onbDismiss()
+        }
+    }
+
+    /** The pointer ring around the control the current step needs (onboarding.js ring). */
+    private fun onbTargetRect(): RectF? = when (onbSteps[onbStep].id) {
+        "road" -> rDockBtns[0]
+        "zone" -> rDockBtns[1]
+        "speed" -> rSpeed[3]
+        "grow" -> rDemand
+        else -> null
+    }
+
+    private fun drawOnboarding(canvas: Canvas) {
+        if (!onbActive) return
+        val s = onbSteps[onbStep]
+        val armed = s.toolPrefix != null && toolToken.startsWith(s.toolPrefix)
+
+        // ring around the target control (pulsing, with an arrow notch on top)
+        onbTargetRect()?.let { t ->
+            val grow = 10f + 4f * kotlin.math.sin(onbPulse * 2f * Math.PI).toFloat()
+            paint.style = Paint.Style.STROKE
+            paint.strokeWidth = 4f
+            paint.color = s.color
+            canvas.drawRoundRect(
+                RectF(t.left - grow, t.top - grow, t.right + grow, t.bottom + grow), 16f, 16f, paint)
+            paint.style = Paint.Style.FILL
+            paint.color = Color.argb((70 + 50 * kotlin.math.sin(onbPulse * 2f * Math.PI)).toInt().coerceIn(0, 120), 255, 255, 255)
+            canvas.drawRoundRect(
+                RectF(t.left - grow, t.top - grow, t.right + grow, t.bottom + grow), 16f, 16f, paint)
+        }
+
+        // the objective card (badge + kicker + close, icon + title + copy, dots)
+        glass(canvas, rOnbCard, stroke = s.color)
+        paint.color = s.color
+        canvas.drawCircle(648f, 812f, 15f, paint)
+        paint.color = Color.rgb(13, 21, 29)
+        text(canvas, "${onbStep + 1}", 648f, 818f, 14f, Color.rgb(13, 21, 29), true, Paint.Align.CENTER)
+        text(canvas, "GETTING STARTED", 676f, 812f, 10f, COL_SUB, true)
+        text(canvas, "✕", rOnbCard.right - 26f, 816f, 14f, COL_SUB, true, Paint.Align.CENTER)
+
+        paint.color = s.color
+        canvas.drawRoundRect(RectF(648f, 836f, 684f, 872f), 9f, 9f, paint)
+        paint.color = Color.rgb(13, 21, 29)
+        text(canvas, s.title.take(1), 666f, 862f, 18f, Color.rgb(13, 21, 29), true, Paint.Align.CENTER)
+        text(canvas, s.title, 700f, 856f, 17f, Color.WHITE, true)
+
+        val body = if (armed && s.armedText != null) s.armedText else s.text
+        val lines = wrap(body, 560f, 13f)
+        var y = 886f
+        for (ln in lines) { text(canvas, ln, 648f, y, 13f, COL_SUB, false); y += 20f }
+
+        // progress dots
+        val dx = 648f
+        for (i in onbSteps.indices) {
+            paint.color = when {
+                i < onbStep -> COL_GREEN
+                i == onbStep -> s.color
+                else -> Color.argb(60, 255, 255, 255)
+            }
+            canvas.drawCircle(dx + i * 22f, rOnbCard.bottom - 22f, if (i == onbStep) 6f else 4f, paint)
+        }
+    }
+
+    private fun onbTap(x: Float, y: Float): Boolean {
+        if (!onbActive) return false
+        if (rOnbCard.contains(x, y)) {
+            if (x > rOnbCard.right - 52f && y < rOnbCard.top + 40f) onbDismiss()
+            return true // the card swallows taps
+        }
+        return false // taps outside fall through so the player can act immediately
     }
 
     private fun drawTopbar(canvas: Canvas) {
@@ -816,11 +1191,61 @@ class HudOverlayView(context: Context) : View(context) {
         canvas.drawRoundRect(rRowWeb, 10f, 10f, paint)
         text(canvas, "Web-parity build (1:1 web game)", 1304f, 562f, 14f, Color.WHITE, false)
         text(canvas, "Open ›", 1868f, 562f, 13f, COL_CYAN, false, Paint.Align.RIGHT)
-        // quality row (static — the native renderer runs one tuned tier)
-        text(canvas, "Quality", 1304f, 622f, 14f, Color.WHITE, false)
-        text(canvas, "High (device default)", 1868f, 622f, 13f, COL_SUB, false, Paint.Align.RIGHT)
+
+        // ---- graphics: quality presets (Config.js QUALITY; reloads the RTs natively) ----
+        text(canvas, "GRAPHICS", 1304f, 598f, 11f, COL_SUB, true)
+        val qNow = gv.renderer.qualityName
+        for ((i, qn) in QUALITY_NAMES.withIndex()) {
+            val r = rQualitySeg[i]
+            val on = qn == qNow
+            paint.color = if (on) Color.argb(90, 151, 210, 233) else Color.argb(30, 255, 255, 255)
+            canvas.drawRoundRect(r, 9f, 9f, paint)
+            if (on) { paint.style = Paint.Style.STROKE; paint.strokeWidth = 2f; paint.color = COL_CYAN
+                canvas.drawRoundRect(r, 9f, 9f, paint); paint.style = Paint.Style.FILL }
+            text(canvas, qn.uppercase(), r.centerX(), r.centerY() + 4f, 11f, Color.WHITE, on, Paint.Align.CENTER)
+        }
+        // ---- post-effect toggles (settings.js toggleDefs): instant, no reload ----
+        for ((i, td) in POST_TOGGLES.withIndex()) {
+            val r = rPostToggles[i]
+            val on = effectiveToggle(gv.renderer, td.first)
+            paint.color = Color.argb(30, 255, 255, 255)
+            canvas.drawRoundRect(r, 9f, 9f, paint)
+            text(canvas, td.second, r.left + 12f, r.centerY() + 4f, 12f, Color.WHITE, false)
+            paint.color = if (on) COL_CYAN else Color.argb(50, 255, 255, 255)
+            canvas.drawRoundRect(RectF(r.right - 62f, r.centerY() - 14f, r.right - 10f, r.centerY() + 14f), 14f, 14f, paint)
+            paint.color = Color.WHITE
+            canvas.drawCircle(if (on) r.right - 24f else r.right - 52f, r.centerY(), 10f, paint)
+        }
+        // ---- performance (perfguard): auto quality + live fps line ----
+        text(canvas, "PERFORMANCE", 1304f, 792f, 11f, COL_SUB, true)
+        val autoOn = gv.renderer.qualityAuto
+        paint.color = if (autoOn) COL_CYAN else Color.argb(50, 255, 255, 255)
+        canvas.drawRoundRect(rToggleAuto, 14f, 14f, paint)
+        paint.color = Color.WHITE
+        canvas.drawCircle(if (autoOn) rToggleAuto.right - 20f else rToggleAuto.left + 20f, rToggleAuto.centerY(), 10f, paint)
+        text(canvas, "Auto quality", 1304f, 830f, 13f, Color.WHITE, false)
+        val (avgFps, medFps) = gv.renderer.perfStats()
+        val lowered = if (gv.renderer.qualityName != "high") " · running ${gv.renderer.qualityName}" else ""
+        text(canvas, "${avgFps.toInt()} fps · median ${medFps.toInt()}$lowered", 1450f, 830f, 11f, COL_SUB, false)
+        // ---- camera presets (DebugAPI.js presets via the settings camera row) ----
+        val cams = listOf("City" to "city", "Street" to "street", "Skyline" to "skyline", "Aerial" to "aerial")
+        for ((i, c) in cams.withIndex()) {
+            val r = rCamPresets[i]
+            paint.color = Color.argb(30, 255, 255, 255)
+            canvas.drawRoundRect(r, 9f, 9f, paint)
+            text(canvas, c.first, r.centerX(), r.centerY() + 4f, 12f, Color.WHITE, false, Paint.Align.CENTER)
+        }
         // shortcuts note
-        text(canvas, "Touch: 1 finger — tools & UI • 2 fingers — camera (pan / pinch / twist) • Back — cancel", 1304f, 668f, 12f, COL_SUB, false)
+        text(canvas, "Touch: 1 finger — tools & UI • 2 fingers — camera (pan / pinch / twist) • Back — cancel", 1304f, 984f, 12f, COL_SUB, false)
+    }
+
+    /** Effective state of a post toggle: the override if set, else the preset's default. */
+    private fun effectiveToggle(r: GlCityRenderer, key: String): Boolean = when (key) {
+        "gtao" -> r.postToggle("gtao") ?: QualityPreset.byName(r.qualityName).gtao
+        "bloom" -> r.postToggle("bloom") ?: QualityPreset.byName(r.qualityName).bloom
+        "smaa" -> r.postToggle("smaa") ?: QualityPreset.byName(r.qualityName).smaa
+        "post" -> r.postToggle("post") ?: true
+        else -> true
     }
 
     // ---------------------------------------------------------------- helpers

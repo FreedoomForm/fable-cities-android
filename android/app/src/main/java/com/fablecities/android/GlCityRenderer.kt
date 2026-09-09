@@ -101,6 +101,10 @@ class GlCityRenderer : GLSurfaceView.Renderer {
     private val sun = SunState()
 
     // --- world constants: the SITE'S real world (2048 m, seed 1337, sea level 0) ---
+    /** The menu's seed choice (menu/index.js: the start screen picks the world). */
+    var worldSeed = 1337
+    /** menu/index.js modes: 0 = new (empty world), 1 = demo (the site's city). */
+    var startMode = MODE_DEMO
     private val mapHalf = 1024f
     private val cityHalf = 504f // tool grid + prebuilt content extent (east of the river)
     private val waterY = 0f
@@ -374,7 +378,7 @@ class GlCityRenderer : GLSurfaceView.Renderer {
     private val MAX_PEDS = 64
     private val roadSegs = ArrayList<RoadSeg>()
     private var cityYaw = 0f
-    private lateinit var demo: DemoCity
+    private var demo: DemoCity? = null
     private val roadCells = HashSet<Int>()
     private val roadCellTypes = HashMap<Int, Int>() // cell -> ROAD_SPECS index (catalog.js ROAD_TYPES)
     private val roadCellCost = HashMap<Int, Int>()  // build cost paid per cell, for the 50 % refund
@@ -399,6 +403,164 @@ class GlCityRenderer : GLSurfaceView.Renderer {
     private var frameIdx = 0
     private var lastFrameLog = 0L
     private var glErrorLogged = false
+
+    // --- quality system (Config.js QUALITY + perfguard port; see Quality.kt) ---
+    /** Preset name; persisted by the HUD. The world BUILDS at this preset (render-scale FBOs). */
+    var qualityName: String = "high"
+        private set
+    /** The perfguard "Auto quality" switch (settings.js): lowers at most twice, never raises. */
+    var qualityAuto: Boolean = true
+    /** Runtime post-effect overrides (settings.js toggles): null = follow the preset. */
+    var ovGtao: Boolean? = null
+    var ovBloom: Boolean? = null
+    var ovSmaa: Boolean? = null
+    var ovPost: Boolean? = null
+    private val guard = PerfGuard()
+    private var guardNow = 0L
+    private var perfAvgFps = 0f
+    private fun preset(): QualityPreset = QualityPreset.byName(qualityName)
+    private fun gtaoOn(): Boolean = ovGtao ?: preset().gtao
+    private fun bloomOn(): Boolean = ovBloom ?: preset().bloom
+    private fun smaaOn(): Boolean = ovSmaa ?: preset().smaa
+    private fun postOn(): Boolean = ovPost ?: true
+
+    /** The site's QUALITY[preset] switch (settings.js reloads the page; the native renderer
+     *  re-allocates its render targets and goes on living). */
+    fun setQuality(name: String, fromAuto: Boolean = false) {
+        val p = QualityPreset.byName(name)
+        if (p.name == qualityName) return
+        qualityName = p.name
+        // cheap per-frame knobs first, then the RT resize on the GL thread
+        DRAW_DISTANCE = p.drawDistance
+        if (sceneFbo != 0) { // rebuild RTs at the new render scale (post targets derive from scene)
+            val w = max(256, (letterbox[2] * p.renderScale).toInt())
+            val h = max(256, (letterbox[3] * p.renderScale).toInt())
+            setupSceneFbo()
+            setupPostFbos(w, h)
+        }
+        pushUiFeed(if (fromAuto) "alert" else "info",
+            if (fromAuto) "Auto quality: ${p.name}" else "Quality: ${p.name}")
+    }
+
+    /** UI feed producer (the thread-safe queue the notification centre drains). */
+    private fun pushUiFeed(kind: String, text: String) { uiFeed.add(kind to text) }
+
+    /** Public feed push for the UI layer (the onboarding guide's announcements). */
+    fun pushUiFeedPublic(kind: String, text: String) { pushUiFeed(kind, text) }
+
+    /** Onboarding eligibility: a fresh map has no roads and no buildings (onboarding.js:
+     *  the guide never runs over a city that already exists). */
+    fun hasAnyRoads(): Boolean = roadCells.isNotEmpty()
+    fun hasAnyZones(): Boolean = zoneCells.isNotEmpty()
+    fun hasAnyBuildings(): Boolean = buildings.isNotEmpty()
+
+    fun setPostToggle(key: String, on: Boolean) {
+        when (key) {
+            "gtao" -> ovGtao = on
+            "bloom" -> ovBloom = on
+            "smaa" -> ovSmaa = on
+            "post" -> ovPost = on
+        }
+    }
+    fun postToggle(key: String): Boolean? = when (key) {
+        "gtao" -> ovGtao; "bloom" -> ovBloom; "smaa" -> ovSmaa; "post" -> ovPost; else -> null
+    }
+    fun perfStats(): Pair<Float, Float> = perfAvgFps to guard.lastMedian
+
+    // --- info views (simulation/infoview.js + ui/infoview.js port; GPU pieces in InfoViews.kt) ---
+    /** Armed info view id (catalog.js INFO_VIEWS keys) or null when the tool is unarmed. */
+    var infoViewId: String? = null
+        private set
+    private var progInfoOverlay = 0
+    private var infoVbo = 0            // interleaved xz (2f) + y (1f)
+    private var infoVertN = 0
+    private var infoTex = 0
+    private val infoData = ByteArray(256 * 256 * 4)
+    private var infoBakedVer = -1
+    private var infoBakedEdits = -1
+    private var infoLastBake = 0L
+    private var infoDrapedEdits = -1
+    private val infoRings = FloatArray(48 * 4)
+    private val eyeScratch = FloatArray(3)
+    private var infoRingN = 0
+    private var infoEdgeLine = 0f
+    private var progTrafficTint = 0
+    private var trafficVbo = 0
+    private var trafficVertN = 0
+    private var trafficLastBuild = 0L
+    private var trafficTintVerts: FloatArray? = null
+    /** The info-view desaturate (web: fx.grading.saturation = 0.55 while a view is up). */
+    var infoDesat = 1f
+        private set
+    /** User toggles from the legend panel (ui/infoview.js: colour buildings / terrain). */
+    var infoTintBuildings = true
+    var infoTintTerrain = true
+
+    /** simulation.api.setInfoView(type): arms/disarms the coverage overlay + traffic tint. */
+    fun setInfoView(id: String?) {
+        val next = if (id == null || InfoViews.def(id) == null) null else id
+        if (next == infoViewId) return
+        infoViewId = next
+        infoBakedVer = -1 // force rebake
+        infoEdgeLine = 0f
+        infoDesat = if (next != null && InfoViews.def(next)?.service != null) 0.55f else 1f
+    }
+
+    /** ui/infoview.js statRows: live legend rows for the armed view (label to formatted value). */
+    fun infoViewStats(id: String): List<Triple<String, String, Int>> {
+        val rows = ArrayList<Triple<String, String, Int>>()
+        fun push(k: String, v: String, cls: Int = 0) = rows.add(Triple(k, v, cls))
+        val def = InfoViews.def(id) ?: return rows
+        val svc = if (this::simServices.isInitialized) simServices else null
+        when (id) {
+            "traffic" -> {
+                val c = trafficSim?.congestion ?: 0.0
+                push("City average", "${(c * 100).toInt()} %", tintPct(c, invert = true))
+                push("Vehicles", "${String.format("%,d", trafficSim?.vehicles?.size ?: 0)}")
+                push("Avg speed", "${((trafficSim?.avgSpeedRatio ?: 1.0) * 100).toInt()} % of limit")
+            }
+            "landvalue" -> {
+                val v = if (simReady()) simEconomy.e.landValue else 0.3
+                push("City average", "${(v.coerceIn(0.0, 1.0) * 100).toInt()} %", tintPct(v))
+            }
+            "pollution" -> {
+                val v = if (simReady()) simEconomy.e.pollution else 0.0
+                push("City average", "${(v.coerceIn(0.0, 1.0) * 100).toInt()} %", tintPct(v, invert = true))
+            }
+            "happiness" -> {
+                val v = econHappiness()
+                push("City average", "${(v.coerceIn(0.0, 1.0) * 100).toInt()} %", tintPct(v))
+                push("Households", String.format("%,d", econHouseholds()))
+            }
+            "power", "water" -> if (svc != null) {
+                val noun = if (id == "power") "Power plants" else "Water towers"
+                val count = svc.counts[id] ?: 0
+                push(noun, "${String.format("%,d", count)}", if (count > 0) 0 else 2)
+                val cap = svc.capacity[id] ?: 0.0
+                if (cap > 0) push("Capacity", "${String.format("%,d", cap.toInt())} citizens")
+                val dem = svc.demandServed[id] ?: 0.0
+                if (dem > 0) push("Demand", "${String.format("%,d", dem.toInt())} citizens")
+                val strain = svc.strain[id] ?: 1.0
+                if (count > 0) push("Supply", "${(strain.coerceIn(0.0, 1.0) * 100).toInt()} %",
+                    if (strain >= 0.95) 1 else if (strain >= 0.7) 0 else 2)
+                val cov = if (simReady()) simEconomy.e.coverage[id] ?: 0.0 else 0.0
+                push("City average", "${(cov.coerceIn(0.0, 1.0) * 100).toInt()} %", tintPct(cov))
+            }
+            "zoning" -> {
+                var lots = 0
+                for (k in zoneCells.keys) if (zoneCells[k] != null && zoneCells[k]!! >= 0) lots++
+                push("Zoned lots", String.format("%,d", lots))
+                push("Residents", String.format("%,d", econPopulation()))
+            }
+        }
+        return rows
+    }
+
+    private fun tintPct(v: Double, invert: Boolean = false): Int = when {
+        (if (invert) v < 0.35 else v > 0.65) -> 1
+        (if (invert) v > 0.7 else v < 0.4) -> 2
+        else -> 0
+    }
 
     // --- simulation: the site's real economy / services / milestones model (simulation.js port) ---
     private lateinit var simServices: SimServices
@@ -440,6 +602,10 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         progOccl = 0; progBright = 0; for (i in 0 until 5) progBlur[i] = 0
         progBloomComp = 0; progMeter = 0; progGrade = 0
         progSmaaEdges = 0; progSmaaWeights = 0; progSmaaBlend = 0; progCopy = 0
+        progInfoOverlay = 0; progTrafficTint = 0
+        infoVbo = 0; infoIbo = 0; infoTex = 0; infoVertN = 0; infoIndexN = 0
+        infoBakedVer = -1; infoBakedEdits = -1; infoDrapedEdits = -1
+        trafficVbo = 0; trafficVertN = 0; trafficTintVerts = null
         progSpray = 0; sprayVbo = 0; sprayIbo = 0; sprayEmitVbo = 0; sprayVelVbo = 0; spraySeedVbo = 0; texSpray = 0
         sprayLive = 0; sprayPrev.clear()
         progSmoke = 0; smokeCornerVbo = 0; smokeIbo = 0
@@ -476,7 +642,12 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         } else {
             resetGlHandles()
         }
+        buildAll()
+    }
 
+    /** Everything one EGL context needs: programs, buffers, the world, the sim. Called from
+     *  onSurfaceCreated and from regenerate() (the start screen's New / Demo choice). */
+    private fun buildAll() {
         progTerrain = buildProgram(TerrainShaders.VS_TERRAIN, TerrainShaders.FS_TERRAIN, "terrain")
         progFlat = buildProgram(VS_LIT, TerrainShaders.FS_LIT_WET, "flat")
         progBuilding = buildProgram(VS_BUILDING, FS_BUILDING, "building")
@@ -503,6 +674,10 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         progSmaaBlend = buildProgram(PostShaders.VS_SMAA_BLEND, PostShaders.FS_SMAA_BLEND, "smaablend")
         progCopy = buildProgram(PostShaders.VS_POST, PostShaders.FS_COPY, "copy")
         progSpray = buildProgram(VS_SPRAY, FS_SPRAY, "spray")
+        progInfoOverlay = buildProgram(InfoViews.VS_INFOOVERLAY, InfoViews.FS_INFOOVERLAY, "infooverlay")
+        progTrafficTint = buildProgram(InfoViews.VS_TRAFFIC_TINT, InfoViews.FS_TRAFFIC_TINT, "traffictint")
+        buildInfoTex()
+        buildTrafficVbo()
         buildSpray()
         progSmoke = buildProgram(VS_SMOKE, FS_SMOKE, "smoke")
         buildSmokeGeometry()
@@ -510,28 +685,56 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         buildPrecipBuffer()
         buildCloudTextures()
 
-        // The real world: the site's 2048 m heightmap (seed 1337), then THE SITE'S demo city:
-        // the shoreline-fitted site picker, block grading and the full street network
-        // (motorway + trumpet interchange, downtown grid, boulevards, crescents, industry).
-        worldHeight = Heightmap(size = 2048, spacing = 4, seed = 1337).generate()
-        demo = DemoCity(worldHeight, 1337)
-        demo.buildStreets()
-        demo.gradeBlocks()
-        conformRoads()
-        demo.buildRoutes()
-        demo.generateBlocks()
+        buildWorld()
+        pendingCamera?.let { restoreCamera(it) }
+        pendingEdits?.let { applyEdits(it) }
+        pendingEdits = null
+        pendingCamera = null
+    }
+
+    /**
+     * The world the menu chose (menu/index.js + main.js): the site's 2048 m heightmap from the
+     * chosen seed, then either THE SITE'S demo city (mode demo) or an EMPTY world (mode new)
+     * whose camera opens over the flattest dry patch (main.js findBuildableStart). Everything
+     * downstream — street conformance, road net, lamps, meshes, props, traffic, simulation —
+     * is rebuilt from scratch, so this is also the regenerate() body.
+     */
+    private fun buildWorld() {
+        worldHeight = Heightmap(size = 2048, spacing = 4, seed = worldSeed).generate()
+        if (startMode == MODE_DEMO) {
+            // THE SITE'S demo city: the shoreline-fitted site picker, block grading and the full
+            // street network (motorway + trumpet interchange, downtown grid, boulevards, industry).
+            val d = DemoCity(worldHeight, worldSeed)
+            demo = d
+            d.buildStreets()
+            d.gradeBlocks()
+            conformRoads()
+            d.buildRoutes()
+            d.generateBlocks()
+            cityYaw = atan2(-d.site.uz, d.site.ux).toFloat()
+            val cc = d.L(0.0, d.COAST_V + d.ROWS[2])
+            val camY = worldHeight.getHeight(cc[0], cc[1]).toFloat() + 12f
+            camTarget[0] = cc[0].toFloat(); camTarget[1] = camY; camTarget[2] = cc[1].toFloat()
+            camTargetGoal[0] = camTarget[0]; camTargetGoal[1] = camY; camTargetGoal[2] = camTarget[2]
+            camYaw = atan2(-d.site.ux, -d.site.uz).toFloat()
+            camYawGoal = camYaw
+            camPitch = 0.85f; camPitchGoal = 0.85f
+            camDist = 430f; camDistGoal = 430f
+        } else {
+            demo = null
+            cityYaw = 0f
+            // findBuildableStart: the flattest dry patch near the map centre opens the camera
+            val spot = findBuildableStart()
+            val sy = worldHeight.getHeight(spot[0].toDouble(), spot[1].toDouble()).toFloat() + 12f
+            camTarget[0] = spot[0]; camTarget[1] = sy; camTarget[2] = spot[1]
+            camTargetGoal[0] = camTarget[0]; camTargetGoal[1] = sy; camTargetGoal[2] = camTarget[2]
+            camYaw = 0.6f; camYawGoal = camYaw
+            camPitch = 0.62f; camPitchGoal = camPitch
+            camDist = 380f; camDistGoal = camDist
+        }
         buildRoadNet()
         buildLamps()
-        Log.i(TAG, "init: world + city + roadnet built")
-        cityYaw = atan2(-demo.site.uz, demo.site.ux).toFloat()
-        val cc = demo.L(0.0, demo.COAST_V + demo.ROWS[2])
-        val camY = worldHeight.getHeight(cc[0], cc[1]).toFloat() + 12f
-        camTarget[0] = cc[0].toFloat(); camTarget[1] = camY; camTarget[2] = cc[1].toFloat()
-        camTargetGoal[0] = camTarget[0]; camTargetGoal[1] = camY; camTargetGoal[2] = camTarget[2]
-        camYaw = atan2(-demo.site.ux, -demo.site.uz).toFloat()
-        camYawGoal = camYaw
-        camPitch = 0.85f; camPitchGoal = 0.85f
-        camDist = 430f; camDistGoal = 430f
+        Log.i(TAG, "init: world + city + roadnet built (seed=$worldSeed mode=$startMode)")
         buildTerrain()
         buildRoadMesh()
         buildPuddles()
@@ -551,10 +754,6 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         generateVehicles()
         initSimulation()
         glReady = true
-        pendingCamera?.let { restoreCamera(it) }
-        pendingEdits?.let { applyEdits(it) }
-        pendingEdits = null
-        pendingCamera = null
     }
 
     override fun onSurfaceChanged(gl: GL10?, width: Int, height: Int) {
@@ -568,8 +767,8 @@ class GlCityRenderer : GLSurfaceView.Renderer {
     /** GroundFXPass scene RT: full-viewport HDR colour + samplable depth (the site's
      *  EffectComposer target is HalfFloat + DepthTexture). */
     private fun setupSceneFbo() {
-        val w = max(256, letterbox[2].toInt())
-        val h = max(256, letterbox[3].toInt())
+        val w = max(256, (letterbox[2] * preset().renderScale).toInt())
+        val h = max(256, (letterbox[3] * preset().renderScale).toInt())
         if (sceneFbo != 0 && w == sceneW && h == sceneH) return
         deletePostTargets()
         if (sceneFbo != 0) {
@@ -832,7 +1031,8 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         lampHeads.clear()
         val poles = ArrayList<Float>(4096)
         val heads = ArrayList<Float>(1024)
-        for (road in demo.roads) {
+        val demoLamps = demo?.roads ?: emptyList()
+        for (road in demoLamps) {
             val lm = lampSpec(road.type) ?: continue
             val w = road.world
             if (w.size < 2) continue
@@ -1146,7 +1346,10 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         GLES30.glUniform3f(u(progGroundFX, "uSunView"), sunViewX, sunViewY, sunViewZ)
         GLES30.glUniform1f(u(progGroundFX, "uTime"), pudTime)
         GLES30.glUniform2f(u(progGroundFX, "uContact"), 0.80f * direct, 1.55f)
-        GLES30.glUniform2f(u(progGroundFX, "uAO"), 0.78f, 0.55f)
+        // the settings.js GTAO toggle: the site's GTAO pass is merged into this pass natively,
+        // so switching it off zeroes the AO term (wet reflections / contact shadows stay on)
+        if (gtaoOn()) GLES30.glUniform2f(u(progGroundFX, "uAO"), 0.78f, 0.55f)
+        else GLES30.glUniform2f(u(progGroundFX, "uAO"), 0f, 0.55f)
         GLES30.glUniform1f(u(progGroundFX, "uWet"), wet)
         GLES30.glUniform1f(u(progGroundFX, "uReflect"), 0.95f + 0.35f * night)
         GLES30.glUniform3f(u(progGroundFX, "uSkyColor"),
@@ -1420,7 +1623,8 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         GLES30.glUniform1f(u(progGrade, "uToe"), g.uToe.toFloat())
         GLES30.glUniform1f(u(progGrade, "uShoulder"), g.uShoulder.toFloat())
         GLES30.glUniform1f(u(progGrade, "uBlack"), g.uBlack.toFloat())
-        GLES30.glUniform1f(u(progGrade, "uSaturation"), g.uSaturation.toFloat())
+        // the info-view desaturate (infoview.js _setDesaturate: saturation 0.55 while armed)
+        GLES30.glUniform1f(u(progGrade, "uSaturation"), (g.uSaturation * infoDesat).toFloat())
         GLES30.glUniform1f(u(progGrade, "uMidSat"), g.uMidSat.toFloat())
         GLES30.glUniform1f(u(progGrade, "uHiDesat"), g.uHiDesat.toFloat())
         GLES30.glUniform3f(u(progGrade, "uTint"), g.uTint[0].toFloat(), g.uTint[1].toFloat(), g.uTint[2].toFloat())
@@ -1508,6 +1712,327 @@ class GlCityRenderer : GLSurfaceView.Renderer {
                 Log.e(TAG, "probe read failed: $e")
             }
         }
+    }
+
+    /** Plain blit of a finished frame texture to the backbuffer — the non-SMAA tail of the
+     *  composer (settings.js "Anti-aliasing" off / "Post-processing" off). */
+    private fun copyToScreen(tex: Int) {
+        if (progCopy == 0 || tex == 0) return
+        GLES30.glDisable(GLES30.GL_DEPTH_TEST)
+        GLES30.glDepthMask(false)
+        GLES30.glDisable(GLES30.GL_CULL_FACE)
+        GLES30.glUseProgram(progCopy)
+        GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, postVbo)
+        GLES30.glEnableVertexAttribArray(0)
+        GLES30.glVertexAttribPointer(0, 3, GLES30.GL_FLOAT, false, 12, 0)
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, tex)
+        GLES30.glUniform1i(u(progCopy, "tDiffuse"), 0)
+        GLES30.glUniform1f(u(progCopy, "opacity"), 1f)
+        GLES30.glDrawArrays(GLES30.GL_TRIANGLE_STRIP, 0, 4)
+        GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, 0)
+        GLES30.glDepthMask(true)
+        GLES30.glEnable(GLES30.GL_DEPTH_TEST)
+        GLES30.glEnable(GLES30.GL_CULL_FACE)
+    }
+
+    // ---------------------------------------------------------------- info-view overlay
+
+    /** 160×160 draped plane over the whole 2048 m map (infoview.js: seg 160, +0.45 m). */
+    private fun buildInfoMesh() {
+        if (infoVbo != 0) return
+        val seg = 160
+        val n = seg + 1
+        infoVertN = n * n
+        val data = FloatArray(infoVertN * 3)
+        var o = 0
+        for (j in 0 until n) for (i in 0 until n) {
+            val x = -mapHalf + i * (2048f / seg)
+            val z = -mapHalf + j * (2048f / seg)
+            data[o++] = x; data[o++] = z
+            data[o++] = terrainHeight(x, z) + 0.45f
+        }
+        val gen = IntArray(1); GLES30.glGenBuffers(1, gen, 0)
+        infoVbo = gen[0]
+        GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, infoVbo)
+        GLES30.glBufferData(GLES30.GL_ARRAY_BUFFER, data.size * 4, floatBytes(data), GLES30.GL_STATIC_DRAW)
+        GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, 0)
+        // index buffer (triangles)
+        val idx = ShortArray(seg * seg * 6)
+        var k = 0
+        for (j in 0 until seg) for (i in 0 until seg) {
+            val a = (j * n + i).toShort(); val b = (j * n + i + 1).toShort()
+            val c = ((j + 1) * n + i).toShort(); val d = ((j + 1) * n + i + 1).toShort()
+            idx[k++] = a; idx[k++] = c; idx[k++] = b; idx[k++] = b; idx[k++] = c; idx[k++] = d
+        }
+        val genIbo = IntArray(1); GLES30.glGenBuffers(1, genIbo, 0)
+        infoIbo = genIbo[0]
+        GLES30.glBindBuffer(GLES30.GL_ELEMENT_ARRAY_BUFFER, infoIbo)
+        GLES30.glBufferData(GLES30.GL_ELEMENT_ARRAY_BUFFER, idx.size * 2, shortBytes(idx), GLES30.GL_STATIC_DRAW)
+        GLES30.glBindBuffer(GLES30.GL_ELEMENT_ARRAY_BUFFER, 0)
+        infoIndexN = idx.size
+    }
+
+    private var infoIbo = 0
+    private var infoIndexN = 0
+
+    /** Re-drape the overlay onto the (possibly edited) terrain: y = height + 0.45. */
+    private fun drapeInfoMesh() {
+        if (infoVbo == 0) return
+        val seg = 160; val n = seg + 1
+        val data = FloatArray(infoVertN * 3)
+        var o = 0
+        for (j in 0 until n) for (i in 0 until n) {
+            val x = -mapHalf + i * (2048f / seg)
+            val z = -mapHalf + j * (2048f / seg)
+            data[o++] = x; data[o++] = z
+            data[o++] = terrainHeight(x, z) + 0.45f
+        }
+        GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, infoVbo)
+        GLES30.glBufferSubData(GLES30.GL_ARRAY_BUFFER, 0, data.size * 4, floatBytes(data))
+        GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, 0)
+        infoDrapedEdits = editsVersion()
+    }
+
+    private fun editsVersion(): Int = if (this::simServices.isInitialized) simServices.version else -1
+
+    /**
+     * infoview.js _bake(): coverage (R, strain-scaled), boundary distance (G) and the
+     * developed-area mask (B) at 8 m texels. Dev mask: buildings + services + road cells,
+     * 2-pass 5-tap box blur. SD: distance to the nearest facility edge of the view's type.
+     */
+    private fun bakeInfoTexture() {
+        val id = infoViewId ?: return
+        val svc = if (this::simServices.isInitialized) simServices else return
+        val types = InfoViews.def(id)?.service?.let { listOf(it) } ?: emptyList()
+        val n = 256; val res = svc.res / 2.0 // 8 m texels
+        val dev = FloatArray(n * n)
+        // dev mask sources
+        val mark = mark@{ x: Double, z: Double, r: Double ->
+            if (r <= 0.0) return@mark
+            val i0 = max(0, floor((x - r + mapHalf) / res).toInt())
+            val i1 = min(n - 1, floor((x + r + mapHalf) / res).toInt())
+            val j0 = max(0, floor((z - r + mapHalf) / res).toInt())
+            val j1 = min(n - 1, floor((z + r + mapHalf) / res).toInt())
+            for (j in j0..j1) for (i in i0..i1) {
+                val cx = -mapHalf + (i + 0.5) * res - x
+                val cz = -mapHalf + (j + 0.5) * res - z
+                val d2 = cx * cx + cz * cz
+                if (d2 <= r * r) {
+                    val v = 1 - Math.pow(d2 / (r * r), 3.0) * 0.6
+                    val k = j * n + i
+                    if (v > dev[k]) dev[k] = v.toFloat()
+                }
+            }
+        }
+        for (b in buildings) if (!b.removed) mark(b.x.toDouble(), b.z.toDouble(), 44.0)
+        for (b in svc.list) mark(b.x, b.z, max(b.w, b.d) + 10.0)
+        for (cell in roadCells) {
+            val cx = cell % gridN; val cz = cell / gridN
+            mark((-cityHalf + cx * cellSize + cellSize / 2).toDouble(), (-cityHalf + cz * cellSize + cellSize / 2).toDouble(), 30.0)
+        }
+        // 2-pass 5-tap box blur on the mask
+        val tmp = FloatArray(n * n)
+        for (j in 0 until n) for (i in 0 until n) {
+            var s = 0f; var c = 0
+            for (k in -2..2) { val ii = i + k; if (ii in 0 until n) { s += dev[j * n + ii]; c++ } }
+            tmp[j * n + i] = s / c
+        }
+        for (j in 0 until n) for (i in 0 until n) {
+            var s = 0f; var c = 0
+            for (k in -2..2) { val jj = j + k; if (jj in 0 until n) { s += tmp[jj * n + i]; c++ } }
+            dev[j * n + i] = s / c
+        }
+        // rings: one per facility of the view's type (max 48)
+        infoRingN = 0
+        if (types.isNotEmpty()) {
+            for (b in svc.list) {
+                if (b.type != types[0] || infoRingN >= 48) continue
+                val o = infoRingN * 4
+                infoRings[o] = b.x.toFloat(); infoRings[o + 1] = b.z.toFloat()
+                infoRings[o + 2] = b.radius.toFloat(); infoRings[o + 3] = 1f
+                infoRingN++
+            }
+        }
+        // coverage + signed distance
+        val byType = if (types.isNotEmpty()) svc.list.filter { it.type == types[0] } else emptyList()
+        val sdRange = 240.0
+        for (j in 0 until n) {
+            val cz = -mapHalf + (j + 0.5) * res
+            for (i in 0 until n) {
+                val cx = -mapHalf + (i + 0.5) * res
+                var c = if (types.isEmpty()) 0.0 else 1.0
+                var sd = -Double.MAX_VALUE
+                for (t in types) {
+                    val v = svc.rawCoverageAt(cx, cz, t) * (svc.strain[t] ?: 1.0)
+                    if (v < c) c = v
+                    for (b in byType) {
+                        if (b.type != t) continue
+                        val d = kotlin.math.hypot(cx - b.x, cz - b.z) - b.radius
+                        if (d < sd) sd = d
+                    }
+                }
+                if (sd == -Double.MAX_VALUE) sd = sdRange
+                val kk = (j * n + i) * 4
+                infoData[kk] = (min(1.0, c) * 255).toInt().toByte()
+                infoData[kk + 1] = ((0.5 - sd / (2 * sdRange)).coerceIn(0.0, 1.0) * 255).toInt().toByte()
+                infoData[kk + 2] = (dev[kk / 4].coerceIn(0f, 1f) * 255f).toInt().toByte()
+                infoData[kk + 3] = 255.toByte()
+            }
+        }
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, infoTex)
+        GLES30.glTexSubImage2D(GLES30.GL_TEXTURE_2D, 0, 0, 0, n, n, GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE,
+            java.nio.ByteBuffer.wrap(infoData))
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, 0)
+        infoBakedVer = svc.version
+        infoBakedEdits = simEditsVersion()
+    }
+
+    private fun simEditsVersion(): Int = editsCounter
+
+    /** Bumped on every world edit (roads / zones / services / buildings) so the armed info
+     *  view rebakes its developed-area mask. */
+    private var editsCounter = 0
+
+    private fun buildInfoTex() {
+        if (infoTex != 0) return
+        val gen = IntArray(1); GLES30.glGenTextures(1, gen, 0)
+        infoTex = gen[0]
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, infoTex)
+        GLES30.glTexImage2D(GLES30.GL_TEXTURE_2D, 0, GLES30.GL_RGBA8, 256, 256, 0, GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE, null)
+        texParamsLinearClamp()
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, 0)
+    }
+
+    private fun buildTrafficVbo() {
+        if (trafficVbo != 0) return
+        val gen = IntArray(1); GLES30.glGenBuffers(1, gen, 0)
+        trafficVbo = gen[0]
+    }
+
+    /** The draw call: drapes + bakes lazily, then renders the coverage plane (depth test on). */
+    private fun drawInfoOverlay(sun: SunState) {
+        val id = infoViewId ?: return
+        if (!infoTintTerrain) return // the legend's "Colour terrain" switch
+        if (InfoViews.def(id)?.service == null) return // traffic/zoning/legend-only views: no plane
+        val svc = if (this::simServices.isInitialized) simServices else return
+        if (progInfoOverlay == 0 || infoTex == 0) return
+        buildInfoMesh()
+        if (infoDrapedEdits != editsVersion()) drapeInfoMesh()
+        if (infoBakedVer != svc.version || infoBakedEdits != simEditsVersion()) bakeInfoTexture()
+        GLES30.glEnable(GLES30.GL_BLEND)
+        GLES30.glBlendFunc(GLES30.GL_SRC_ALPHA, GLES30.GL_ONE_MINUS_SRC_ALPHA)
+        GLES30.glDepthMask(false)
+        GLES30.glDisable(GLES30.GL_CULL_FACE) // the web plane is DoubleSide
+        GLES30.glUseProgram(progInfoOverlay)
+        GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, infoVbo)
+        GLES30.glEnableVertexAttribArray(0)
+        GLES30.glVertexAttribPointer(0, 2, GLES30.GL_FLOAT, false, 12, 0)
+        GLES30.glEnableVertexAttribArray(1)
+        GLES30.glVertexAttribPointer(1, 1, GLES30.GL_FLOAT, false, 12, 8)
+        GLES30.glUniformMatrix4fv(u(progInfoOverlay, "uVP"), 1, false, vpM, 0)
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, infoTex)
+        GLES30.glUniform1i(u(progInfoOverlay, "tex"), 0)
+        val covCol = InfoViews.hex(svcColorHex(id))
+        val ringCol = floatArrayOf(
+            covCol[0] + (1f - covCol[0]) * 0.42f, covCol[1] + (1f - covCol[1]) * 0.42f,
+            covCol[2] + (1f - covCol[2]) * 0.42f)
+        GLES30.glUniform3f(u(progInfoOverlay, "colCovered"), covCol[0], covCol[1], covCol[2])
+        GLES30.glUniform3f(u(progInfoOverlay, "colWarn"), 0.9098f, 0.6392f, 0.2392f) // #e8a33d
+        GLES30.glUniform3f(u(progInfoOverlay, "colBad"), 0.8392f, 0.2235f, 0.1725f)  // #d6392c
+        GLES30.glUniform3f(u(progInfoOverlay, "colRing"), ringCol[0], ringCol[1], ringCol[2])
+        if (infoRingN > 0) GLES30.glUniform4fv(u(progInfoOverlay, "uRings"), 48, infoRings, 0)
+        GLES30.glUniform1i(u(progInfoOverlay, "ringCount"), infoRingN)
+        GLES30.glUniform1f(u(progInfoOverlay, "edgeLine"), infoEdgeLine)
+        GLES30.glUniform1f(u(progInfoOverlay, "dim"), infoDesat)
+        GLES30.glUniform3f(u(progInfoOverlay, "uFogColor"), sun.fog[0], sun.fog[1], sun.fog[2])
+        GLES30.glUniform1f(u(progInfoOverlay, "uFogDensity"), sun.fogDensity)
+        camEye(eyeScratch)
+        GLES30.glUniform3f(u(progInfoOverlay, "uCamPos"), eyeScratch[0], eyeScratch[1], eyeScratch[2])
+        GLES30.glBindBuffer(GLES30.GL_ELEMENT_ARRAY_BUFFER, infoIbo)
+        GLES30.glDrawElements(GLES30.GL_TRIANGLES, infoIndexN, GLES30.GL_UNSIGNED_SHORT, 0)
+        GLES30.glBindBuffer(GLES30.GL_ELEMENT_ARRAY_BUFFER, 0)
+        GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, 0)
+        GLES30.glDepthMask(true)
+        GLES30.glDisable(GLES30.GL_BLEND)
+        GLES30.glEnable(GLES30.GL_CULL_FACE)
+    }
+
+    /** The service's display colour for rings/ramp (services.js colour, white→green fix). */
+    private fun svcColorHex(id: String): String = when (id) {
+        "power" -> "#f4b942"
+        "water" -> "#4fc3f7"
+        else -> "#35d38a"
+    }
+
+    // ---------------------------------------------------------------- traffic tint mesh
+
+    /** roads/index.js 'traffic' info view: lane elements tinted green→amber→red by load,
+     *  rebuilt at ~2 Hz while the view is armed. */
+    private fun drawTrafficTint() {
+        if (infoViewId != "traffic" || !infoTintBuildings) return
+        val sim = trafficSim ?: return
+        if (progTrafficTint == 0 || trafficVbo == 0) return
+        val now = System.nanoTime()
+        if (trafficTintVerts == null || now - trafficLastBuild > 500_000_000L) {
+            buildTrafficTintVerts(sim)
+            trafficLastBuild = now
+        }
+        trafficTintVerts?.let { verts ->
+            if (verts.isEmpty()) return
+            GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, trafficVbo)
+            GLES30.glBufferSubData(GLES30.GL_ARRAY_BUFFER, 0, verts.size * 4, floatBytes(verts))
+            GLES30.glEnable(GLES30.GL_BLEND)
+            GLES30.glBlendFunc(GLES30.GL_SRC_ALPHA, GLES30.GL_ONE_MINUS_SRC_ALPHA)
+            GLES30.glDepthMask(false)
+            GLES30.glUseProgram(progTrafficTint)
+            GLES30.glEnableVertexAttribArray(0)
+            GLES30.glVertexAttribPointer(0, 3, GLES30.GL_FLOAT, false, 28, 0)
+            GLES30.glEnableVertexAttribArray(1)
+            GLES30.glVertexAttribPointer(1, 4, GLES30.GL_FLOAT, false, 28, 12)
+            GLES30.glUniformMatrix4fv(u(progTrafficTint, "uVP"), 1, false, vpM, 0)
+            GLES30.glUniform1f(u(progTrafficTint, "uAlpha"), 0.62f)
+            GLES30.glUniform3f(u(progTrafficTint, "uFogColor"), sun.fog[0], sun.fog[1], sun.fog[2])
+            GLES30.glUniform1f(u(progTrafficTint, "uFogDensity"), sun.fogDensity)
+            camEye(eyeScratch)
+            GLES30.glUniform3f(u(progTrafficTint, "uCamPos"), eyeScratch[0], eyeScratch[1], eyeScratch[2])
+            GLES30.glDrawArrays(GLES30.GL_TRIANGLES, 0, verts.size / 7)
+            GLES30.glDepthMask(true)
+            GLES30.glDisable(GLES30.GL_BLEND)
+            GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, 0)
+        }
+    }
+
+    private fun buildTrafficTintVerts(sim: Traffic.TrafficSim) {
+        val out = ArrayList<Float>(4096)
+        val col = FloatArray(3)
+        val lanes = sim.net.laneElems
+        for (ei in lanes) {
+            val el = sim.net.elements[ei]
+            if (el.kind != 0 || el.segmentId == null) continue
+            val load = sim.segLoad[el.segmentId] ?: 0.0
+            InfoViews.trafficColor(load, col)
+            val p = el.poly ?: continue
+            val hw = (el.width * 0.5).toFloat()
+            val segN = max(1, p.n - 1)
+            for (s in 0 until segN) {
+                val x0 = p.x[s]; val z0 = p.z[s]; val x1 = p.x[s + 1]; val z1 = p.z[s + 1]
+                val dx = x1 - x0; val dz = z1 - z0
+                val ln = kotlin.math.hypot(dx.toDouble(), dz.toDouble())
+                if (ln < 0.5) continue
+                val nx = (-dz / ln * hw).toFloat(); val nz = (dx / ln * hw).toFloat()
+                val y0 = terrainHeight(x0, z0) + 0.30f
+                val y1 = terrainHeight(x1, z1) + 0.30f
+                fun v(px: Float, py: Float, pz: Float) {
+                    out.add(px); out.add(py); out.add(pz)
+                    out.add(col[0]); out.add(col[1]); out.add(col[2]); out.add(1f)
+                }
+                v(x0 - nx, y0, z0 - nz); v(x1 - nx, y1, z1 - nz); v(x1 + nx, y1, z1 + nz)
+                v(x0 - nx, y0, z0 - nz); v(x1 + nx, y1, z1 + nz); v(x0 + nx, y0, z0 + nz)
+            }
+        }
+        trafficTintVerts = out.toFloatArray()
     }
 
     /** The site's baked cloud textures (worldgen Clouds.kt = the web's Clouds.js CPU bakes).
@@ -1689,8 +2214,9 @@ class GlCityRenderer : GLSurfaceView.Renderer {
     /** effects/index.js rebuild(): scan the blocks for emitters and refill the ring buffer. */
     private fun rebuildSmoke(cold: Boolean) {
         smokeDirty = false
-        val blocks = ArrayList<Smoke.IndBlock>(demo.blocks.size)
-        for (b in demo.blocks) {
+        val dm = demo
+        val blocks = ArrayList<Smoke.IndBlock>(dm?.blocks?.size ?: 0)
+        for (b in dm?.blocks ?: emptyList()) {
             val type = when (b.kind) {
                 DemoCity.Z_RES_LOW -> "res-low"; DemoCity.Z_RES_HIGH -> "res-high"
                 DemoCity.Z_COM_LOW -> "com-low"; DemoCity.Z_COM_HIGH -> "com-high"
@@ -2011,6 +2537,14 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         frameNanos = now
         frameTimes[frameIdx] = dt * 1000f
         frameIdx = (frameIdx + 1) % frameTimes.size
+        // the perfguard port: median/debt state machine → at most two automatic downgrades
+        guardNow += (dt * 1000f).toLong()
+        perfAvgFps = if (dt > 0f) 1f / dt else 0f
+        if (qualityAuto && glReady) {
+            when (guard.sample(guardNow, dt * 1000f)) {
+                "stepDown" -> preset().nextLower()?.let { setQuality(it.name, fromAuto = true) }
+            }
+        }
         if (now - lastFrameLog > 10_000_000_000L) {
             lastFrameLog = now
             val fs = frameStats()
@@ -2057,8 +2591,10 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         Matrix.invertM(invVpM, 0, vpM, 0)
 
         val sun = updateSunState()
-        renderReflection(sun) // Water.js renderReflection — before the main render
-        stageCheck("renderReflection")
+        if (preset().reflections) {
+            renderReflection(sun) // Water.js renderReflection — before the main render
+            stageCheck("renderReflection")
+        }
         updateWetLights(sun, dt) // WetLights emitter ranking (needs the fresh sun + traffic state)
         // the effects/index.js post-chain driver steps every frame (damp chains + grade uniforms)
         updateGradeFx(dt, sun)
@@ -2085,6 +2621,8 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         drawProps(sun)
         drawPuddles(sun)
         stageCheck("city objects")
+        drawInfoOverlay(sun) // the armed service-coverage plane (infoview.js port)
+        drawTrafficTint()    // the armed traffic view: roads tinted by load (roads/index.js port)
         drawWater(sun)
         stageCheck("water")
         drawClouds(sun)
@@ -2110,20 +2648,21 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
         drawSunOcclusionProbe(sun)
         stageCheck("occlusion probe")
-        drawBloom(sun)
-        stageCheck("bloom")
-        drawMeter(sun, dt)
-        stageCheck("meter")
-        drawGrade(sun)
-        stageCheck("grade")
-        // screen: clear the full surface (letterbox bars), then SMAA-blend the graded frame in
+        val usePost = postOn()
+        if (usePost && bloomOn()) { drawBloom(sun); stageCheck("bloom") }
+        if (usePost) { drawMeter(sun, dt); stageCheck("meter") }
+        if (usePost) { drawGrade(sun); stageCheck("grade") }
+        // screen: clear the full surface (letterbox bars), then blend the finished frame in
         GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
         GLES30.glViewport(0, 0, surfaceW, surfaceH)
         GLES30.glClearColor(0f, 0f, 0f, 1f)
         GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT)
         GLES30.glViewport(letterbox[0].toInt(), letterbox[1].toInt(), letterbox[2].toInt(), letterbox[3].toInt())
-        drawSmaa(sun)
-        stageCheck("smaa")
+        if (usePost && smaaOn()) { drawSmaa(sun); stageCheck("smaa") }
+        else { // the settings.js Anti-aliasing / Post-processing switches: plain copy to the screen
+            copyToScreen(if (usePost) outTex else fxTex)
+            stageCheck("copy")
+        }
         stageProbeFrames++
 
         if (!firstFrameLogged) {
@@ -2463,7 +3002,8 @@ class GlCityRenderer : GLSurfaceView.Renderer {
 
     /** Conform every demo street corridor into the heightmap (the site's road mechanism). */
     private fun conformRoads() {
-        for (road in demo.roads) {
+        val d = demo ?: return
+        for (road in d.roads) {
             if (road.world.size < 2) continue
             val pts = ArrayList<Heightmap.PathPoint>(road.world.size)
             for (p in road.world) {
@@ -2475,7 +3015,7 @@ class GlCityRenderer : GLSurfaceView.Renderer {
 
     private fun buildRoadNet() {
         roadSegs.clear()
-        for (road in demo.roads) {
+        for (road in demo?.roads ?: emptyList()) {
             val hw = DemoCity.halfWidth(road.type)
             val w = road.world
             for (i in 0 until w.size - 1) {
@@ -2544,7 +3084,7 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         // one mesh per polyline carrying its road-space frame (lat, along, dA, dB) so the
         // FS_LIT_WET analytic lamp pools evaluate in the road's own coordinates (RoadMaterials.js)
         roadMeshes.clear()
-        for ((roadIdx, road) in demo.roads.withIndex()) {
+        for ((roadIdx, road) in (demo?.roads ?: emptyList()).withIndex()) {
             val hw = DemoCity.halfWidth(road.type)
             val isPath = road.type == "path"
             val cr = if (isPath) 0.46f else 0.115f
@@ -2641,7 +3181,7 @@ class GlCityRenderer : GLSurfaceView.Renderer {
     private fun loadBuildings() {
         buildings.clear()
         val kindMap = intArrayOf(0, 0, 1, 1, 2, 3, 2) // DemoCity zone id -> renderer palette kind
-        for (b in demo.blocks) {
+        for (b in demo?.blocks ?: emptyList()) {
             val gx = ((b.x + cityHalf) / cellSize).toInt().coerceIn(0, gridN - 1)
             val gz = ((b.z + cityHalf) / cellSize).toInt().coerceIn(0, gridN - 1)
             buildings.add(Building(b.x, b.y, b.z, b.w, b.d, b.h, kindMap[b.kind], b.yaw, b.seed, gz * gridN + gx))
@@ -2653,7 +3193,7 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         // and crossing, per-direction lanes, the site's classify() connection rules) — junctions,
         // signals, the conflict matrix and A* routing then come from the bit-exact LaneNetwork port
         val net = Traffic.LaneNetwork()
-        net.rebuild(RoadNetBuilder.build(demo.roads))
+        net.rebuild(RoadNetBuilder.build(demo?.roads ?: emptyList()))
         trafficNet = net
         val sim = Traffic.TrafficSim(net, 1337, simHashString("traffic"))
         sim.onNetwork()
@@ -2755,7 +3295,7 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         simMilestones = SimMilestones(simEconomy)
         syncSimBuildings()
         demoRoadCost = 0.0
-        for (road in demo.roads) {
+        for (road in demo?.roads ?: emptyList()) {
             val w = road.world
             for (i in 0 until w.size - 1) {
                 val dx = w[i + 1][0] - w[i][0]
@@ -2777,7 +3317,7 @@ class GlCityRenderer : GLSurfaceView.Renderer {
     /** Rebuild the sim's building list from the renderer's world state (called after any edit). */
     private fun syncSimBuildings() {
         simBuildingList.clear()
-        for (b in demo.blocks) {
+        for (b in demo?.blocks ?: emptyList()) {
             val t = zoneToType(b.kind) ?: continue // parks / landmarks are not economy buildings (web zoneClass null)
             simBuildingList.add(SimBuilding("demo${simBuildingList.size}", t, b.x.toDouble(), b.z.toDouble(),
                 b.w.toDouble(), b.d.toDouble(), b.h.toDouble()))
@@ -2850,6 +3390,9 @@ class GlCityRenderer : GLSurfaceView.Renderer {
     fun econMilestoneNext(): String? = if (simReady()) simEconomy.e.milestone.next else null
     fun econMilestoneNextPopulation(): Int? = if (simReady()) simEconomy.e.milestone.nextPopulation else null
     fun econMilestoneProgress(): Double = if (simReady()) simEconomy.e.milestone.progress else 1.0
+    fun econLandValue(): Double = if (simReady()) simEconomy.e.landValue else 0.3
+    fun econPollution(): Double = if (simReady()) simEconomy.e.pollution else 0.0
+    fun econCoverage(id: String): Double = if (simReady()) simEconomy.e.coverage[id] ?: 0.0 else 0.0
     fun cityName(): String = if (simReady()) simEconomy.e.cityName else "New Fable"
     fun setCityName(v: String) {
         if (simReady()) simEconomy.e.cityName = v
@@ -3387,6 +3930,7 @@ class GlCityRenderer : GLSurfaceView.Renderer {
     }
 
     private fun rebuildEditMeshes() {
+        editsCounter++
         // roads: per-type width/colour quad + lane marking(s); zones: catalog-coloured translucent quad
         val roads = FloatArray(roadCells.size * 3 * 6 * 8)
         var o = 0
@@ -3628,6 +4172,23 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         camPitchGoal = (camPitchGoal + delta).coerceIn(0.35f, 1.45f)
     }
 
+    /**
+     * The site's camera presets (DebugAPI.js presets, settings.js camera row): city / street /
+     * skyline / aerial — distance + yaw + pitch around the CURRENT target (the web presets
+     * target the world centre; on touch the player is usually framing their own district).
+     */
+    fun applyCameraPreset(name: String): Boolean {
+        val d2r = Math.PI.toFloat() / 180f
+        when (name) {
+            "city" -> { camDistGoal = 420f; camYawGoal += 0f; camPitchGoal = 40f * d2r }
+            "street" -> { camDistGoal = 70f; camPitchGoal = 16f * d2r }
+            "skyline" -> { camDistGoal = 900f; camYawGoal += 80f * d2r; camPitchGoal = 11f * d2r }
+            "aerial" -> { camDistGoal = 1500f; camYawGoal += 5f * d2r; camPitchGoal = 58f * d2r }
+            else -> return false
+        }
+        return true
+    }
+
     private fun updateCamera(dt: Float) {
         val k = (dt * 8f).coerceIn(0f, 1f)
         camTarget[0] += (camTargetGoal[0] - camTarget[0]) * k
@@ -3686,6 +4247,9 @@ class GlCityRenderer : GLSurfaceView.Renderer {
     fun clearSelection() {
         selectedBuilding = null
     }
+
+    /** True while an entity is selected (the info panel is open) — hud.escape's last layer. */
+    fun hasSelection(): Boolean = selectedBuilding != null
 
     // ---------------------------------------------------------------- persistence
 
@@ -4079,7 +4643,7 @@ class GlCityRenderer : GLSurfaceView.Renderer {
             sun.zenith[0] * 0.6f + 0.35f, sun.zenith[1] * 0.6f + 0.38f, sun.zenith[2] * 0.6f + 0.42f)
         GLES30.glUniform3f(u(progPrecip, "uTint"), tint[0], tint[1], tint[2])
         GLES30.glUniform1f(u(progPrecip, "uAlpha"), if (snow) 0.62f * sun.precip else 0.34f * sun.precip)
-        GLES30.glDrawArrays(GLES30.GL_POINTS, 0, PRECIP_N)
+        GLES30.glDrawArrays(GLES30.GL_POINTS, 0, (PRECIP_N * preset().particles).toInt().coerceIn(1, PRECIP_N))
         GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, 0)
         GLES30.glDepthMask(true)
         GLES30.glDisable(GLES30.GL_BLEND)
@@ -4286,11 +4850,11 @@ class GlCityRenderer : GLSurfaceView.Renderer {
                 // --- the site's clearing events (terrain/index.js roads:changed / building:added /
                 //     zones:changed / service:added) — every prebuilt road and block loses its trees
                 val forest = Vegetation.Forest(trees, worldHeight.half, worldHeight)
-                for (road in demo.roads) {
+                for (road in demo?.roads ?: emptyList()) {
                     if (road.world.size < 2) continue
                     forest.clearPolyline(road.world, DemoCity.halfWidth(road.type) * 2 + 3.0)
                 }
-                for (b in demo.blocks) {
+                for (b in demo?.blocks ?: emptyList()) {
                     // demo service blocks clear like the site's service:added (16×16 pad, margin 5)
                     if (b.kind == DemoCity.Z_SERVICE) forest.clearOriented(b.x.toDouble(), b.z.toDouble(), 16.0, 16.0, 0.0, 5.0)
                     else forest.clearOriented(b.x.toDouble(), b.z.toDouble(), b.w.toDouble(), b.d.toDouble(), b.yaw.toDouble(), 1.5)
@@ -4299,7 +4863,7 @@ class GlCityRenderer : GLSurfaceView.Renderer {
                 clusterNoise = SimplexNoise(hash2Signed(1337, 909))
 
                 // ---- the site's street furniture (PropScatter.segment over the demo roads) ----
-                val propSegs = demo.roads.mapIndexed { ri, r ->
+                val propSegs = (demo?.roads ?: emptyList()).mapIndexed { ri, r ->
                     Props.Seg("d$ri", r.type, r.world, DemoCity.halfWidth(r.type).toDouble(),
                         when (r.type) { "avenue" -> 9.0; "highway" -> 15.4; "path" -> 1.2; else -> 3.8 },
                         when (r.type) { "avenue" -> 2.8; "local" -> 2.0; else -> 0.0 })
@@ -4308,7 +4872,7 @@ class GlCityRenderer : GLSurfaceView.Renderer {
                     { x, z -> worldHeight.getHeight(x, z) },
                     { x, z -> worldHeight.getHeight(x, z) < worldHeight.waterLevel },
                     { x, z, pad ->
-                        for (b in demo.blocks) {
+                        for (b in demo?.blocks ?: emptyList()) {
                             val dx = x - b.x; val dz = z - b.z
                             if (kotlin.math.abs(dx) + kotlin.math.abs(dz) > b.w / 2 + b.d / 2 + pad + 2) continue
                             val c = cos(b.yaw.toDouble()); val sv = sin(b.yaw.toDouble())
@@ -4896,7 +5460,7 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         if (pudIbo != 0) { GLES30.glDeleteBuffers(1, intArrayOf(pudIbo), 0); pudIbo = 0 }
         if (texDrainage != 0) { GLES30.glDeleteTextures(1, intArrayOf(texDrainage), 0); texDrainage = 0 }
         pudIdxCount = 0
-        val segs = demo.roads.mapIndexed { i, r ->
+        val segs = (demo?.roads ?: emptyList()).mapIndexed { i, r ->
             PuddleField.SegIn(
                 "d$i", r.type, DemoCity.halfWidth(r.type).toDouble() * 2.0,
                 DoubleArray(r.world.size * 2) { k ->
@@ -4936,6 +5500,63 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         out[0] = camTarget[0] + camDist * cos(camPitch) * sin(camYaw)
         out[1] = camTarget[1] + camDist * sin(camPitch)
         out[2] = camTarget[2] + camDist * cos(camPitch) * cos(camYaw)
+    }
+
+    /** main.js findBuildableStart (compact port): the flattest dry 3×3 patch on a coarse grid,
+     *  preferring land near the map centre — where an empty world's camera opens. */
+    private fun findBuildableStart(): FloatArray {
+        var best = floatArrayOf(0f, 0f)
+        var bestCost = Float.MAX_VALUE
+        val step = 48f
+        var x = -800f
+        while (x <= 800f) {
+            var z = -800f
+            while (z <= 800f) {
+                val h = worldHeight.getHeight(x.toDouble(), z.toDouble())
+                if (h > worldHeight.waterLevel + 2.0) {
+                    var mn = h; var mx = h
+                    val offs = arrayOf(floatArrayOf(step, 0f), floatArrayOf(-step, 0f), floatArrayOf(0f, step), floatArrayOf(0f, -step))
+                    for (off in offs) {
+                        val hh = worldHeight.getHeight((x + off[0]).toDouble(), (z + off[1]).toDouble())
+                        if (hh < mn) mn = hh
+                        if (hh > mx) mx = hh
+                    }
+                    val flat = (mx - mn).toFloat()
+                    val centreBias = kotlin.math.hypot(x.toDouble(), z.toDouble()).toFloat() * 0.002f
+                    val cost = flat + centreBias
+                    if (cost < bestCost) { bestCost = cost; best = floatArrayOf(x, z) }
+                }
+                z += step
+            }
+            x += step
+        }
+        return best
+    }
+
+    /**
+     * menu/index.js → main.js: build the world the start screen chose. Clears every piece of
+     * world state (edits, roads, zones, buildings, vehicles, growth, sim) and rebuilds on the
+     * GL thread; the persistence layer mirrors the choice (CityState.seed/mode). The optional
+     * city name lands AFTER initSimulation (which resets the economy model).
+     */
+    fun regenerateNow(seed: Int, mode: Int, cityName: String? = null) {
+        run {
+            worldSeed = seed
+            startMode = mode
+            // clear world state
+            roadCells.clear(); roadCellTypes.clear(); zoneCells.clear()
+            buildings.clear(); simBuildingList.clear()
+            selectedBuilding = null
+            growthLots.clear()
+            pendingEdits = null; pendingCamera = null
+            // reset gl handles so programs/meshes re-upload, then rebuild the whole world
+            resetGlHandles()
+            buildAll()
+            cityName?.let { setCityName(it) }
+            // the persistence layer follows the new world (fresh edits, new seed/mode)
+            listener?.onCityEdited()
+            pushUiFeed("info", "World ready — seed $seed")
+        }
     }
 
     /** the full 8-layer splat terrain (TerrainMaterial.js port) */
@@ -5410,7 +6031,11 @@ class GlCityRenderer : GLSurfaceView.Renderer {
     companion object {
         private const val TAG = "GlCityRenderer"
         private const val SMOKE_MAX = 16384 // the web's 64000 x pScale; the native fleet cap for frame time
-        private const val DRAW_DISTANCE = 1600f // the web quality.drawDistance equivalent (uFade 0.16/0.26 of it)
+        // the web quality.drawDistance equivalent (uFade 0.16/0.26 of it); setQuality() swaps it
+        @JvmField var DRAW_DISTANCE = 1600f
+        /** menu/index.js modes: 0 = new (empty world), 1 = demo (the site's city). */
+        const val MODE_NEW = 0
+        const val MODE_DEMO = 1
     }
 
     // ---------------------------------------------------------------- shaders

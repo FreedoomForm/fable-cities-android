@@ -18,7 +18,9 @@ data class CityState(
     var cityName: String = "New Fable",
     var speed: Int = 1,
     var edits: String = "",
-    var camera: FloatArray? = null
+    var camera: FloatArray? = null,
+    var seed: Int = 1337,       // the menu's seed choice (menu/index.js)
+    var mode: Int = 1,          // 0 = new world, 1 = demo city (menu/index.js)
 ) {
     fun save(context: Context) {
         val edit = context.getSharedPreferences(FILE, Context.MODE_PRIVATE).edit()
@@ -30,6 +32,8 @@ data class CityState(
             .putString("cityName", cityName)
             .putInt("speed", speed)
             .putString("edits", edits)
+            .putInt("seed", seed)
+            .putInt("mode", mode)
         edit.putString("camera", camera?.joinToString(",") { it.toString() } ?: "")
         edit.apply()
     }
@@ -67,7 +71,9 @@ data class CityState(
                 cityName = prefs.getString("cityName", "New Fable") ?: "New Fable",
                 speed = prefs.getInt("speed", 1).coerceIn(0, 4),
                 edits = prefs.getString("edits", "") ?: "",
-                camera = cam
+                camera = cam,
+                seed = prefs.getInt("seed", 1337),
+                mode = prefs.getInt("mode", 1),
             )
         }
     }
