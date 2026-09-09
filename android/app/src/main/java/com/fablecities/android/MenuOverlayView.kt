@@ -87,6 +87,14 @@ class MenuOverlayView(context: Context) : View(context) {
         // the menu runs before the HUD; the GL surface below keeps rendering the saved world
         postOnAnimation(object : Runnable {
             override fun run() {
+                // phase 1 (New/Demo/Resume chosen): dismiss only when the world actually
+                // exists — the menu itself is the "Building the world…" progress screen.
+                // A failed rebuild (initError) drops back to the chooser with the error shown.
+                if (phase == 1) {
+                    val r = game?.renderer
+                    if (r?.initError != null) phase = 0
+                    else if (r?.worldReady() == true) { phase = 0; host?.onMenuResume() }
+                }
                 ensurePreview()
                 invalidate()
                 postOnAnimation(this)
@@ -99,6 +107,10 @@ class MenuOverlayView(context: Context) : View(context) {
         val mode = prefs.getInt("mode", 1)
         return mode == 1 || edits.isNotEmpty() // a demo city is a city; a new one needs edits
     }
+
+    /** How long the boot world build has been running (the menu's loading readout). */
+    private val bootAt = System.currentTimeMillis()
+    private fun bootSeconds(): String = ((System.currentTimeMillis() - bootAt) / 1000L).toString()
 
     // ---------------------------------------------------------------- seed preview (Minimap.js)
 
@@ -211,8 +223,10 @@ class MenuOverlayView(context: Context) : View(context) {
         canvas.save()
         canvas.translate(ox, oy)
         canvas.scale(scale, scale)
-        // dim veil over the live world (Backdrop.js stand-in: the real world IS the backdrop)
-        paint.color = Color.argb(110, 6, 10, 16)
+        // while the world builds, the SurfaceView hole shows the window background — the veil
+        // must be OPAQUE then (the white-screen report), translucent only over a LIVE world
+        val ready = game?.renderer?.worldReady() == true
+        paint.color = if (ready) Color.argb(110, 6, 10, 16) else Color.argb(255, 6, 10, 16)
         canvas.drawRect(logical, paint)
 
         glass(canvas, rCard)
@@ -279,9 +293,17 @@ class MenuOverlayView(context: Context) : View(context) {
         paint.color = Color.argb(60, 31, 96, 122)
         canvas.drawRoundRect(rDemo, 12f, 12f, paint)
         text(canvas, "DEMO CITY", rDemo.centerX(), rDemo.centerY() + 7f, 17f, Color.WHITE, true, Paint.Align.CENTER)
-        if (phase == 1) {
+        if (phase == 1 || !ready) {
             val dot = "...".repeat(1 + ((System.currentTimeMillis() / 500).toInt() % 3))
-            text(canvas, "Building the world$dot", rCard.centerX(), rCard.bottom - 22f, 12f, COL_CYAN, false, Paint.Align.CENTER)
+            val err = game?.renderer?.initError
+            if (err != null) {
+                text(canvas, "GPU init failed: $err", rCard.centerX(), rCard.bottom - 40f, 13f, Color.rgb(255, 128, 128), true, Paint.Align.CENTER)
+            } else {
+                val since = if (phase == 1) buildingAt else bootAt
+                val secs = (System.currentTimeMillis() - since) / 1000L
+                text(canvas, "Building the world$dot · ${secs}s", rCard.centerX(), rCard.bottom - 22f, 12f, COL_CYAN, false, Paint.Align.CENTER)
+                text(canvas, "first boot compiles shaders — up to a minute on some phones", rCard.centerX(), rCard.bottom - 42f, 10f, COL_SUB, false, Paint.Align.CENTER)
+            }
         }
 
         // resume card (menu/index.js loadName/loadMeta)
@@ -315,7 +337,15 @@ class MenuOverlayView(context: Context) : View(context) {
             rName.contains(x, y) -> nameDialog()
             rNew.contains(x, y) -> start(GlCityRenderer.MODE_NEW)
             rDemo.contains(x, y) -> start(GlCityRenderer.MODE_DEMO)
-            rResume.contains(x, y) -> { if (hasSavedCity()) { persist(); host?.onMenuResume() } }
+            rResume.contains(x, y) -> {
+                if (hasSavedCity()) {
+                    persist()
+                    // resume waits out the boot build too — dismissing mid-build shows a HUD
+                    // over a half-built world; the phase-1 loop dismisses when it is ready
+                    if (game?.renderer?.worldReady() == true) host?.onMenuResume()
+                    else { buildingAt = System.currentTimeMillis(); phase = 1 }
+                }
+            }
             else -> {
                 for ((i, q) in qualities.withIndex()) if (rQualitySeg[i].contains(x, y)) {
                     quality = q

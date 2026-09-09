@@ -161,7 +161,6 @@ class HudOverlayView(context: Context) : View(context) {
     private val rDemandBars = arrayOf(
         RectF(48f, 156f, 92f, 276f), RectF(100f, 156f, 144f, 276f),
         RectF(152f, 156f, 196f, 276f), RectF(204f, 156f, 248f, 276f))
-    private val rWebChip = RectF(28f, 312f, 240f, 360f)
     private val rDock = RectF(340f, 900f, 1560f, 1046f)
     private val rDockBtns = List(5) { RectF(360f + it * 240f, 918f, 580f + it * 240f, 1028f) }
     private val rTray = RectF(340f, 640f, 1560f, 886f)
@@ -184,7 +183,6 @@ class HudOverlayView(context: Context) : View(context) {
     private val rToggleSound = RectF(1620f, 414f, 1688f, 454f)
     private var soundOn = prefs().getBoolean("soundOn", true)
     private val rRowRename = RectF(1296f, 470f, 1876f, 520f)
-    private val rRowWeb = RectF(1296f, 530f, 1876f, 580f)
     // graphics section (settings.js parity): quality seg, post toggles, auto-quality, camera presets
     private val QUALITY_NAMES = QualityPreset.PRESET_ORDER
     private val rQualitySeg = List(4) { RectF(1304f + it * 148f, 610f, 1304f + it * 148f + 136f, 652f) }
@@ -302,10 +300,6 @@ class HudOverlayView(context: Context) : View(context) {
                 invalidate(); return true
             }
             if (rRowRename.contains(x, y)) { showSettings = false; renameDialog(); invalidate(); return true }
-            if (rRowWeb.contains(x, y)) {
-                context.startActivity(android.content.Intent(context, ParityActivity::class.java))
-                invalidate(); return true
-            }
             // graphics: quality preset (Config.js QUALITY) — persisted, RTs re-allocated live
             for ((i, qn) in QUALITY_NAMES.withIndex()) if (rQualitySeg[i].contains(x, y)) {
                 gv.renderer.setQuality(qn)
@@ -348,11 +342,6 @@ class HudOverlayView(context: Context) : View(context) {
         }
         if (rBell.contains(x, y)) { showNotifications = true; unread = 0; invalidate(); return true }
         if (rGear.contains(x, y)) { showSettings = true; invalidate(); return true }
-        if (rWebChip.contains(x, y)) {
-            context.startActivity(android.content.Intent(context, ParityActivity::class.java))
-            showMessage("Opening the 1:1 web-parity build…")
-            invalidate(); return true
-        }
 
         // info panel close
         infoLines?.let { lines ->
@@ -506,7 +495,6 @@ class HudOverlayView(context: Context) : View(context) {
         }
         drawTopbar(canvas)
         drawDemand(canvas)
-        drawWebChip(canvas)
         drawLegend(canvas)
         drawTray(canvas)
         drawDock(canvas)
@@ -981,12 +969,6 @@ class HudOverlayView(context: Context) : View(context) {
         }
     }
 
-    private fun drawWebChip(canvas: Canvas) {
-        glass(canvas, rWebChip)
-        text(canvas, "WEB-PARITY", 44f, 336f, 13f, Color.WHITE, true)
-        text(canvas, "open the 1:1 web build", 44f, 352f, 9f, COL_SUB, false)
-    }
-
     /** Catalog thumbs (ui/thumbs.js): per-item gradient swatches, cached shaders. */
     private val thumbShaders = HashMap<String, LinearGradient>()
 
@@ -1223,11 +1205,6 @@ class HudOverlayView(context: Context) : View(context) {
         canvas.drawRoundRect(rRowRename, 10f, 10f, paint)
         text(canvas, "City name", 1304f, 502f, 14f, Color.WHITE, false)
         text(canvas, "${gv.renderer.cityName()} ›", 1868f, 502f, 13f, COL_CYAN, false, Paint.Align.RIGHT)
-        // web parity row
-        paint.color = Color.argb(30, 255, 255, 255)
-        canvas.drawRoundRect(rRowWeb, 10f, 10f, paint)
-        text(canvas, "Web-parity build (1:1 web game)", 1304f, 562f, 14f, Color.WHITE, false)
-        text(canvas, "Open ›", 1868f, 562f, 13f, COL_CYAN, false, Paint.Align.RIGHT)
 
         // ---- graphics: quality presets (Config.js QUALITY; reloads the RTs natively) ----
         text(canvas, "GRAPHICS", 1304f, 598f, 11f, COL_SUB, true)

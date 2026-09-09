@@ -5,9 +5,8 @@
         android:label="Fable Cities"
         android:supportsRtl="true"
         android:theme="@style/Theme.FableCities">
-        <!-- The NATIVE GLES renderer is the app entry point (track B promoted to launcher).
-             The bundled 1:1 web build remains installed and CI-gated as ParityActivity,
-             reachable from the native HUD chip and by component name. -->
+        <!-- The NATIVE GLES renderer IS the app — the offline web-parity bundle was removed
+             from the APK entirely (single-track build, no WebView). -->
         <activity
             android:name=".MainActivity"
             android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboardHidden"
@@ -18,10 +17,5 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
-        <activity
-            android:name=".ParityActivity"
-            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboardHidden|navigation"
-            android:exported="true"
-            android:screenOrientation="landscape" />
     </application>
 </manifest>

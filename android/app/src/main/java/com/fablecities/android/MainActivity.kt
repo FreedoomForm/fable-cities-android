@@ -27,9 +27,11 @@ class MainActivity : Activity() {
             override fun onMenuResume() = dismissMenu()
             override fun onMenuStart(seed: Int, mode: Int, cityName: String) {
                 // the world the player chose; edits from a different city do not follow it —
-                // regenerate clears them and re-persists via onCityEdited once rebuilt
+                // regenerate clears them and re-persists via onCityEdited once rebuilt.
+                // The menu STAYS visible as the "Building the world…" progress screen and
+                // dismisses itself (phase 1 → worldReady) — dismissing here would blank the
+                // loading state exactly when the device is slowest.
                 gameView.regenerate(seed, mode, cityName)
-                dismissMenu()
             }
         }
         val root = FrameLayout(this)

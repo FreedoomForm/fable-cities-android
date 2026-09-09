@@ -634,6 +634,12 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         GLES30.glEnable(GLES30.GL_CULL_FACE)
         GLES30.glCullFace(GLES30.GL_BACK)
         GLES30.glClearColor(0.03f, 0.05f, 0.08f, 1f)
+        // device/GPU identity in the log — the first thing to ask for when a real device
+        // misbehaves (the CI emulator runs swiftshader; Adreno/Mali/PowerVR can differ)
+        Log.i(TAG, "device ${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL} " +
+            "API ${android.os.Build.VERSION.SDK_INT}, GPU: " +
+            "${GLES30.glGetString(GLES30.GL_RENDERER)} / ${GLES30.glGetString(GLES30.GL_VENDOR)} / " +
+            GLES30.glGetString(GLES30.GL_VERSION))
         // GLSurfaceView may hand us a BRAND-NEW EGL context (preserveEGLContextOnPause covers
         // brief pauses only). All cached object handles are invalid then - zero them so every
         // build/guard re-runs against the fresh context (the CPU-side world stays cached).
@@ -642,8 +648,19 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         } else {
             resetGlHandles()
         }
-        buildAll()
+        // NEVER let a Throwable escape into the GLThread: it kills the whole process and the
+        // user is left staring at a dead surface. Record it — the start menu shows the text —
+        // and keep presenting dark frames instead.
+        try {
+            buildAll()
+        } catch (t: Throwable) {
+            initError = if (t is OutOfMemoryError) "Out of memory building the world" else "${t.javaClass.simpleName}: ${t.message}"
+            Log.e(TAG, "buildAll FAILED", t)
+        }
     }
+
+    /** Non-null when the world build threw on this device (shown on the start menu). */
+    @JvmField var initError: String? = null
 
     /** Everything one EGL context needs: programs, buffers, the world, the sim. Called from
      *  onSurfaceCreated and from regenerate() (the start screen's New / Demo choice). */
@@ -690,6 +707,7 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         pendingEdits?.let { applyEdits(it) }
         pendingEdits = null
         pendingCamera = null
+        initError = null // a successful (re)build clears a previous failure banner
     }
 
     /**
@@ -2554,6 +2572,13 @@ class GlCityRenderer : GLSurfaceView.Renderer {
             lastFrameLog = now
             val fs = frameStats()
             Log.d("GlCityRenderer", "frame avg %.2f ms (p99 %.2f ms, ~%.0f fps)".format(fs[0], fs[1], 1000f / fs[0]))
+        }
+
+        // a failed world build (or a context reset mid-recovery) must still PRESENT a frame —
+        // an unpresented surface shows the window background and looks like a dead app
+        if (!glReady) {
+            GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT or GLES30.GL_DEPTH_BUFFER_BIT)
+            return
         }
 
         if (pendingGfxUpload) uploadWorldGfx()
@@ -5555,22 +5580,29 @@ class GlCityRenderer : GLSurfaceView.Renderer {
      * city name lands AFTER initSimulation (which resets the economy model).
      */
     fun regenerateNow(seed: Int, mode: Int, cityName: String? = null) {
-        run {
-            worldSeed = seed
-            startMode = mode
-            // clear world state
-            roadCells.clear(); roadCellTypes.clear(); zoneCells.clear()
-            buildings.clear(); simBuildingList.clear()
-            selectedBuilding = null
-            growthLots.clear()
-            pendingEdits = null; pendingCamera = null
-            // reset gl handles so programs/meshes re-upload, then rebuild the whole world
-            resetGlHandles()
-            buildAll()
-            cityName?.let { setCityName(it) }
-            // the persistence layer follows the new world (fresh edits, new seed/mode)
-            listener?.onCityEdited()
-            pushUiFeed("info", "World ready — seed $seed")
+        // runs inside queueEvent — an uncaught Throwable here kills the GLThread and the app;
+        // record it on initError (the start menu shows it) and keep presenting frames
+        try {
+            run {
+                worldSeed = seed
+                startMode = mode
+                // clear world state
+                roadCells.clear(); roadCellTypes.clear(); zoneCells.clear()
+                buildings.clear(); simBuildingList.clear()
+                selectedBuilding = null
+                growthLots.clear()
+                pendingEdits = null; pendingCamera = null
+                // reset gl handles so programs/meshes re-upload, then rebuild the whole world
+                resetGlHandles()
+                buildAll()
+                cityName?.let { setCityName(it) }
+                // the persistence layer follows the new world (fresh edits, new seed/mode)
+                listener?.onCityEdited()
+                pushUiFeed("info", "World ready — seed $seed")
+            }
+        } catch (t: Throwable) {
+            initError = if (t is OutOfMemoryError) "Out of memory building the world" else "${t.javaClass.simpleName}: ${t.message}"
+            Log.e(TAG, "regenerateNow FAILED", t)
         }
     }
 

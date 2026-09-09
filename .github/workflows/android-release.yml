@@ -48,25 +48,6 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Set up Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
-      - name: Build web bundle into APK assets (web-parity track)
-        run: |
-          npm ci --no-audit --no-fund
-          npx vite build
-          # Downscale the CC0 texture sets for the phone: 4K source images never
-          # show beyond ~1024 px in the WebView; keeps the APK at a sane size.
-          # Formats and filenames are untouched, so GLTF texture references keep working.
-          pip install --quiet pillow
-          python3 tools/downscale_assets.py dist/assets 1024
-          mkdir -p android/app/src/main/assets/web
-          cp -r dist/. android/app/src/main/assets/web/
-          du -sh android/app/src/main/assets/web
-          ls android/app/src/main/assets/web | head
-
       - name: Set up Java
         uses: actions/setup-java@v4
         with:
@@ -84,7 +65,7 @@ jobs:
         with:
           gradle-version: '8.7'
 
-      - name: Build debug APK (native + bundled web-parity assets)
+      - name: Build debug APK (pure native, no web bundle)
         working-directory: android
         run: gradle :app:assembleDebug --stacktrace
 
@@ -147,20 +128,7 @@ jobs:
             # keep the immersive-mode confirmation ("Viewing full screen") out of the screenshots
             adb shell settings put global immersive_mode_confirmations dismissed || true
             adb shell settings put global policy_control immersive.full=* || true
-            # ---- GATE 1: web-parity track (WebView + three.js, slow first boot on swiftshader) ----
-            adb logcat -c
-            adb shell am start -W -n com.fablecities.android/.ParityActivity
-            sleep 90
-            adb logcat -d > parity_bootcat.txt || true
-            adb shell pidof com.fablecities.android > pid_parity.txt || true
-            grep -q "[0-9]" pid_parity.txt || { echo "::error::Parity (WebView) process died during launch"; grep -E "Fatal signal|FATAL EXCEPTION|SIGSEGV|SIGABRT|AndroidRuntime|chromium|Console|fablecities" parity_bootcat.txt | head -60; exit 1; }
-            grep -E "\[ERROR:CONSOLE" parity_bootcat.txt | grep -v -i favicon && { echo "::error::Web-parity page reported console errors inside the WebView (shader compile / 404 / JS exception)"; grep -E "\[ERROR:CONSOLE" parity_bootcat.txt | head -20; exit 1; } || true
-            adb shell input tap 1486 553 || true
-            sleep 2
-            timeout 90 adb exec-out screencap -p > parity_screen.png || true
-            # ---- GATE 2: native GLES renderer activity ----
-            adb shell am force-stop com.fablecities.android
-            sleep 2
+            # ---- GATE 1: native GLES renderer activity (the whole app — no WebView track) ----
             adb logcat -c
             adb shell am start -W -n com.fablecities.android/.MainActivity
             # the renderer must actually PRESENT its first frame before the gate can judge it:
@@ -195,7 +163,7 @@ jobs:
             echo "native screenshot stddev:"; cat sd.txt
             python3 -c "import sys; sys.exit(0 if float(open('sd.txt').read().strip() or '1') > 0.02 else 1)" || { echo "::error::Native screenshot is blank/uniform — the scene did not render"; exit 1; }
             cp full_bootcat.txt full_logcat.txt
-            # ---- GATE 3: rotation + background/resume stress (lifecycle gates from item 1) ----
+            # ---- GATE 2: rotation + background/resume stress (lifecycle gates from item 1) ----
             adb shell settings put system accelerometer_rotation 0 || true
             adb shell settings put system user_rotation 1 || true
             sleep 4
@@ -213,7 +181,7 @@ jobs:
             grep -q "[0-9]" pid_stress.txt || { if grep -q "DeadSystemException" stress_logcat.txt; then echo "::warning::guest system_server died during stress (DeadSystemException) - the app death is collateral, gates 1-2 already passed"; else echo "::error::Native process died under rotation/background stress"; grep -E "Fatal signal|FATAL EXCEPTION|SIGSEGV|SIGABRT|AndroidRuntime" stress_logcat.txt | head -40; exit 1; fi; }
             grep -A 2 "FATAL EXCEPTION" stress_logcat.txt | grep "com.fablecities" && { echo "::error::Fatal during rotation/background stress"; grep -E -A 25 "FATAL EXCEPTION|Fatal signal" stress_logcat.txt | head -60; exit 1; } || true
             timeout 90 adb exec-out screencap -p > stress_screen.png || true
-            echo "Emulator gate PASSED: parity + native both alive, no fatal, no page/GL errors, rotation+background stress survived"
+            echo "Emulator gate PASSED: native alive, no fatal, no GL errors, rotation+background stress survived"
 
       - name: Upload emulator evidence
         if: always()
@@ -221,9 +189,6 @@ jobs:
         with:
           name: emulator-${{ github.sha }}
           path: |
-            parity_screen.png
-            parity_bootcat.txt
-            pid_parity.txt
             emulator_screen.png
             full_bootcat.txt
             full_logcat.txt
@@ -247,7 +212,7 @@ jobs:
             "$APK" \
             --target "$GITHUB_SHA" \
             --title "Android build ${short_sha}" \
-            --notes "Fable Cities for Android, commit ${GITHUB_SHA}. The NATIVE GLES renderer app (MainActivity) is the entry point — tap the icon and the native build runs. The bundled 1:1 web-parity build (the full production web game served offline in-app) remains installed as ParityActivity: open it from the native HUD 'WEB-PARITY' chip; Back twice returns to native. CI gates passed: build + unit tests, emulator boot for both activities (process alive, no fatal exceptions, no page console errors, no GL errors), rotation/background stress, screenshots in the emulator-${GITHUB_SHA} artifact." \
+            --notes "Fable Cities for Android, commit ${GITHUB_SHA}. The NATIVE GLES renderer is the entire app — the offline web-parity bundle has been removed from the APK (single native track, no WebView, no ParityActivity; the HUD 'WEB-PARITY' chip is gone with it). CI gates passed: build + unit tests, emulator boot (process alive, no fatal exceptions, no GL errors, non-blank screenshot), rotation/background stress, screenshots in the emulator-${GITHUB_SHA} artifact." \
             --prerelease
 
   web-check:
