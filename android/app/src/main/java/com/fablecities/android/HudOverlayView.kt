@@ -2,6 +2,8 @@ package com.fablecities.android
 
 import android.content.Context
 import android.graphics.Canvas
+import android.graphics.LinearGradient
+import android.graphics.Shader
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.RectF
@@ -82,6 +84,7 @@ class HudOverlayView(context: Context) : View(context) {
             if (notifs.size > 40) notifs.removeAt(0)
             unread++
             toast(n.second, if (n.first == "alert") COL_UPKEEP else COL_GOLD)
+            if (n.second.startsWith("Milestone:")) gv.audio.action("Milestone unlocked") // OneShots.js
         }
     }
 
@@ -178,6 +181,8 @@ class HudOverlayView(context: Context) : View(context) {
     private fun weatherRect(i: Int): RectF = RectF(1304f + i * 108f, 214f, 1304f + i * 108f + 100f, 258f)
     private val rSlider = RectF(1304f, 316f, 1868f, 352f)
     private val rToggleHide = RectF(1800f, 414f, 1868f, 454f)
+    private val rToggleSound = RectF(1620f, 414f, 1688f, 454f)
+    private var soundOn = prefs().getBoolean("soundOn", true)
     private val rRowRename = RectF(1296f, 470f, 1876f, 520f)
     private val rRowWeb = RectF(1296f, 530f, 1876f, 580f)
     // graphics section (settings.js parity): quality seg, post toggles, auto-quality, camera presets
@@ -287,6 +292,13 @@ class HudOverlayView(context: Context) : View(context) {
             if (rToggleHide.contains(x, y)) {
                 hudHidden = true
                 prefs().edit().putBoolean("hudHidden", true).apply()
+                invalidate(); return true
+            }
+            if (rToggleSound.contains(x, y)) {
+                soundOn = !soundOn
+                prefs().edit().putBoolean("soundOn", soundOn).apply()
+                gv.audio.enabled = soundOn
+                toast(if (soundOn) "Sound on" else "Sound muted", COL_CYAN)
                 invalidate(); return true
             }
             if (rRowRename.contains(x, y)) { showSettings = false; renameDialog(); invalidate(); return true }
@@ -521,8 +533,10 @@ class HudOverlayView(context: Context) : View(context) {
     /** Central tool arming (the site's hud.selectTool): keeps the renderer's info view
      *  overlay in sync with the INFO:* tool token. */
     private fun setTool(token: String) {
+        val changed = token != toolToken
         toolToken = token
         gameView?.renderer?.setInfoView(if (token.startsWith("INFO:")) token.drop(5) else null)
+        if (changed) gameView?.audio?.toolArmed() // ui/index.js: the arm tick
     }
 
     private fun drawLegend(canvas: Canvas) {
@@ -973,6 +987,21 @@ class HudOverlayView(context: Context) : View(context) {
         text(canvas, "open the 1:1 web build", 44f, 352f, 9f, COL_SUB, false)
     }
 
+    /** Catalog thumbs (ui/thumbs.js): per-item gradient swatches, cached shaders. */
+    private val thumbShaders = HashMap<String, LinearGradient>()
+
+    private fun thumbShader(id: String, color: Int, l: Float, t: Float, b: Float): LinearGradient {
+        val key = "$id|$l|$t|$b"
+        thumbShaders[key]?.let { return it }
+        val hsv = FloatArray(3)
+        Color.colorToHSV(color, hsv)
+        val light = Color.HSVToColor(floatArrayOf(hsv[0], hsv[1] * 0.55f, (hsv[2] * 1.25f).coerceAtMost(1f)))
+        val dark = Color.HSVToColor(floatArrayOf(hsv[0], (hsv[1] * 1.1f).coerceAtMost(1f), hsv[2] * 0.55f))
+        val sh = LinearGradient(l, t, l, b, intArrayOf(light, color, dark), floatArrayOf(0f, 0.45f, 1f), Shader.TileMode.CLAMP)
+        thumbShaders[key] = sh
+        return sh
+    }
+
     private fun drawTray(canvas: Canvas) {
         val cat = openCat ?: return
         glass(canvas, rTray)
@@ -992,10 +1021,13 @@ class HudOverlayView(context: Context) : View(context) {
                 canvas.drawRoundRect(r, 10f, 10f, paint)
                 paint.style = Paint.Style.FILL
             }
-            paint.color = item.color
-            canvas.drawRoundRect(RectF(r.left + 6f, r.top + 8f, r.left + 12f, r.bottom - 8f), 3f, 3f, paint)
-            text(canvas, item.chip, r.left + 22f, r.top + 34f, 15f, Color.WHITE, true)
-            text(canvas, item.cost, r.left + 22f, r.top + 60f, 12f, COL_GOLD, false)
+            // the thumbnail: a 3-stop vertical gradient swatch (thumbs.js viewThumb equivalent)
+            val sw = RectF(r.left + 10f, r.top + 10f, r.left + 58f, r.bottom - 10f)
+            paint.shader = thumbShader("${cat.id}:${item.id}", item.color, sw.left, sw.top, sw.bottom)
+            canvas.drawRoundRect(sw, 8f, 8f, paint)
+            paint.shader = null
+            text(canvas, item.chip, r.left + 70f, r.top + 34f, 15f, Color.WHITE, true)
+            text(canvas, item.cost, r.left + 70f, r.top + 60f, 12f, COL_GOLD, false)
         }
     }
 
@@ -1175,12 +1207,17 @@ class HudOverlayView(context: Context) : View(context) {
         val h = hour.toInt().coerceIn(0, 23)
         val m = ((hour - hour.toInt()) * 60f).toInt()
         text(canvas, "${String.format("%02d:%02d", h, m)} · ${dayPhase(hour)}", 1304f, 380f, 13f, Color.WHITE, true)
-        // hide hud
+        // hide hud + sound toggles (settings.js interface row + the audio master switch)
         text(canvas, "Hide HUD (cinematic mode)", 1304f, 442f, 14f, Color.WHITE, false)
         paint.color = if (hudHidden) COL_CYAN else Color.argb(50, 255, 255, 255)
         canvas.drawRoundRect(rToggleHide, 20f, 20f, paint)
         paint.color = Color.WHITE
         canvas.drawCircle(if (hudHidden) rToggleHide.right - 20f else rToggleHide.left + 20f, rToggleHide.centerY(), 15f, paint)
+        text(canvas, "Sound", 1480f, 442f, 14f, Color.WHITE, false, Paint.Align.RIGHT)
+        paint.color = if (soundOn) COL_CYAN else Color.argb(50, 255, 255, 255)
+        canvas.drawRoundRect(rToggleSound, 20f, 20f, paint)
+        paint.color = Color.WHITE
+        canvas.drawCircle(if (soundOn) rToggleSound.right - 20f else rToggleSound.left + 20f, rToggleSound.centerY(), 15f, paint)
         // rename row
         paint.color = Color.argb(30, 255, 255, 255)
         canvas.drawRoundRect(rRowRename, 10f, 10f, paint)

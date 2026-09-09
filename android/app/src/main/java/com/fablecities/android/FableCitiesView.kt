@@ -18,6 +18,22 @@ class FableCitiesView(context: Context) : GLSurfaceView(context) {
     var hud: HudOverlayView? = null
     private val savedState = CityState.load(context)
 
+    /** The site's audio system (src/modules/audio (all files) port); the HUD drives one-shots. */
+    val audio = AudioEngine().also { eng ->
+        eng.state = {
+            val r = renderer
+            AudioEngine.AudioState(
+                hour = r.hour,
+                population = r.econPopulation(),
+                vehicles = r.vehicleCount(),
+                rain = r.weatherPrecip().toFloat(),
+                wind = r.weatherWind().toFloat(),
+                paused = r.paused,
+                speed = r.simSpeed,
+            )
+        }
+    }
+
     // gesture tracking
     private var mode = MODE_IDLE
     private var downX = 0f
@@ -59,6 +75,8 @@ class FableCitiesView(context: Context) : GLSurfaceView(context) {
                 }
             }
         }
+        audio.enabled = context.getSharedPreferences("fable_cities_city", Context.MODE_PRIVATE)
+            .getBoolean("soundOn", true)
         renderer.listener = object : GlCityRenderer.Listener {
             override fun onMessage(text: String) {
                 hud?.showMessage(text)
@@ -169,6 +187,7 @@ class FableCitiesView(context: Context) : GLSurfaceView(context) {
                     val parts = token.split(':', limit = 2)
                     val msg = renderer.tapTool(event.x, event.y, parts[0], parts.getOrNull(1))
                     hud?.showMessage(msg)
+                    audio.action(msg) // OneShots.js: the action voice bank
                     persistSoon()
                 }
                 mode = MODE_IDLE
@@ -191,10 +210,13 @@ class FableCitiesView(context: Context) : GLSurfaceView(context) {
     fun pauseGame() {
         renderer.paused = true
         persistNow()
+        audio.stop()
     }
 
     fun resumeGame() {
         renderer.paused = false
+        if (renderer.paused) return
+        audio.start()
     }
 
     fun isPaused(): Boolean = renderer.paused

@@ -3393,6 +3393,10 @@ class GlCityRenderer : GLSurfaceView.Renderer {
     fun econLandValue(): Double = if (simReady()) simEconomy.e.landValue else 0.3
     fun econPollution(): Double = if (simReady()) simEconomy.e.pollution else 0.0
     fun econCoverage(id: String): Double = if (simReady()) simEconomy.e.coverage[id] ?: 0.0 else 0.0
+    /** Audio state feeds (WeatherState precipitation / wind strength). */
+    fun weatherPrecip(): Double = weather.precipitation
+    fun weatherWind(): Double = weather.windStrength
+    fun vehicleCount(): Int = trafficSim?.vehicles?.size ?: 0
     fun cityName(): String = if (simReady()) simEconomy.e.cityName else "New Fable"
     fun setCityName(v: String) {
         if (simReady()) simEconomy.e.cityName = v
