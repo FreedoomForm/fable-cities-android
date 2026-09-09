@@ -505,6 +505,9 @@ class HudOverlayView(context: Context) : View(context) {
         if (showNotifications) drawNotifSheet(canvas)
         if (showSettings) drawSettingsSheet(canvas)
         drawOnboarding(canvas)
+        // GPU/render-path diagnostics (white-screen defence) — same line the menu draws
+        val diag = gameView?.renderer?.diagLine
+        if (!diag.isNullOrEmpty()) text(canvas, diag, 16f, 1070f, 10f, Color.argb(140, 190, 214, 230), false)
         canvas.restore()
     }
 

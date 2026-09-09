@@ -318,6 +318,12 @@ class MenuOverlayView(context: Context) : View(context) {
             text(canvas, name, 1230f, rResume.top + 66f, 15f, Color.WHITE, true)
             text(canvas, "${String.format("%,d", pop)} citizens · ${fmtMoney(money.toDouble())}", 1230f, rResume.top + 86f, 12f, COL_SUB, false)
         }
+
+        // GPU/render-path diagnostics (white-screen defence): the renderer reports its own
+        // state every few seconds — on a misbehaving driver the screen shows WHY it looks
+        // the way it does instead of a dead surface.
+        val diag = game?.renderer?.diagLine
+        if (!diag.isNullOrEmpty()) text(canvas, diag, 16f, 1070f, 10f, Color.argb(150, 190, 214, 230), false)
         canvas.restore()
     }
 

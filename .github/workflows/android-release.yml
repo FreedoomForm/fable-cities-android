@@ -159,10 +159,15 @@ jobs:
             # so gate on the renderer's own error log instead - any shader compile/link failure or
             # GL runtime error means the frame can not be trusted. The screenshot artifact carries
             # the visual proof alongside the release.
-            grep -E "GlCityRenderer: (shader|link|GL error)" full_bootcat.txt && { echo "::error::GL renderer reported compile/link/runtime errors"; grep -E "GlCityRenderer: " full_bootcat.txt | head -30; exit 1; } || true
+            grep -E "GlCityRenderer: (shader|link|GL error)|GlCityRenderer: .*incomplete|GlCityRenderer: watchdog:" full_bootcat.txt && { echo "::error::GL renderer reported compile/link/runtime errors (or an incomplete render target / white-screen watchdog trip)"; grep -E "GlCityRenderer: " full_bootcat.txt | head -30; exit 1; } || true
             timeout 45 adb shell input tap 1486 553 || { adb kill-server >/dev/null 2>&1; sleep 3; timeout 45 adb shell input tap 1486 553; } || true
             sleep 2
             timeout 90 adb exec-out screencap -p > emulator_screen.png || { adb kill-server >/dev/null 2>&1; sleep 3; timeout 90 adb exec-out screencap -p > emulator_screen.png; } || true
+            # exec-out over the wedging adb pipe produced 0-byte PNGs two runs in a row (the blank
+            # gate then passed vacuously on its fallback stddev) — file-based fallback: screencap
+            # to /sdcard on the guest, then adb pull. Single-line if (the runner runs line-by-line).
+            if [ ! -s emulator_screen.png ]; then timeout 60 adb shell screencap -p /sdcard/fc_gate.png; timeout 60 adb pull /sdcard/fc_gate.png emulator_screen.png; timeout 30 adb shell rm -f /sdcard/fc_gate.png; fi || true
+            if [ ! -s emulator_screen.png ]; then echo "::warning::screencap produced no image — the visual blank gate is unverifiable this run (app-side watchdog + logcat gates still hold)"; fi || true
             # BLANK-FRAME GATE: a uniform screenshot means the scene never rendered (the white
             # screen the old fixed-sleep gate kept passing). ImageMagick stddev must clear 0.02.
             # File-based: the stddev is written to sd.txt because shell variables do not survive
@@ -193,6 +198,7 @@ jobs:
             grep -q "[0-9]" pid_stress.txt || { if grep -q "DeadSystemException" stress_logcat.txt; then echo "::warning::guest system_server died during stress (DeadSystemException) - the app death is collateral, gates 1-2 already passed"; elif grep -E "FATAL EXCEPTION|Fatal signal|SIGSEGV|SIGABRT" stress_logcat.txt | grep -q "fablecities"; then echo "::error::Native process died under rotation/background stress"; grep -E -A 25 "FATAL EXCEPTION|Fatal signal" stress_logcat.txt | head -60; exit 1; elif [ ! -s stress_logcat.txt ]; then echo "::warning::pidof empty AND stress logcat undumpable — adb pipe wedged again, boot gates already passed; inconclusive, not a crash"; else echo "::warning::pidof empty but stress logcat is clean — adb wedge, not a crash (boot gates already passed)"; fi; }
             grep -A 2 "FATAL EXCEPTION" stress_logcat.txt | grep "com.fablecities" && { echo "::error::Fatal during rotation/background stress"; grep -E -A 25 "FATAL EXCEPTION|Fatal signal" stress_logcat.txt | head -60; exit 1; } || true
             timeout 90 adb exec-out screencap -p > stress_screen.png || { adb kill-server >/dev/null 2>&1; sleep 3; timeout 90 adb exec-out screencap -p > stress_screen.png; } || true
+            if [ ! -s stress_screen.png ]; then timeout 60 adb shell screencap -p /sdcard/fc_stress.png; timeout 60 adb pull /sdcard/fc_stress.png stress_screen.png; timeout 30 adb shell rm -f /sdcard/fc_stress.png; fi || true
             echo "Emulator gate PASSED: native alive, no fatal, no GL errors, rotation+background stress survived"
 
       - name: Upload emulator evidence

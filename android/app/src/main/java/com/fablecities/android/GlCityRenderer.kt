@@ -204,6 +204,19 @@ class GlCityRenderer : GLSurfaceView.Renderer {
     private var lastStageLog = 0L
     private var stageProbeFrames = 0
 
+    // --- white-screen defence (real-device report: Mali shows WHITE, SwiftShader shows black) ---
+    // An incomplete render target poisons the composer with UNINITIALIZED textures: SwiftShader
+    // zero-fills them (black — CI looks fine), Mali hands out 0xFF garbage (WHITE screen, no GL
+    // error, no crash, gate-blind). Every RT helper now downgrades RGBA16F -> RGBA8 on failure
+    // and sets rtIncomplete when even that will not complete; the scene then renders DIRECTLY
+    // to the default framebuffer (no RTs, no composer — the only path a driver cannot garbage).
+    // A readback watchdog is the second net: white output on a complete framebuffer also flips
+    // the switch. diagLine surfaces the state on-screen (menu + HUD, bottom-left).
+    @JvmField var rtIncomplete = false
+    @JvmField var diagLine = ""
+    private var whiteStrikes = 0
+    private var lastWatchdog = 0L
+
     /** First-frames diagnostic: locate exactly which post stage raises a GL error. */
     private fun stageCheck(label: String) {
         if (stageProbeFrames >= 3) return
@@ -422,7 +435,7 @@ class GlCityRenderer : GLSurfaceView.Renderer {
     private fun gtaoOn(): Boolean = ovGtao ?: preset().gtao
     private fun bloomOn(): Boolean = ovBloom ?: preset().bloom
     private fun smaaOn(): Boolean = ovSmaa ?: preset().smaa
-    private fun postOn(): Boolean = ovPost ?: true
+    private fun postOn(): Boolean = (ovPost ?: true) && !rtIncomplete
 
     /** The site's QUALITY[preset] switch (settings.js reloads the page; the native renderer
      *  re-allocates its render targets and goes on living). */
@@ -640,6 +653,7 @@ class GlCityRenderer : GLSurfaceView.Renderer {
             "API ${android.os.Build.VERSION.SDK_INT}, GPU: " +
             "${GLES30.glGetString(GLES30.GL_RENDERER)} / ${GLES30.glGetString(GLES30.GL_VENDOR)} / " +
             GLES30.glGetString(GLES30.GL_VERSION))
+        diagLine = "GPU: ${GLES30.glGetString(GLES30.GL_RENDERER)}"
         // GLSurfaceView may hand us a BRAND-NEW EGL context (preserveEGLContextOnPause covers
         // brief pauses only). All cached object handles are invalid then - zero them so every
         // build/guard re-runs against the fresh context (the CPU-side world stays cached).
@@ -809,9 +823,22 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, sceneFbo)
         GLES30.glFramebufferTexture2D(GLES30.GL_FRAMEBUFFER, GLES30.GL_COLOR_ATTACHMENT0, GLES30.GL_TEXTURE_2D, sceneTex, 0)
         GLES30.glFramebufferTexture2D(GLES30.GL_FRAMEBUFFER, GLES30.GL_DEPTH_ATTACHMENT, GLES30.GL_TEXTURE_2D, sceneDepth, 0)
-        val status = GLES30.glCheckFramebufferStatus(GLES30.GL_FRAMEBUFFER)
+        var status = GLES30.glCheckFramebufferStatus(GLES30.GL_FRAMEBUFFER)
         if (status != GLES30.GL_FRAMEBUFFER_COMPLETE) {
-            Log.e(TAG, "sceneFbo incomplete 0x${Integer.toHexString(status)}")
+            // white-screen defence: RGBA16F scene target refused by the driver — retry as RGBA8
+            Log.e(TAG, "sceneFbo incomplete 0x${Integer.toHexString(status)} — retrying as RGBA8")
+            GLES30.glDeleteTextures(1, intArrayOf(sceneTex), 0)
+            GLES30.glGenTextures(1, genTex, 0)
+            sceneTex = genTex[0]
+            GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, sceneTex)
+            GLES30.glTexImage2D(GLES30.GL_TEXTURE_2D, 0, GLES30.GL_RGBA8, w, h, 0, GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE, null)
+            texParamsLinearClamp()
+            GLES30.glFramebufferTexture2D(GLES30.GL_FRAMEBUFFER, GLES30.GL_COLOR_ATTACHMENT0, GLES30.GL_TEXTURE_2D, sceneTex, 0)
+            status = GLES30.glCheckFramebufferStatus(GLES30.GL_FRAMEBUFFER)
+        }
+        if (status != GLES30.GL_FRAMEBUFFER_COMPLETE) {
+            Log.e(TAG, "sceneFbo incomplete even as RGBA8 0x${Integer.toHexString(status)} — direct-render safe mode")
+            rtIncomplete = true
         }
         GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
         setupPostFbos(w, h)
@@ -906,21 +933,31 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         return outFb[0]
     }
 
-    private fun hdrRtInto(w: Int, h: Int, outFb: IntArray, outT: IntArray) {
+    private fun hdrRtInto(w: Int, h: Int, outFb: IntArray, outT: IntArray, float: Boolean = true) {
         val genT = IntArray(1); val genF = IntArray(1)
         GLES30.glGenTextures(1, genT, 0)
         GLES30.glGenFramebuffers(1, genF, 0)
         outT[0] = genT[0]; outFb[0] = genF[0]
         GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, outT[0])
-        GLES30.glTexImage2D(GLES30.GL_TEXTURE_2D, 0, GLES30.GL_RGBA16F, w, h, 0, GLES30.GL_RGBA, GLES30.GL_HALF_FLOAT, null)
+        if (float) GLES30.glTexImage2D(GLES30.GL_TEXTURE_2D, 0, GLES30.GL_RGBA16F, w, h, 0, GLES30.GL_RGBA, GLES30.GL_HALF_FLOAT, null)
+        else GLES30.glTexImage2D(GLES30.GL_TEXTURE_2D, 0, GLES30.GL_RGBA8, w, h, 0, GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE, null)
         texParamsLinearClamp()
         GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, outFb[0])
         GLES30.glFramebufferTexture2D(GLES30.GL_FRAMEBUFFER, GLES30.GL_COLOR_ATTACHMENT0, GLES30.GL_TEXTURE_2D, outT[0], 0)
-        val status = GLES30.glCheckFramebufferStatus(GLES30.GL_FRAMEBUFFER)
+        var status = GLES30.glCheckFramebufferStatus(GLES30.GL_FRAMEBUFFER)
         GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
         GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, 0)
         if (status != GLES30.GL_FRAMEBUFFER_COMPLETE) {
-            Log.e(TAG, "hdr RT ${w}x$h incomplete 0x${Integer.toHexString(status)}")
+            if (float) {
+                // white-screen defence: float renderability refused — retry the RT as RGBA8
+                Log.e(TAG, "hdr RT ${w}x$h incomplete 0x${Integer.toHexString(status)} — retrying as RGBA8")
+                GLES30.glDeleteFramebuffers(1, intArrayOf(outFb[0]), 0)
+                GLES30.glDeleteTextures(1, intArrayOf(outT[0]), 0)
+                hdrRtInto(w, h, outFb, outT, float = false)
+            } else {
+                Log.e(TAG, "RT ${w}x$h incomplete even as RGBA8 0x${Integer.toHexString(status)} — direct-render safe mode")
+                rtIncomplete = true
+            }
         }
     }
 
@@ -938,7 +975,8 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
         GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, 0)
         if (status != GLES30.GL_FRAMEBUFFER_COMPLETE) {
-            Log.e(TAG, "ldr RT ${w}x$h incomplete 0x${Integer.toHexString(status)}")
+            Log.e(TAG, "ldr RT ${w}x$h incomplete 0x${Integer.toHexString(status)} — direct-render safe mode")
+            rtIncomplete = true
         }
         return outFb[0]
     }
@@ -953,12 +991,16 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         texParamsNearestClamp()
         GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, outFb[0])
         GLES30.glFramebufferTexture2D(GLES30.GL_FRAMEBUFFER, GLES30.GL_COLOR_ATTACHMENT0, GLES30.GL_TEXTURE_2D, outT[0], 0)
-        val status = GLES30.glCheckFramebufferStatus(GLES30.GL_FRAMEBUFFER)
+        var status = GLES30.glCheckFramebufferStatus(GLES30.GL_FRAMEBUFFER)
+        if (status != GLES30.GL_FRAMEBUFFER_COMPLETE) {
+            Log.e(TAG, "meter RG16F incomplete 0x${Integer.toHexString(status)} — retrying as RGBA8")
+            GLES30.glTexImage2D(GLES30.GL_TEXTURE_2D, 0, GLES30.GL_RGBA8, 1, 1, 0, GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE, null)
+            GLES30.glFramebufferTexture2D(GLES30.GL_FRAMEBUFFER, GLES30.GL_COLOR_ATTACHMENT0, GLES30.GL_TEXTURE_2D, outT[0], 0)
+            status = GLES30.glCheckFramebufferStatus(GLES30.GL_FRAMEBUFFER)
+            if (status != GLES30.GL_FRAMEBUFFER_COMPLETE) rtIncomplete = true
+        }
         GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
         GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, 0)
-        if (status != GLES30.GL_FRAMEBUFFER_COMPLETE) {
-            Log.e(TAG, "meter RG16F incomplete 0x${Integer.toHexString(status)}")
-        }
     }
 
     /** The exact SMAA LUT textures from three's SMAAPass (extracted to APK assets). */
@@ -2621,16 +2663,28 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         Matrix.invertM(invVpM, 0, vpM, 0)
 
         val sun = updateSunState()
-        if (preset().reflections) {
+        // SAFE MODE (rtIncomplete): render DIRECTLY to the default framebuffer — no scene RT,
+        // no composer; the only output path that cannot show driver garbage. Reflections are
+        // dropped with the RT chain (their FBO may be the broken one).
+        val safe = rtIncomplete
+        if (preset().reflections && !safe) {
             renderReflection(sun) // Water.js renderReflection — before the main render
             stageCheck("renderReflection")
         }
         updateWetLights(sun, dt) // WetLights emitter ranking (needs the fresh sun + traffic state)
         // the effects/index.js post-chain driver steps every frame (damp chains + grade uniforms)
         updateGradeFx(dt, sun)
-        // the whole scene renders into the HDR scene RT; the composer tail resolves it to the screen
-        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, sceneFbo)
-        GLES30.glViewport(0, 0, sceneW, sceneH)
+        if (safe) {
+            GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
+            GLES30.glViewport(0, 0, surfaceW, surfaceH)
+            GLES30.glClearColor(0f, 0f, 0f, 1f)
+            GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT)
+            GLES30.glViewport(letterbox[0].toInt(), letterbox[1].toInt(), letterbox[2].toInt(), letterbox[3].toInt())
+        } else {
+            // the whole scene renders into the HDR scene RT; the composer tail resolves it to the screen
+            GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, sceneFbo)
+            GLES30.glViewport(0, 0, sceneW, sceneH)
+        }
         GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT or GLES30.GL_DEPTH_BUFFER_BIT)
 
         // sky fills the viewport (depth off)
@@ -2658,6 +2712,12 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         drawClouds(sun)
         stageCheck("clouds")
 
+        if (safe) {
+            // SAFE MODE present: the scene is already on the default framebuffer — done. The
+            // composer tail (particles included) is skipped: every one of its passes targets
+            // an off-screen RT, and a broken RT is exactly what we are hiding from.
+            stageProbeFrames++
+        } else {
         // ---- the site's composer tail: GroundFX blit → particles → probe → bloom → grade → SMAA
         GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, fxFbo)
         GLES30.glViewport(0, 0, sceneW, sceneH)
@@ -2694,10 +2754,13 @@ class GlCityRenderer : GLSurfaceView.Renderer {
             stageCheck("copy")
         }
         stageProbeFrames++
+        }
+        watchdogProbe()
 
         if (!firstFrameLogged) {
             firstFrameLogged = true
-            Log.i(TAG, "frame 1 presented (post chain: bloom+grade+AgX+SMAA live)")
+            Log.i(TAG, if (rtIncomplete) "frame 1 presented (SAFE direct render — composer off)"
+                       else "frame 1 presented (post chain: bloom+grade+AgX+SMAA live)")
         }
         if (now - lastStageLog > 15_000_000_000L) {
             lastStageLog = now
@@ -2713,6 +2776,38 @@ class GlCityRenderer : GLSurfaceView.Renderer {
                 glErrorLogged = true
             }
         }
+    }
+
+    /** Readback watchdog (white-screen defence, second net): a 4×4 centre patch of what is
+     *  actually ON the default framebuffer. White output on a complete framebuffer (garbage
+     *  textures flowing through a supposedly-complete composer — the Mali report) flips
+     *  rtIncomplete and forces the direct render on the next frame. Also refreshes the
+     *  on-screen diagLine the menu + HUD draw bottom-left, so a broken device shows its own
+     *  state instead of a dead white surface. */
+    private fun watchdogProbe() {
+        val now = System.nanoTime()
+        if (now - lastWatchdog < 3_000_000_000L) return
+        lastWatchdog = now
+        val cx = letterbox[0].toInt() + letterbox[2].toInt() / 2
+        val cy = letterbox[1].toInt() + letterbox[3].toInt() / 2
+        val px = ByteBuffer.allocateDirect(16 * 4).order(ByteOrder.nativeOrder())
+        GLES30.glReadPixels(cx - 2, cy - 2, 4, 4, GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE, px)
+        val buf = IntArray(16)
+        px.asIntBuffer().get(buf)
+        var r = 0f; var g = 0f; var b = 0f
+        for (v in buf) {
+            r += (v and 0xFF).toFloat(); g += ((v shr 8) and 0xFF).toFloat(); b += ((v shr 16) and 0xFF).toFloat()
+        }
+        r /= 16f * 255f; g /= 16f * 255f; b /= 16f * 255f
+        if (r > 0.95f && g > 0.95f && b > 0.95f) whiteStrikes++ else whiteStrikes = 0
+        if (whiteStrikes == 2 && !rtIncomplete) {
+            Log.e(TAG, "watchdog: screen centre is WHITE (r=%.2f g=%.2f b=%.2f) — composer output is garbage; forcing direct-render safe mode".format(r, g, b))
+            rtIncomplete = true
+            whiteStrikes = 0
+        }
+        diagLine = "GPU: ${GLES30.glGetString(GLES30.GL_RENDERER)} · " +
+            (if (rtIncomplete) "SAFE direct render" else "composer on") +
+            " · probe %.2f/%.2f/%.2f".format(r, g, b)
     }
 
     // ---------------------------------------------------------------- environment (the site's real sky)
