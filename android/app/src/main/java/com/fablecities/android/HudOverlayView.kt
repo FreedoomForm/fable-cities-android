@@ -373,19 +373,20 @@ class HudOverlayView(context: Context) : View(context) {
         val input = android.widget.EditText(context)
         input.setText(gv.renderer.cityName())
         input.setSelection(input.text.length)
-        android.app.AlertDialog.Builder(context)
-            .setTitle("City name")
-            .setMessage("Click to rename your city.")
-            .setView(input, 40, 16, 40, 8)
-            .setPositiveButton("Rename") { _, _ ->
-                val v = input.text.toString().trim().take(32)
-                if (v.isNotEmpty()) {
-                    gv.renderer.setCityName(v)
-                    showMessage("Renamed to $v")
-                }
+        val dlg = android.app.AlertDialog.Builder(context)
+        dlg.setTitle("City name")
+        dlg.setMessage("Click to rename your city.")
+        dlg.setView(input)
+        dlg.setPositiveButton("Rename") { d, _ ->
+            val v = input.text.toString().trim().take(32)
+            if (v.isNotEmpty()) {
+                gv.renderer.setCityName(v)
+                showMessage("Renamed to $v")
             }
-            .setNegativeButton("Cancel", null)
-            .show()
+            d.dismiss()
+        }
+        dlg.setNegativeButton("Cancel", null)
+        dlg.show()
     }
 
     // ---------------------------------------------------------------- draw

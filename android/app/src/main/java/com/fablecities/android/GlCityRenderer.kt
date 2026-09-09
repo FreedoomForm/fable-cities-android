@@ -3356,7 +3356,7 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         }
         val rng = Random(idx * 31L + 7)
         val y = terrainHeight(center[0], center[1])
-        simServices.place(type, center[0].toDouble(), center[1].toDouble(), y.toDouble(), true, doubleArrayOf(0.0))
+        simServices.place(type2, center[0].toDouble(), center[1].toDouble(), y.toDouble(), true, doubleArrayOf(0.0))
         simEconomy.e.money -= def.cost // web place(): economy.money -= def.cost (we passed free to skip double-deduction)
         buildings.add(Building(center[0], y, center[1], def.w.toFloat(), def.d.toFloat(), def.height.toFloat(), 3, cityYaw, rng.nextInt(10000), idx))
         // terrain/index.js service:added → vegetation.clearOriented(s.x, s.z, s.w||16, s.d||16, 0, 5)
