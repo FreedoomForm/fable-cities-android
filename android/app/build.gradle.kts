@@ -11,8 +11,8 @@ android {
         applicationId = "com.fablecities.android"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        versionName = "0.1.1"
     }
 
     // One committed debug keystore so EVERY CI release APK shares the same signature:

@@ -176,6 +176,9 @@ jobs:
             echo "native screenshot stddev:"; cat sd.txt
             python3 -c "import sys; sys.exit(0 if float(open('sd.txt').read().strip() or '1') > 0.02 else 1)" || { echo "::error::Native screenshot is blank/uniform — the scene did not render"; exit 1; }
             cp full_bootcat.txt full_logcat.txt
+            # the app's own diag report (boot phases, GPU identity, shader failures) — same
+            # file the phone's SEND DIAGS button shares
+            timeout 30 adb pull /sdcard/Android/data/com.fablecities.android/files/diag.txt fc_diag.txt || true
             # ---- GATE 2: rotation + background/resume stress (lifecycle gates from item 1) ----
             timeout 45 adb shell settings put system accelerometer_rotation 0 || { adb kill-server >/dev/null 2>&1; sleep 3; timeout 45 adb shell settings put system accelerometer_rotation 0; } || true
             timeout 45 adb shell settings put system user_rotation 1 || { adb kill-server >/dev/null 2>&1; sleep 3; timeout 45 adb shell settings put system user_rotation 1; } || true
@@ -215,6 +218,7 @@ jobs:
             pid_stress.txt
             stress_screen.png
             frames.txt
+            fc_diag.txt
           if-no-files-found: warn
           retention-days: 30
 

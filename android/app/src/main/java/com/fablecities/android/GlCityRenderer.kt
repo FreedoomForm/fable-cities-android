@@ -653,7 +653,13 @@ class GlCityRenderer : GLSurfaceView.Renderer {
             "API ${android.os.Build.VERSION.SDK_INT}, GPU: " +
             "${GLES30.glGetString(GLES30.GL_RENDERER)} / ${GLES30.glGetString(GLES30.GL_VENDOR)} / " +
             GLES30.glGetString(GLES30.GL_VERSION))
-        diagLine = "GPU: ${GLES30.glGetString(GLES30.GL_RENDERER)}"
+        gpuRenderer = GLES30.glGetString(GLES30.GL_RENDERER) ?: "?"
+        gpuVendor = GLES30.glGetString(GLES30.GL_VENDOR) ?: "?"
+        gpuVersion = GLES30.glGetString(GLES30.GL_VERSION) ?: "?"
+        diagLine = "GPU: $gpuRenderer"
+        Diag.log("EGL context ready: $gpuRenderer / $gpuVendor / $gpuVersion")
+        Diag.worldReadyFlag = false
+        Diag.save(appContext, gpuRenderer)
         // GLSurfaceView may hand us a BRAND-NEW EGL context (preserveEGLContextOnPause covers
         // brief pauses only). All cached object handles are invalid then - zero them so every
         // build/guard re-runs against the fresh context (the CPU-side world stays cached).
@@ -670,15 +676,25 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         } catch (t: Throwable) {
             initError = if (t is OutOfMemoryError) "Out of memory building the world" else "${t.javaClass.simpleName}: ${t.message}"
             Log.e(TAG, "buildAll FAILED", t)
+            Diag.log("buildAll FAILED: ${t.javaClass.simpleName}: ${t.message}")
+            Diag.save(appContext, gpuRenderer)
         }
     }
 
     /** Non-null when the world build threw on this device (shown on the start menu). */
     @JvmField var initError: String? = null
 
+    /** GPU identity, captured at surface creation for the menu + diag report (GL calls from
+     *  the UI thread are illegal — read the cached strings instead). */
+    @JvmField var gpuRenderer: String = ""
+    @JvmField var gpuVendor: String = ""
+    @JvmField var gpuVersion: String = ""
+
     /** Everything one EGL context needs: programs, buffers, the world, the sim. Called from
      *  onSurfaceCreated and from regenerate() (the start screen's New / Demo choice). */
     private fun buildAll() {
+        val t0 = System.nanoTime()
+        shaderFailList.clear()
         progTerrain = buildProgram(TerrainShaders.VS_TERRAIN, TerrainShaders.FS_TERRAIN, "terrain")
         progFlat = buildProgram(VS_LIT, TerrainShaders.FS_LIT_WET, "flat")
         progBuilding = buildProgram(VS_BUILDING, FS_BUILDING, "building")
@@ -713,6 +729,8 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         progSmoke = buildProgram(VS_SMOKE, FS_SMOKE, "smoke")
         buildSmokeGeometry()
         Log.i(TAG, "init: programs compiled")
+        Diag.log("programs compiled in ${"%.0f".format((System.nanoTime() - t0) / 1e6)} ms, " +
+            "failures: ${shaderFailList.size}${if (shaderFailList.isEmpty()) "" else " — ${shaderFailList.joinToString(", ") { it.substringBefore(".") }}"}")
         buildPrecipBuffer()
         buildCloudTextures()
 
@@ -786,6 +804,28 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         generateVehicles()
         initSimulation()
         glReady = true
+        Diag.worldReadyFlag = true
+        // BLACK-SCREEN defence: a core program that failed to compile silently skips its draw
+        // ("if (progX == 0) return") — the world then shows as a mostly black surface with no
+        // error anywhere. Make it LOUD: the menu banner + diag report name the failing stage.
+        if (shaderFailList.isNotEmpty()) {
+            val core = listOfNotNull(
+                if (progTerrain == 0) "terrain" else null,
+                if (progFlat == 0) "ground" else null,
+                if (progBuilding == 0) "buildings" else null,
+                if (progWater == 0) "water" else null,
+                if (progSky == 0) "sky" else null,
+                if (progTrees == 0) "trees" else null,
+            )
+            if (core.isNotEmpty()) {
+                initError = "this GPU failed to build ${core.joinToString(", ")} — tap SEND DIAGS"
+                Log.e(TAG, "core programs failed on $gpuRenderer: ${core.joinToString(", ")}")
+                Diag.log("CORE SHADER FAILURE: ${core.joinToString(", ")}")
+            }
+        }
+        Diag.recordShaderFails(shaderFailList.toList())
+        Diag.log("buildAll complete in ${"%.0f".format((System.nanoTime() - t0) / 1e6)} ms (seed=$worldSeed mode=$startMode)")
+        Diag.save(appContext, gpuRenderer)
     }
 
     override fun onSurfaceChanged(gl: GL10?, width: Int, height: Int) {
@@ -2761,6 +2801,8 @@ class GlCityRenderer : GLSurfaceView.Renderer {
             firstFrameLogged = true
             Log.i(TAG, if (rtIncomplete) "frame 1 presented (SAFE direct render — composer off)"
                        else "frame 1 presented (post chain: bloom+grade+AgX+SMAA live)")
+            Diag.log(if (rtIncomplete) "frame 1 presented (SAFE direct render — composer off)"
+                     else "frame 1 presented (post chain: bloom+grade+AgX+SMAA live)")
         }
         if (now - lastStageLog > 15_000_000_000L) {
             lastStageLog = now
@@ -2774,6 +2816,8 @@ class GlCityRenderer : GLSurfaceView.Renderer {
             if (err != GLES30.GL_NO_ERROR) {
                 Log.e(TAG, "GL error 0x${Integer.toHexString(err)}")
                 glErrorLogged = true
+                Diag.log("GL error 0x${Integer.toHexString(err)}")
+                Diag.save(appContext, gpuRenderer)
             }
         }
     }
@@ -2804,6 +2848,8 @@ class GlCityRenderer : GLSurfaceView.Renderer {
             Log.e(TAG, "watchdog: screen centre is WHITE (r=%.2f g=%.2f b=%.2f) — composer output is garbage; forcing direct-render safe mode".format(r, g, b))
             rtIncomplete = true
             whiteStrikes = 0
+            Diag.log("watchdog: WHITE centre -> SAFE direct render")
+            Diag.save(appContext, gpuRenderer)
         }
         diagLine = "GPU: ${GLES30.glGetString(GLES30.GL_RENDERER)} · " +
             (if (rtIncomplete) "SAFE direct render" else "composer on") +
@@ -4454,8 +4500,16 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         return handles[0]
     }
 
+    /** compile/link failures on THIS GPU (labels + driver logs) — surfaced on the menu and
+     *  in the SEND DIAGS report; the CI emulator compiles everything, a real Mali may not. */
+    private val shaderFailList = ArrayList<String>()
+
     private fun compileShader(type: Int, src: String, label: String): Int {
         val sh = GLES30.glCreateShader(type)
+        if (sh == 0) {
+            shaderFailList.add("$label: glCreateShader returned 0")
+            return 0
+        }
         GLES30.glShaderSource(sh, src)
         GLES30.glCompileShader(sh)
         val ok = IntArray(1)
@@ -4463,6 +4517,7 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         if (ok[0] == 0) {
             val log = GLES30.glGetShaderInfoLog(sh)
             Log.e(TAG, "shader $label: $log")
+            shaderFailList.add("$label.comp: ${log.take(260)}")
             GLES30.glDeleteShader(sh)
             return 0
         }
@@ -4480,7 +4535,9 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         val ok = IntArray(1)
         GLES30.glGetProgramiv(p, GLES30.GL_LINK_STATUS, ok, 0)
         if (ok[0] == 0) {
-            Log.e(TAG, "link $label: ${GLES30.glGetProgramInfoLog(p)}")
+            val log = GLES30.glGetProgramInfoLog(p)
+            Log.e(TAG, "link $label: $log")
+            shaderFailList.add("$label.link: ${log.take(260)}")
             return 0
         }
         return p
@@ -5689,6 +5746,10 @@ class GlCityRenderer : GLSurfaceView.Renderer {
                 pendingEdits = null; pendingCamera = null
                 // reset gl handles so programs/meshes re-upload, then rebuild the whole world
                 resetGlHandles()
+                // the menu's phase-1 loop dismisses on worldReady() — drop the flag FIRST so it
+                // holds the loading screen for the NEW world (not the old one's stale true)
+                glReady = false
+                Diag.worldReadyFlag = false
                 buildAll()
                 cityName?.let { setCityName(it) }
                 // the persistence layer follows the new world (fresh edits, new seed/mode)
@@ -5698,6 +5759,8 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         } catch (t: Throwable) {
             initError = if (t is OutOfMemoryError) "Out of memory building the world" else "${t.javaClass.simpleName}: ${t.message}"
             Log.e(TAG, "regenerateNow FAILED", t)
+            Diag.log("regenerateNow FAILED: ${t.javaClass.simpleName}: ${t.message}")
+            Diag.save(appContext, gpuRenderer)
         }
     }
 

@@ -70,6 +70,10 @@ class MenuOverlayView(context: Context) : View(context) {
     private val rDemo = RectF(1206f, 778f, 1856f, 846f)
     private val rResume = RectF(1206f, 876f, 1856f, 962f)
 
+    // full-screen loading state (what the launch shows while the world builds) + the diag
+    // share button — the user's report channel when a real GPU misbehaves
+    private val rDiags = RectF(16f, 990f, 214f, 1036f)
+
     private val COL_GOLD = Color.rgb(255, 214, 107)
     private val COL_CYAN = Color.rgb(143, 224, 255)
     private val COL_SUB = Color.argb(170, 255, 255, 255)
@@ -223,12 +227,94 @@ class MenuOverlayView(context: Context) : View(context) {
         canvas.save()
         canvas.translate(ox, oy)
         canvas.scale(scale, scale)
+        val ready = game?.renderer?.worldReady() == true
         // while the world builds, the SurfaceView hole shows the window background — the veil
         // must be OPAQUE then (the white-screen report), translucent only over a LIVE world
-        val ready = game?.renderer?.worldReady() == true
-        paint.color = if (ready) Color.argb(110, 6, 10, 16) else Color.argb(255, 6, 10, 16)
+        paint.color = if (ready && phase == 0) Color.argb(110, 6, 10, 16) else Color.argb(255, 6, 10, 16)
         canvas.drawRect(logical, paint)
 
+        if (!ready || phase == 1) {
+            // THE LOADING SCREEN: a full-screen branded build report — no card, no confusion
+            // about what the black surface is. The chooser card returns once the world exists.
+            drawLoading(canvas)
+        } else {
+            drawChooser(canvas)
+        }
+
+        // SEND DIAGS (both states): shares the boot event log + shader failures as text
+        paint.color = Color.argb(40, 143, 224, 255)
+        canvas.drawRoundRect(rDiags, 9f, 9f, paint)
+        paint.style = Paint.Style.STROKE
+        paint.strokeWidth = 2f
+        paint.color = Color.argb(140, 143, 224, 255)
+        canvas.drawRoundRect(rDiags, 9f, 9f, paint)
+        paint.style = Paint.Style.FILL
+        text(canvas, "SEND DIAGS", rDiags.centerX(), rDiags.centerY() + 5f, 13f, COL_CYAN, true, Paint.Align.CENTER)
+
+        // renderer state line (white-screen defence) + the version, so the user can verify
+        // WHICH build they are looking at
+        val diag = game?.renderer?.diagLine
+        if (!diag.isNullOrEmpty()) text(canvas, diag, 16f, 1070f, 10f, Color.argb(150, 190, 214, 230), false)
+        text(canvas, "v${versionName()} (build ${versionCode()})", 1904f, 1070f, 10f, Color.argb(120, 190, 214, 230), false, Paint.Align.RIGHT)
+        canvas.restore()
+    }
+
+    private fun versionName(): String = try {
+        context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "?"
+    } catch (_: Exception) { "?" }
+
+    private fun versionCode(): Long = try {
+        val pi = context.packageManager.getPackageInfo(context.packageName, 0)
+        if (android.os.Build.VERSION.SDK_INT >= 28) pi.longVersionCode
+        else @Suppress("DEPRECATION") pi.versionCode.toLong()
+    } catch (_: Exception) { 0L }
+
+    /** The full-screen boot/loading state: gold mark, wordmark, indeterminate build bar,
+     *  live build seconds and the error banner when the GPU failed — the launch screen the
+     *  user asked for INSTEAD of the white/black void. */
+    private fun drawLoading(canvas: Canvas) {
+        // gold coin + F (the app icon's mark)
+        paint.color = COL_GOLD
+        canvas.drawCircle(960f, 366f, 62f, paint)
+        text(canvas, "F", 960f, 390f, 84f, Color.rgb(13, 21, 29), true, Paint.Align.CENTER)
+        text(canvas, "FABLE CITIES", 960f, 500f, 64f, Color.WHITE, true, Paint.Align.CENTER)
+        text(canvas, "a city-builder you can grow from one street", 960f, 536f, 20f, COL_SUB, false, Paint.Align.CENTER)
+
+        val r = game?.renderer
+        val err = r?.initError
+        if (err != null) {
+            text(canvas, err, 960f, 640f, 24f, Color.rgb(255, 128, 128), true, Paint.Align.CENTER)
+            text(canvas, "tap SEND DIAGS (bottom-left) — the report names the failing stage", 960f, 676f, 16f, COL_SUB, false, Paint.Align.CENTER)
+            return
+        }
+
+        // indeterminate build bar: a bright segment sweeping the track
+        val trackL = 660f; val trackR = 1260f; val trackY = 606f
+        paint.color = Color.argb(50, 255, 255, 255)
+        canvas.drawRoundRect(RectF(trackL, trackY, trackR, trackY + 12f), 6f, 6f, paint)
+        val sweep = (System.currentTimeMillis() % 1600L) / 1600f
+        val segW = 190f
+        val segL = trackL - segW + (trackR - trackL + segW) * sweep
+        val seg = RectF(max(trackL, segL), trackY, min(trackR, segL + segW), trackY + 12f)
+        if (seg.width() > 2f) {
+            paint.color = COL_CYAN
+            canvas.drawRoundRect(seg, 6f, 6f, paint)
+        }
+
+        val since = if (phase == 1) buildingAt else bootAt
+        val secs = (System.currentTimeMillis() - since) / 1000L
+        val what = if (phase == 1) (if (cityName.isBlank()) "your city" else cityName) else "the world"
+        text(canvas, "Building $what$dot · ${secs}s", 960f, 668f, 24f, COL_CYAN, false, Paint.Align.CENTER)
+        text(canvas, "first boot compiles shaders — up to a minute on some phones", 960f, 700f, 15f, COL_SUB, false, Paint.Align.CENTER)
+        // live GPU status under the bar (which shader stage / watchdog state the phone is in)
+        val diag = game?.renderer?.diagLine
+        if (!diag.isNullOrEmpty()) text(canvas, diag, 960f, 736f, 14f, Color.argb(160, 190, 214, 230), false, Paint.Align.CENTER)
+    }
+
+    private val dot: String
+        get() = "...".repeat(1 + ((System.currentTimeMillis() / 500L % 3L).toInt()))
+
+    private fun drawChooser(canvas: Canvas) {
         glass(canvas, rCard)
         paint.color = COL_GOLD
         canvas.drawCircle(1246f, 148f, 20f, paint)
@@ -293,19 +379,11 @@ class MenuOverlayView(context: Context) : View(context) {
         paint.color = Color.argb(60, 31, 96, 122)
         canvas.drawRoundRect(rDemo, 12f, 12f, paint)
         text(canvas, "DEMO CITY", rDemo.centerX(), rDemo.centerY() + 7f, 17f, Color.WHITE, true, Paint.Align.CENTER)
-        if (phase == 1 || !ready) {
-            // Long/500 overflows Int (3.5e9 > Int.MAX) — toInt() goes NEGATIVE and repeat(-1)
-            // crashes the first onDraw (the emulator gate caught this). Modulo the Long first.
-            val dot = "...".repeat(1 + ((System.currentTimeMillis() / 500L % 3L).toInt()))
-            val err = game?.renderer?.initError
-            if (err != null) {
-                text(canvas, "GPU init failed: $err", rCard.centerX(), rCard.bottom - 40f, 13f, Color.rgb(255, 128, 128), true, Paint.Align.CENTER)
-            } else {
-                val since = if (phase == 1) buildingAt else bootAt
-                val secs = (System.currentTimeMillis() - since) / 1000L
-                text(canvas, "Building the world$dot · ${secs}s", rCard.centerX(), rCard.bottom - 22f, 12f, COL_CYAN, false, Paint.Align.CENTER)
-                text(canvas, "first boot compiles shaders — up to a minute on some phones", rCard.centerX(), rCard.bottom - 42f, 10f, COL_SUB, false, Paint.Align.CENTER)
-            }
+
+        // a failed core shader keeps shouting from the chooser too (world IS ready, but black)
+        val err = game?.renderer?.initError
+        if (err != null) {
+            text(canvas, "GPU init failed: $err", rCard.centerX(), rCard.top - 24f, 16f, Color.rgb(255, 128, 128), true, Paint.Align.CENTER)
         }
 
         // resume card (menu/index.js loadName/loadMeta)
@@ -318,13 +396,6 @@ class MenuOverlayView(context: Context) : View(context) {
             text(canvas, name, 1230f, rResume.top + 66f, 15f, Color.WHITE, true)
             text(canvas, "${String.format("%,d", pop)} citizens · ${fmtMoney(money.toDouble())}", 1230f, rResume.top + 86f, 12f, COL_SUB, false)
         }
-
-        // GPU/render-path diagnostics (white-screen defence): the renderer reports its own
-        // state every few seconds — on a misbehaving driver the screen shows WHY it looks
-        // the way it does instead of a dead surface.
-        val diag = game?.renderer?.diagLine
-        if (!diag.isNullOrEmpty()) text(canvas, diag, 16f, 1070f, 10f, Color.argb(150, 190, 214, 230), false)
-        canvas.restore()
     }
 
     
@@ -337,6 +408,10 @@ class MenuOverlayView(context: Context) : View(context) {
         if (event.actionMasked != MotionEvent.ACTION_DOWN) return phase == 1
         val p = toLogical(event.x, event.y)
         val x = p[0]; val y = p[1]
+        if (rDiags.contains(x, y)) {
+            Diag.share(context, game?.renderer?.let { it.gpuRenderer.ifEmpty { null } })
+            return true
+        }
         if (phase == 1) return true
         when {
             rSeedMinus.contains(x, y) -> { seed = (seed - 1).coerceAtLeast(0); previewSeed = Int.MIN_VALUE; persist() }

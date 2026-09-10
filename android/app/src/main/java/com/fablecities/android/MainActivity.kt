@@ -16,6 +16,9 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // crash capture + boot event log FIRST — everything after this is diagnosable
+        Diag.install(this)
+        Diag.log("MainActivity.onCreate")
         requestWindowFeature(Window.FEATURE_NO_TITLE)
         window.setFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN, WindowManager.LayoutParams.FLAG_FULLSCREEN)
         gameView = FableCitiesView(this)
