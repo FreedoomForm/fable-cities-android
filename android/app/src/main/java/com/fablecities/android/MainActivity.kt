@@ -14,6 +14,7 @@ import android.view.View
 import android.view.Window
 import android.view.WindowInsets
 import android.view.WindowInsetsController
+import android.view.WindowManager
 import android.webkit.ConsoleMessage
 import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
@@ -29,6 +30,7 @@ import android.widget.ProgressBar
 import android.widget.TextView
 import androidx.webkit.WebViewAssetLoader
 import java.io.File
+import java.io.FileWriter
 import java.io.PrintWriter
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -141,7 +143,7 @@ class MainActivity : Activity() {
             try {
                 val dir = getExternalFilesDir(null) ?: filesDir
                 val stamp = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date())
-                PrintWriter(File(dir, "crash.txt").writer(true)).use { w ->
+                PrintWriter(FileWriter(File(dir, "crash.txt"), true)).use { w ->
                     w.println("=== crash $stamp ===")
                     w.println("thread=${t.name} version=${packageManager.getPackageInfo(packageName, 0).versionName}")
                     w.println("model=${Build.MODEL} sdk=${Build.VERSION.SDK_INT}")
@@ -218,7 +220,7 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         installCrashHook()
-        window.addFlags(Window.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
         realDpr = resources.displayMetrics.density
         dprCap = minOf(realDpr, 2f)
@@ -249,7 +251,7 @@ class MainActivity : Activity() {
             settings.textZoom = 100
             if (Build.VERSION.SDK_INT >= 29) {
                 settings.forceDark = WebSettings.FORCE_DARK_OFF
-                setRendererPriorityPolicy(WebSettings.RENDERER_PRIORITY_IMPORTANT, true)
+                setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, true)
             }
             if (Build.VERSION.SDK_INT >= 26) settings.safeBrowsingEnabled = false
             addJavascriptInterface(Bridge(), "AndroidApp")
