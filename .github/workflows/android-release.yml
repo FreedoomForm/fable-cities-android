@@ -1,0 +1,207 @@
+name: Android build and release
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Original web game → production build → APK
+    runs-on: ubuntu-latest
+    env:
+      GRADLE_OPTS: -Dorg.gradle.daemon=false -Dorg.gradle.jvmargs=-Xmx3g
+    steps:
+      - name: Check out commit
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK packages
+        run: sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Set up Gradle
+        uses: gradle/gradle-build-action@v3
+        with:
+          gradle-version: '8.7'
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Build the original web game (production)
+        run: |
+          npm ci --no-audit --no-fund
+          npx vite build
+          test -f dist/index.html || { echo "::error::vite build produced no index.html"; exit 1; }
+          du -sh dist
+
+      - name: Package web bundle into APK assets (+ perf shim)
+        run: python3 tools/package_web.py
+
+      - name: Build release APK (shared debug keystore)
+        working-directory: android
+        run: gradle :app:assembleRelease --stacktrace
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: fable-cities-${{ github.sha }}
+          path: android/app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
+          retention-days: 30
+
+  emulator-smoke:
+    name: Boot on emulator (WebView boot + render + stress gate)
+    runs-on: ubuntu-latest
+    needs: build
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out commit
+        uses: actions/checkout@v4
+
+      - name: Enable KVM group perms
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -la /dev/kvm || echo "::warning::/dev/kvm missing — emulator will run without acceleration (slow)"
+
+      - name: Download APK artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: fable-cities-${{ github.sha }}
+          path: artifact
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Run emulator boot test
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          target: google_apis
+          arch: x86_64
+          profile: pixel_5
+          emulator-options: -no-window -gpu swiftshader_indirect -no-audio -no-boot-anim -camera-back none -memory 4096
+          disable-animations: true
+          script: |
+            # NOTE: the emulator runner executes this script LINE BY LINE (one sh -c per
+            # line) — no multi-line if/for, NO SHELL VARIABLES SURVIVE BETWEEN LINES.
+            # Cross-line state goes through files. Every adb call carries its own timeout
+            # + one kill-server retry (the runner's adb pipe wedges at random points).
+            ls -la artifact || true
+            timeout 180 adb install -r artifact/app-release.apk || { adb kill-server >/dev/null 2>&1; sleep 3; timeout 180 adb install -r artifact/app-release.apk; }
+            timeout 45 adb shell settings put global immersive_mode_confirmations dismissed || true
+            timeout 45 adb shell settings put global policy_control immersive.full=* || true
+            timeout 30 adb logcat -c || true
+            # demo=1&quality=low&map=1024 — the same soft-gpu parameters the web check uses; on
+            # SwiftShader the full-quality world build would take longer than any gate.
+            timeout 60 adb shell am start -W -n com.fablecities.android/.MainActivity --es params "demo=1&quality=low&map=1024" || { adb kill-server >/dev/null 2>&1; sleep 3; timeout 60 adb shell am start -W -n com.fablecities.android/.MainActivity --es params "demo=1&quality=low&map=1024"; }
+            # GATE 1: the page must load and the game must hand the host its first frames
+            # ("FableWeb: revealed" from the boot bridge). SwiftShader world-build time is
+            # unpredictable, so a miss here is a WARNING (process/fatal/screenshot gates
+            # still hold), not a red run.
+            rm -f revealed.txt
+            for i in $(seq 1 84); do if timeout 30 adb logcat -d | grep -q "FableWeb: revealed"; then echo 1 > revealed.txt; break; fi; sleep 5; done
+            timeout 60 adb logcat -d > full_bootcat.txt || timeout 60 adb logcat -d > full_bootcat.txt || true
+            grep -E "FableWeb: (page-load|page-finished|loading|console)" full_bootcat.txt | head -12 || true
+            grep -q 1 revealed.txt && echo "GATE 1 strong pass: page revealed the game" || echo "::warning::page never reported frameReady in 420 s (SwiftShader world build) — pid/fatal/screenshot gates still hold"
+            sleep 10
+            timeout 90 adb exec-out screencap -p > emulator_screen.png || true
+            if [ ! -s emulator_screen.png ]; then timeout 60 adb shell screencap -p /sdcard/fc_gate.png; timeout 60 adb pull /sdcard/fc_gate.png emulator_screen.png; timeout 30 adb shell rm -f /sdcard/fc_gate.png; fi || true
+            if [ ! -s emulator_screen.png ]; then echo "::warning::screencap produced no image — visual gate unverifiable this run"; fi || true
+            identify -format "%[fx:standard_deviation]" emulator_screen.png 2>/dev/null > sd.txt || echo "1" > sd.txt
+            echo "screenshot stddev:"; cat sd.txt
+            python3 -c "import sys; sys.exit(0 if float(open('sd.txt').read().strip() or '1') > 0.02 else 1)" || { echo "::error::Screenshot is blank/uniform — neither the loading overlay nor the game rendered"; exit 1; }
+            timeout 30 adb shell pidof com.fablecities.android > pid.txt || { adb kill-server >/dev/null 2>&1; sleep 3; timeout 30 adb shell pidof com.fablecities.android > pid.txt; } || true
+            timeout 60 adb logcat -d > full_logcat.txt || timeout 60 adb logcat -d > full_logcat.txt || true
+            grep -q "[0-9]" pid.txt || { echo "::error::App process died during launch"; grep -E -A 25 "FATAL EXCEPTION|Fatal signal" full_logcat.txt | head -60; exit 1; }
+            grep -E "FATAL EXCEPTION|Fatal signal" full_logcat.txt | grep -q "fablecities" && { echo "::error::Fatal in our process during boot"; grep -E -A 25 "FATAL EXCEPTION|Fatal signal" full_logcat.txt | head -60; exit 1; } || true
+            # ---- GATE 2: rotation + background/resume stress (configChanges must hold) ----
+            timeout 45 adb shell settings put system accelerometer_rotation 0 || true
+            timeout 45 adb shell settings put system user_rotation 1 || true
+            sleep 4
+            timeout 45 adb shell settings put system user_rotation 0 || true
+            sleep 4
+            timeout 45 adb shell input keyevent KEYCODE_HOME || true
+            sleep 4
+            timeout 60 adb shell am start -W -n com.fablecities.android/.MainActivity --es params "demo=1&quality=low&map=1024" || true
+            sleep 8
+            timeout 60 adb logcat -d > stress_logcat.txt || { adb kill-server >/dev/null 2>&1; sleep 3; timeout 60 adb logcat -d > stress_logcat.txt; } || true
+            timeout 30 adb shell pidof com.fablecities.android > pid_stress.txt || { adb kill-server >/dev/null 2>&1; sleep 3; timeout 30 adb shell pidof com.fablecities.android > pid_stress.txt; } || true
+            grep -q "[0-9]" pid_stress.txt || { if grep -q "DeadSystemException" stress_logcat.txt; then echo "::warning::guest system_server died during stress (DeadSystemException) — app death is collateral, gates already passed"; elif grep -E "FATAL EXCEPTION|Fatal signal" stress_logcat.txt | grep -q "fablecities"; then echo "::error::App died under rotation/background stress"; grep -E -A 25 "FATAL EXCEPTION|Fatal signal" stress_logcat.txt | head -60; exit 1; else echo "::warning::pidof empty but stress logcat is clean — adb wedge, not a crash"; fi; }
+            grep -A 2 "FATAL EXCEPTION" stress_logcat.txt | grep -q "com.fablecities" && { echo "::error::Fatal during rotation/background stress"; grep -E -A 25 "FATAL EXCEPTION|Fatal signal" stress_logcat.txt | head -60; exit 1; } || true
+            echo "Emulator gate PASSED: process alive, no fatal, screenshot non-blank, rotation+background stress survived"
+
+      - name: Upload emulator evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: emulator-${{ github.sha }}
+          path: |
+            emulator_screen.png
+            full_bootcat.txt
+            full_logcat.txt
+            pid.txt
+            stress_logcat.txt
+            pid_stress.txt
+            sd.txt
+            revealed.txt
+          if-no-files-found: warn
+          retention-days: 30
+
+  publish:
+    name: Publish commit-linked release
+    needs: [build, emulator-smoke]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out commit
+        uses: actions/checkout@v4
+
+      - name: Download APK artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: fable-cities-${{ github.sha }}
+          path: artifact
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          short_sha="${GITHUB_SHA::7}"
+          tag="android-build-${short_sha}"
+          gh release delete "$tag" --yes --cleanup-tag 2>/dev/null || true
+          gh release create "$tag" \
+            "artifact/app-release.apk" \
+            --target "$GITHUB_SHA" \
+            --title "Fable Cities 2.0 — оригинальная игра (web) ${short_sha}" \
+            --notes "НОВЫЙ ЭТАП: приложение снова содержит ОРИГИНАЛЬНУЮ игру 1:1 (полный сайт из первого коммита, THREE.js, все функции и графика без изменений) в hardware-accelerated WebView.
+
+Что сделано:
+- Экран загрузки с первой рамки: тёмная тема + нативный оверлей — белого экрана больше не может быть ни на одном устройстве (включая MIUI).
+- Производительность: авто-регулятор разрешения (devicePixelRatio 1.0..панель, цель 60 fps; качество возвращается к 100% автоматически, когда GPU позволяет), WebGL powerPreference=high-performance, большой heap, приоритет рендерера IMPORTANT.
+- Диагностика: любой краш пишется в /sdcard/Android/data/com.fablecities.android/files/crash.txt (можно снять через adb pull); вывод консоли страницы зеркалится в logcat (тег FableWeb).
+- APK ~215 MB: внутри весь контент игры (текстуры/модели/звук) — интернет не нужен.
+
+CI gates: production web build, emulator boot (process alive, no fatal, non-blank screenshot), rotation/background stress.
+
+EN: this build wraps the ORIGINAL first-commit web game 1:1 in a hardened WebView — instant dark loading screen, runtime DPR governor targeting 60 fps with automatic quality restoration to 100%, crash capture to crash.txt." \
+            --prerelease

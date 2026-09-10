@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android 12+ draws a SYSTEM splash window before the first app frame. It does NOT use
+     windowBackground — it uses windowSplashScreenBackground, which defaults to the theme's
+     light colorBackground on MIUI, i.e. the WHITE launch screen reported on the Redmi Note
+     10s. Pin every splash colour/icon to the scene palette so the launch reads as the game's
+     loading screen from the very first pixel. -->
+<resources>
+    <style name="Theme.FableCities" parent="android:style/Theme.Material.NoActionBar">
+        <item name="android:fontFamily">sans</item>
+        <item name="android:windowFullscreen">true</item>
+        <item name="android:colorAccent">#4FC3F7</item>
+        <item name="android:windowActionModeOverlay">true</item>
+        <item name="android:navigationBarColor">#0B0F14</item>
+        <item name="android:statusBarColor">#0B0F14</item>
+        <item name="android:windowLightNavigationBar">false</item>
+        <item name="android:windowBackground">#0B0F14</item>
+        <item name="android:colorBackground">#0B0F14</item>
+        <!-- the splash fix itself -->
+        <item name="android:windowSplashScreenBackground">#0B0F14</item>
+        <item name="android:windowSplashScreenAnimatedIcon">@mipmap/ic_launcher</item>
+        <item name="android:windowSplashScreenAnimationDuration">120</item>
+    </style>
+</resources>

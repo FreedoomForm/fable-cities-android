@@ -23,3 +23,6 @@ docs/critique/site_*
 # Python bytecode embeds absolute source paths
 __pycache__/
 *.pyc
+
+# APK web bundle is a BUILD ARTIFACT (CI: npm ci -> vite build -> tools/package_web.py)
+android/app/src/main/assets/web/
