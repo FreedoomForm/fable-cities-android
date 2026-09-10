@@ -740,6 +740,29 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         pendingEdits = null
         pendingCamera = null
         initError = null // a successful (re)build clears a previous failure banner
+        Diag.worldReadyFlag = true
+        // BLACK-SCREEN defence: a core program that failed to compile silently skips its draw
+        // ("if (progX == 0) return") — the world then shows as a mostly black surface with no
+        // error anywhere. Make it LOUD: the menu banner + diag report name the failing stage.
+        // AFTER initError = null above, so a clear cannot erase it.
+        if (shaderFailList.isNotEmpty()) {
+            val core = listOfNotNull(
+                if (progTerrain == 0) "terrain" else null,
+                if (progFlat == 0) "ground" else null,
+                if (progBuilding == 0) "buildings" else null,
+                if (progWater == 0) "water" else null,
+                if (progSky == 0) "sky" else null,
+                if (progTrees == 0) "trees" else null,
+            )
+            if (core.isNotEmpty()) {
+                initError = "this GPU failed to build ${core.joinToString(", ")} — tap SEND DIAGS"
+                Log.e(TAG, "core programs failed on $gpuRenderer: ${core.joinToString(", ")}")
+                Diag.log("CORE SHADER FAILURE: ${core.joinToString(", ")}")
+            }
+        }
+        Diag.recordShaderFails(shaderFailList.toList())
+        Diag.log("buildAll complete in ${"%.0f".format((System.nanoTime() - t0) / 1e6)} ms (seed=$worldSeed mode=$startMode)")
+        Diag.save(appContext, gpuRenderer)
     }
 
     /**
@@ -804,28 +827,6 @@ class GlCityRenderer : GLSurfaceView.Renderer {
         generateVehicles()
         initSimulation()
         glReady = true
-        Diag.worldReadyFlag = true
-        // BLACK-SCREEN defence: a core program that failed to compile silently skips its draw
-        // ("if (progX == 0) return") — the world then shows as a mostly black surface with no
-        // error anywhere. Make it LOUD: the menu banner + diag report name the failing stage.
-        if (shaderFailList.isNotEmpty()) {
-            val core = listOfNotNull(
-                if (progTerrain == 0) "terrain" else null,
-                if (progFlat == 0) "ground" else null,
-                if (progBuilding == 0) "buildings" else null,
-                if (progWater == 0) "water" else null,
-                if (progSky == 0) "sky" else null,
-                if (progTrees == 0) "trees" else null,
-            )
-            if (core.isNotEmpty()) {
-                initError = "this GPU failed to build ${core.joinToString(", ")} — tap SEND DIAGS"
-                Log.e(TAG, "core programs failed on $gpuRenderer: ${core.joinToString(", ")}")
-                Diag.log("CORE SHADER FAILURE: ${core.joinToString(", ")}")
-            }
-        }
-        Diag.recordShaderFails(shaderFailList.toList())
-        Diag.log("buildAll complete in ${"%.0f".format((System.nanoTime() - t0) / 1e6)} ms (seed=$worldSeed mode=$startMode)")
-        Diag.save(appContext, gpuRenderer)
     }
 
     override fun onSurfaceChanged(gl: GL10?, width: Int, height: Int) {
