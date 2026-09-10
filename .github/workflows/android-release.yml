@@ -188,20 +188,23 @@ jobs:
         run: |
           short_sha="${GITHUB_SHA::7}"
           tag="android-build-${short_sha}"
+          cat > release_notes.md <<'NOTES_EOF'
+          НОВЫЙ ЭТАП: приложение снова содержит ОРИГИНАЛЬНУЮ игру 1:1 (полный сайт из первого коммита, THREE.js, все функции и графика без изменений) в hardware-accelerated WebView.
+
+          Что сделано:
+          - Экран загрузки с первой рамки: тёмная тема + нативный оверлей — белого экрана больше не может быть ни на одном устройстве (включая MIUI).
+          - Производительность: авто-регулятор разрешения (devicePixelRatio 1.0..панель, цель 60 fps; качество возвращается к 100% автоматически, когда GPU позволяет), WebGL powerPreference=high-performance, большой heap, приоритет рендерера IMPORTANT.
+          - Диагностика: любой краш пишется в /sdcard/Android/data/com.fablecities.android/files/crash.txt (можно снять через adb pull); вывод консоли страницы зеркалится в logcat (тег FableWeb).
+          - APK ~215 MB: внутри весь контент игры (текстуры/модели/звук) — интернет не нужен.
+
+          CI gates: production web build, emulator boot (process alive, no fatal, non-blank screenshot), rotation/background stress.
+
+          EN: this build wraps the ORIGINAL first-commit web game 1:1 in a hardened WebView — instant dark loading screen, runtime DPR governor targeting 60 fps with automatic quality restoration to 100%, crash capture to crash.txt.
+          NOTES_EOF
           gh release delete "$tag" --yes --cleanup-tag 2>/dev/null || true
           gh release create "$tag" \
             "artifact/app-release.apk" \
             --target "$GITHUB_SHA" \
             --title "Fable Cities 2.0 — оригинальная игра (web) ${short_sha}" \
-            --notes "НОВЫЙ ЭТАП: приложение снова содержит ОРИГИНАЛЬНУЮ игру 1:1 (полный сайт из первого коммита, THREE.js, все функции и графика без изменений) в hardware-accelerated WebView.
-
-Что сделано:
-- Экран загрузки с первой рамки: тёмная тема + нативный оверлей — белого экрана больше не может быть ни на одном устройстве (включая MIUI).
-- Производительность: авто-регулятор разрешения (devicePixelRatio 1.0..панель, цель 60 fps; качество возвращается к 100% автоматически, когда GPU позволяет), WebGL powerPreference=high-performance, большой heap, приоритет рендерера IMPORTANT.
-- Диагностика: любой краш пишется в /sdcard/Android/data/com.fablecities.android/files/crash.txt (можно снять через adb pull); вывод консоли страницы зеркалится в logcat (тег FableWeb).
-- APK ~215 MB: внутри весь контент игры (текстуры/модели/звук) — интернет не нужен.
-
-CI gates: production web build, emulator boot (process alive, no fatal, non-blank screenshot), rotation/background stress.
-
-EN: this build wraps the ORIGINAL first-commit web game 1:1 in a hardened WebView — instant dark loading screen, runtime DPR governor targeting 60 fps with automatic quality restoration to 100%, crash capture to crash.txt." \
+            --notes-file release_notes.md \
             --prerelease
