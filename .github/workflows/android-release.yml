@@ -125,9 +125,12 @@ jobs:
             grep -E "FableWeb: (page-load|page-finished|loading|console)" full_bootcat.txt | head -12 || true
             grep -q 1 revealed.txt && echo "GATE 1 strong pass: page revealed the game" || echo "::warning::page never reported frameReady in 420 s (SwiftShader world build) — pid/fatal/screenshot gates still hold"
             sleep 10
+            # dismiss the system immersive-mode confirmation if it appeared ("Viewing full screen")
+            timeout 30 adb logcat -d | grep -q "Viewing full screen" && { timeout 45 adb shell input tap 1486 553 || true; sleep 2; } || true
             timeout 90 adb exec-out screencap -p > emulator_screen.png || true
             if [ ! -s emulator_screen.png ]; then timeout 60 adb shell screencap -p /sdcard/fc_gate.png; timeout 60 adb pull /sdcard/fc_gate.png emulator_screen.png; timeout 30 adb shell rm -f /sdcard/fc_gate.png; fi || true
             if [ ! -s emulator_screen.png ]; then echo "::warning::screencap produced no image — visual gate unverifiable this run"; fi || true
+            sudo apt-get install -y imagemagick >/dev/null 2>&1 || true
             identify -format "%[fx:standard_deviation]" emulator_screen.png 2>/dev/null > sd.txt || echo "1" > sd.txt
             echo "screenshot stddev:"; cat sd.txt
             python3 -c "import sys; sys.exit(0 if float(open('sd.txt').read().strip() or '1') > 0.02 else 1)" || { echo "::error::Screenshot is blank/uniform — neither the loading overlay nor the game rendered"; exit 1; }
